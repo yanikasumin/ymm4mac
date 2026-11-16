@@ -1,6 +1,6 @@
 # ymm4mac の実装済みアーキテクチャ
 
-更新: 2026-11-17。状態: **モデル層と .ymmp 互換層に加え、描画層の土台と合成の実行部、GPU 実行器（Metal）と基本 Source（画像・図形）まで実装済み。テキスト描画・個別エフェクト・動画デコード・音声・製品 UI は未実装。**
+更新: 2026-11-17。状態: **モデル層と .ymmp 互換層に加え、描画層の土台と合成の実行部、GPU 実行器（Metal）と基本 Source（画像・図形）、音声パイプラインの芯まで実装済み。テキスト描画・個別エフェクト・動画デコード・製品 UI は未実装（音声のデコード実体・ユーザー音声エフェクト・再生／書き出し接続も未実装）。**
 
 この文書は **実装されている構造のみ記載するAs-built**。計画・仮説は[解析側のMac設計案](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/02-MAC-DESIGN-PROPOSAL.md)に記載。
 
@@ -65,6 +65,23 @@
                                TimelineGroupResolver（グループ階層の解決）、
                                TimelineComposer（資源管理・親エフェクト再構築・
                                FrameBuffer 境界・合成の統合）
+        Audio/                 音声パイプラインの芯（Foundation のみ。MAC-0013）
+          AudioStream.swift    AudioStream（本家 AudioStreamBase のプルモデル基盤）、
+                               InputFrameWindow（範囲外は無音のランダムアクセス窓）
+          PCMProvider.swift    PCMProvider / PCMProviderFactory（デコードの差し替え点）、
+                               InMemoryPCMProvider、FileAudioStream
+          EffectedAudioItemSource.swift アイテム音声の処理器連鎖（本家のチェーン順序）、
+                               AudioItemProperties、AudioEffectProvider（ユーザー
+                               音声エフェクトの差し替え点）、AudioSourceFactory
+          AudioEffectProcessors.swift NegativeSeekable / ContentOffset / Loop /
+                               Reverse / Echo の各処理器と基底
+          AudioResampling.swift Resampler / PlaybackRate / VariablePlaybackRate /
+                               Upsampler（補間カーネルは Linear / Cubic）
+          VolumePanStream.swift VolumePan（サンプル対ごとの Animation 評価）
+          AudioGroups.swift    AudioGroupResolver（グループ境界の区間分割と
+                               DirectGroups / Owner の算出）、GroupAudioBusSource
+          TimelineAudioMixer.swift タイムライン全体のミックス（レイヤー音量適用、
+                               float 加算、リミッターなし）
       Sources/YMM4GPU/         GPU 実行層（Metal。全ソース #if os(macOS)、Linux では空）
         MetalGraphics.swift    MetalGraphicsDevices（デバイス共有・登録表・共有資源）、
                                MetalImage（ImageReference の実体）、
@@ -78,7 +95,7 @@
                                MetalEmptySource（未対応種別の透明）、MetalSourceProvider
       Apps/DebugApp/           検証用デバッグアプリ（読み込み診断・往復チェック・
                                合成プレビュー。製品 UI ではない）
-      Tests/YMM4CoreTests/     上記のユニットテスト（194件）
+      Tests/YMM4CoreTests/     上記のユニットテスト（214件）
       docs/ARCHITECTURE.md     本文書
       docs/IMPLEMENTATION_LOG.md
       docs/STATUS.md
@@ -94,8 +111,9 @@
 - アイテムの複製は JSON 往復（本家 GetClone と同じ経路）で、`BaseItem.cloned()` が担う。分割はこの複製を左右に作ってから行う。
 - 描画（実行部まで）: `TimelineComposer.update` が `ItemPicker.pickItems` でフレーム時点の対象アイテムを選定し、資源管理（範囲外の破棄・不足分の生成）と親エフェクトの再構築（顔・声解決→グループ解決）を行う → FrameBuffer 以外の各 `EffectedItemSource` が Source を更新し、`EffectedOutput` の連鎖（処理器の位置基準の再利用・差し替え）＋アイテム変換で DrawDescription を確定 → `DrawOrdering.ordered` が3キーで順序付け → `DrawSegmentBuilder` のセグメント列に従い、抽象描画先（RenderTarget）へ合成する。FrameBuffer アイテムでは描画先を閉じて Source へ渡し、新しい描画先で合成を続ける。
 - 描画（GPU 実行）: 描画先・DrawingEffect・基本 Source の実物は `Sources/YMM4GPU/`（Metal）。`MetalGraphicsDevices` がデバイスと ImageReference の登録表を所有し、`MetalGraphicsContext`（消費者ごとに生成）が描画先を供給する。DrawingEffect は中間テクスチャを作らず、入力実体へ変換（ズーム×ワールド×透視）と不透明度を記録した実体を出力として登録する（遅延評価）。描画先は画面サイズのテクスチャを実体とし、記録した描画を close() で同期実行する。Source の実物は画像（ImageIO デコード）と図形（SDF 描画）のみで、未対応種別は透明な空 Source になる。デバッグアプリのプレビュー欄はこの経路で合成し、最終テクスチャを CGImage として読み戻して表示する。
+- 音声: `TimelineAudioMixer`（AudioStream）が読み取り範囲と交差するアイテムのリソースだけを開き、各アイテムの `EffectedAudioItemSource`（素材ストリーム → 本家のチェーン順序の処理器連鎖 → VolumePan）が供給するサンプルへレイヤー音量を適用して float 加算する。音声グループに完全に所有される子は `AudioGroupResolver` の算出に基づきトップレベルへ直接加算せず、`GroupAudioBusSource`（バスミックス → グループエフェクト → Resampler）経由でのみ加算される。素材のデコードは `PCMProvider` の差し替え点の先にあり実体は未実装で、ミックス結果の再生・書き出しへの接続もまだ無い。
 
-**テキスト描画・個別エフェクト・動画デコード・音声・書き出し・製品 UI は未実装。** 詳細は実装台帳 MAC-0001〜MAC-0012。
+**テキスト描画・個別エフェクト・動画デコード・書き出し・製品 UI は未実装。音声はパイプラインの芯のみで、デコード実体・ユーザー音声エフェクト・再生／書き出し接続が未実装。** 詳細は実装台帳 MAC-0001〜MAC-0013。
 
 ## 実装後の書き方
 
