@@ -705,4 +705,135 @@ final class TimelineEditingTests: XCTestCase {
             8
         )
     }
+
+    // MARK: - 空間を詰める削除（DeleteItemSpace 系）
+
+    /// DeleteItemSpace: 詰める量は「前に終わるアイテムの終了位置」から
+    /// 「次のアイテムの開始位置」までの間隔。他レイヤーは動かない。
+    func testDeleteItemSpaceBasic() {
+        let timeline = Timeline()
+        let before = makeItem(frame: 0, length: 100, layer: 0)
+        let after = makeItem(frame: 200, length: 50, layer: 0)
+        let last = makeItem(frame: 400, length: 50, layer: 0)
+        let otherLayer = makeItem(frame: 200, length: 50, layer: 1)
+        timeline.items = [before, after, last, otherLayer]
+        timeline.deleteItemSpace(layer: 0, frame: 120)
+        XCTAssertEqual(before.frame, 0)
+        XCTAssertEqual(after.frame, 100)
+        XCTAssertEqual(last.frame, 300)
+        XCTAssertEqual(otherLayer.frame, 200)
+        XCTAssertEqual(timeline.length, 350)
+    }
+
+    /// DeleteItemSpace: frame が全アイテムより前なら、先頭アイテムの
+    /// 開始位置までの間隔が詰まる（起点は既定の 0）。
+    func testDeleteItemSpaceBeforeAllItems() {
+        let timeline = Timeline()
+        let first = makeItem(frame: 100, length: 50, layer: 0)
+        let second = makeItem(frame: 200, length: 50, layer: 0)
+        timeline.items = [first, second]
+        timeline.deleteItemSpace(layer: 0, frame: 0)
+        XCTAssertEqual(first.frame, 0)
+        XCTAssertEqual(second.frame, 100)
+    }
+
+    /// DeleteItemSpace: 後続アイテムが無ければ何もしない
+    /// （本家は例外になる前提条件外の呼び出しへの防御）。
+    func testDeleteItemSpaceWithoutFollowingItem() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 0, length: 100, layer: 0)
+        timeline.items = [item]
+        timeline.deleteItemSpace(layer: 0, frame: 200)
+        XCTAssertEqual(item.frame, 0)
+    }
+
+    /// DeleteTimelineSpace: 全レイヤーの後続が詰まり、詰めた量が返る。
+    /// 判定は開始位置だけに基づく（frame 以前に始まるアイテムは動かない）。
+    func testDeleteTimelineSpace() {
+        let timeline = Timeline()
+        let before = makeItem(frame: 0, length: 100, layer: 0)
+        let after = makeItem(frame: 200, length: 50, layer: 1)
+        let last = makeItem(frame: 400, length: 50, layer: 0)
+        timeline.items = [before, after, last]
+        let shift = timeline.deleteTimelineSpace(frame: 150)
+        XCTAssertEqual(shift, 50)
+        XCTAssertEqual(before.frame, 0)
+        XCTAssertEqual(after.frame, 150)
+        XCTAssertEqual(last.frame, 350)
+        // frame 以後に始まるアイテムが無ければ 0 で何もしない
+        XCTAssertEqual(timeline.deleteTimelineSpace(frame: 1000), 0)
+        XCTAssertEqual(last.frame, 350)
+    }
+
+    /// DeleteAllLayerSpaces: 先行空間も含めて全ての間隔が詰まる。
+    func testDeleteAllLayerSpaces() {
+        let timeline = Timeline()
+        let first = makeItem(frame: 50, length: 50, layer: 0)
+        let second = makeItem(frame: 200, length: 50, layer: 0)
+        let third = makeItem(frame: 300, length: 100, layer: 0)
+        let otherLayer = makeItem(frame: 500, length: 50, layer: 1)
+        timeline.items = [first, second, third, otherLayer]
+        timeline.deleteAllLayerSpaces(layer: 0)
+        XCTAssertEqual(first.frame, 0)
+        XCTAssertEqual(second.frame, 50)
+        XCTAssertEqual(third.frame, 100)
+        XCTAssertEqual(otherLayer.frame, 500)
+    }
+
+    /// DeleteAllTimelineSpaces: 被覆の判定はレイヤーをまたぐ
+    /// （全アイテムをフレーム順に処理し、終了位置の最大で判定する）。
+    func testDeleteAllTimelineSpacesAcrossLayers() {
+        let timeline = Timeline()
+        let first = makeItem(frame: 100, length: 50, layer: 0)
+        let second = makeItem(frame: 150, length: 50, layer: 1)
+        let third = makeItem(frame: 400, length: 50, layer: 0)
+        timeline.items = [first, second, third]
+        timeline.deleteAllTimelineSpaces()
+        // first は 0 へ。second は first の終了 (50) に接する位置 50 へ。
+        // third は被覆最大 100 まで詰まって 100 へ。
+        XCTAssertEqual(first.frame, 0)
+        XCTAssertEqual(second.frame, 50)
+        XCTAssertEqual(third.frame, 100)
+    }
+
+    /// DeleteIsolatedRanges: 他アイテムが無い選択範囲は丸ごと削除される。
+    func testDeleteIsolatedRangesRemovesIsolatedSelection() {
+        let timeline = Timeline()
+        let first = makeItem(frame: 100, length: 50, layer: 0)
+        let second = makeItem(frame: 200, length: 50, layer: 0)
+        timeline.items = [first, second]
+        timeline.selectItems([first, second])
+        timeline.deleteIsolatedRanges()
+        XCTAssertTrue(timeline.items.isEmpty)
+        XCTAssertTrue(timeline.selectedItems.isEmpty)
+    }
+
+    /// DeleteIsolatedRanges: 他アイテムに覆われた部分は残り、
+    /// 覆われていない前後の部分だけが削除され、残りは前へ詰まる。
+    func testDeleteIsolatedRangesKeepsCoveredPart() throws {
+        let timeline = Timeline()
+        let selected = makeItem(frame: 100, length: 200, layer: 0)
+        let cover = makeItem(frame: 150, length: 100, layer: 1)
+        timeline.items = [selected, cover]
+        timeline.selectItems([selected])
+        timeline.deleteIsolatedRanges()
+        // 選択アイテムは 150...250 の部分だけが残り、カバー側と一緒に
+        // 100 へ詰まる
+        XCTAssertEqual(timeline.items.count, 2)
+        XCTAssertEqual(cover.frame, 100)
+        let remaining = try XCTUnwrap(timeline.selectedItems.first)
+        XCTAssertEqual(remaining.frame, 100)
+        XCTAssertEqual(remaining.length, 100)
+        XCTAssertEqual(remaining.layer, 0)
+    }
+
+    /// DeleteIsolatedRanges: 選択が空なら何もしない。
+    func testDeleteIsolatedRangesWithoutSelection() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 100, length: 50, layer: 0)
+        timeline.items = [item]
+        timeline.deleteIsolatedRanges()
+        XCTAssertEqual(timeline.items.count, 1)
+        XCTAssertEqual(item.frame, 100)
+    }
 }

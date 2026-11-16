@@ -419,3 +419,28 @@ public enum NeighborAffectMode: HonkeEnum {
         }
     }
 }
+
+/// 図形パラメータのサイズ指定方法。本家 `SizeMode`
+/// （`YukkuriMovieMaker.Project.Items.SizeMode`、SizeAspect = 0,
+/// WidthHeight = 1）。
+public enum SizeMode: HonkeEnum {
+    case sizeAspect   // SizeAspect = 0
+    case widthHeight  // WidthHeight = 1
+    case unknown(String)
+
+    public var honkeName: String {
+        switch self {
+        case .sizeAspect: return "SizeAspect"
+        case .widthHeight: return "WidthHeight"
+        case .unknown(let name): return name
+        }
+    }
+
+    public init(honkeName: String) {
+        switch honkeName {
+        case "SizeAspect": self = .sizeAspect
+        case "WidthHeight": self = .widthHeight
+        default: self = .unknown(honkeName)
+        }
+    }
+}
