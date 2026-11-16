@@ -1,6 +1,14 @@
 # 引継書 — 次の作業者はここから読む
 
-更新: **2026-11-17**。現状: モデル層＋.ymmp 互換層（MAC-0005）＋編集操作・モデル残件（MAC-0007・0008）＋描画層の土台（MAC-0009、`Sources/YMM4Core/Rendering/`）＋合成の実行部（MAC-0010）＋映像アイテム範囲の是正（MAC-0011）まで実装済み。デバッグ用アプリの殻（MAC-0006、`Apps/DebugApp/`）は本人の Mac でビルド・実ファイル読み込み・往復まで確認完了。テストは Linux 上で全194件合格。
+更新: **2026-11-17**。現状: モデル層＋.ymmp 互換層（MAC-0005）＋編集操作・モデル残件（MAC-0007・0008）＋描画層の土台（MAC-0009、`Sources/YMM4Core/Rendering/`）＋合成の実行部（MAC-0010）＋映像アイテム範囲の是正（MAC-0011）＋GPU 実行器と基本 Source（MAC-0012、`Sources/YMM4GPU/`）まで実装済み。デバッグ用アプリの殻（MAC-0006、`Apps/DebugApp/`）は本人の Mac でビルド・実ファイル読み込み・往復まで確認完了し、合成プレビュー欄を追加した。テストは Linux 上で全194件合格。
+
+## 2026-11-17 更新 — GPU 実行器と基本 Source（MAC-0012）
+
+- 新規ターゲット `Sources/YMM4GPU/`（Metal）に GPU 実行器を実装した。全ソース `#if os(macOS)` で、Linux では空モジュール（`swift test` は従来どおり全194件合格）。型は: MetalGraphicsDevices（MTLDevice 共有、パイプライン・サンプラ・1×1 透明テクスチャの即時生成、ImageReference の登録表）、MetalGraphicsContext（消費者ごとの文脈。自分の MTLCommandQueue を所有し RenderTargetFactory を兼ねる。第2章の契約どおりデバイスは共有・文脈は消費者ごとに新規）、MetalImage（ImageReference の実体 = MTLTexture＋平面座標の境界＋変換＋不透明度＋補間方式。属性は BGRA 8bit / Premultiplied）、MetalRenderTarget（RenderTarget の実物。画面サイズのテクスチャへ畳み込み、close() で同期完了）、MetalDrawingEffect（DrawingEffect の実物。ズーム×ワールド×透視の変換と不透明度を実体へ記録する遅延評価。PlaneSplitGeometryProviding も実装）、MetalImageSource（ImageIO デコード、失敗時は 1×1 透明）、MetalShapeSource（RectangleShapeParameter＋単色ブラシを SDF で描画。本家の実現化規則の可視結果を再現）、MetalEmptySource（未対応種別の透明 Source）、MetalSourceProvider（種別→Source の供給元）。
+- デバッグアプリに合成プレビュー欄を追加した（`Apps/DebugApp/Sources/YMM4MacDebug/PreviewBox.swift` が新規、ProjectView に画像表示＋フレームスライダ）。開いた .ymmp の現在フレームを TimelineComposer ＋ Metal で合成し、読み戻した CGImage を表示する。既存の診断・往復チェックは不変。
+- 検証（本人の Mac、SSH 経由）: ルートパッケージとデバッグアプリの `swift build` 成功（警告なし）。ヘッドレスハーネスで sample.ymmp のフレーム 0 / 10 / 45 の合成が例外なく完了し、図形（100×100 白、中心が不透明白）と画像（/tmp/image.png 64×48 赤、中心が不透明赤）のピクセルを読み戻しで確認した。**プレビュー欄の画面上での目視は未実施**（次に本人がアプリを起動したときの確認対象）。実ファイルの素材は Mac 上に無いため、実ファイルを開いた場合のプレビューは素材不在で透明になる見込み。
+- 差分・未実装（台帳 MAC-0012 に記録）: 描画先は無限平面ではなく画面サイズへ畳み込む（画面外の中間結果は段階ごとに切り取られる）、コマンドは close() で同期実行、BlendMode の特殊合成は通常合成に倒す（差し替え点）、図形テクスチャ上限 4096、画像は ImageIO で読める形式のみ。テキスト Source・個別エフェクト・動画デコード・FrameBuffer / Scene / Tachie の実 Source・アルファマスク実物・BSP 本体・先読み・キャッシュ・TimelineItemRects は引き続き未実装（該当アイテムは透明。合成グループの子は従来どおり描かれる）。
+- ローカル作業のみで push はしていない（push は親側の検証後）。
 
 ## 2026-11-17 更新 — 映像アイテム範囲の是正（MAC-0011）
 
@@ -56,7 +64,7 @@
 - 新しい開発リポジトリの作成を確認（当初Private、現在はPublic）。
 - READMEと開発ルール・As-built・詳細実装記録の最初の構成を設置。
 - 本家解析や要件は解析repoに残し、相互参照するようにした。
-- **UI、動画デコード、GPU合成、音声、書き出しの実装はまだない。**
+- **製品 UI、動画デコード、音声、書き出しの実装はまだない。** GPU 合成は MAC-0012 で基礎（Metal 実行器＋画像・図形 Source）が入ったが、テキスト・エフェクト・動画等の実 Source は未実装。
 
 ## 次にすること
 

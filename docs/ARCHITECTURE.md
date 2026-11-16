@@ -1,6 +1,6 @@
 # ymm4mac の実装済みアーキテクチャ
 
-更新: 2026-11-17。状態: **モデル層と .ymmp 互換層に加え、描画層の土台と合成の実行部（GPU に触れない合成ロジック）まで実装済み。GPU 実行・音声・UI は未実装。**
+更新: 2026-11-17。状態: **モデル層と .ymmp 互換層に加え、描画層の土台と合成の実行部、GPU 実行器（Metal）と基本 Source（画像・図形）まで実装済み。テキスト描画・個別エフェクト・動画デコード・音声・製品 UI は未実装。**
 
 この文書は **実装されている構造のみ記載するAs-built**。計画・仮説は[解析側のMac設計案](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/02-MAC-DESIGN-PROPOSAL.md)に記載。
 
@@ -9,7 +9,7 @@
     ymm4mac/
       README.md                開発目的・関連資料
       AGENTS.md                作業者向けの規則
-      Package.swift            Swift パッケージ定義（YMM4Core ライブラリ + テスト）
+      Package.swift            Swift パッケージ定義（YMM4Core / YMM4GPU ライブラリ + テスト）
       Sources/YMM4Core/        モデル層（Foundation のみ）
         Color.swift            ARGB 8bit の色値
         FrameTime.swift        フレーム⇔時間換算
@@ -65,6 +65,19 @@
                                TimelineGroupResolver（グループ階層の解決）、
                                TimelineComposer（資源管理・親エフェクト再構築・
                                FrameBuffer 境界・合成の統合）
+      Sources/YMM4GPU/         GPU 実行層（Metal。全ソース #if os(macOS)、Linux では空）
+        MetalGraphics.swift    MetalGraphicsDevices（デバイス共有・登録表・共有資源）、
+                               MetalImage（ImageReference の実体）、
+                               MetalGraphicsContext（消費者ごとの文脈・描画先工場）、
+                               シェーダ一式、CGImage 読み戻し
+        MetalRenderTarget.swift RenderTarget の Metal 実装（画面サイズのテクスチャ、
+                               記録の畳み込みと close() での同期実行）
+        MetalDrawingEffect.swift DrawingEffect の Metal 実装（変換の遅延記録、
+                               PlaneSplitGeometryProviding を兼ねる）
+        MetalSources.swift     MetalImageSource（画像）、MetalShapeSource（図形）、
+                               MetalEmptySource（未対応種別の透明）、MetalSourceProvider
+      Apps/DebugApp/           検証用デバッグアプリ（読み込み診断・往復チェック・
+                               合成プレビュー。製品 UI ではない）
       Tests/YMM4CoreTests/     上記のユニットテスト（194件）
       docs/ARCHITECTURE.md     本文書
       docs/IMPLEMENTATION_LOG.md
@@ -79,9 +92,10 @@
 - 編集: `Timeline` の編集操作（TimelineEditing.swift）がアイテム（参照型）を直接書き換える。本家の意味論どおり、前処理は入力を書き換え、原子的保証はコミット段階のみ。`Timeline.Length` / `MaxLayer` はキャッシュとして保守される。
 - 保存: `YmmpCodec.encode` がモデルを追加フィールドごと JSON 化（1行）→ 一時ファイルへ書き出し → 再読込で検証 → 本ファイルへコピー。
 - アイテムの複製は JSON 往復（本家 GetClone と同じ経路）で、`BaseItem.cloned()` が担う。分割はこの複製を左右に作ってから行う。
-- 描画（実行部まで）: `TimelineComposer.update` が `ItemPicker.pickItems` でフレーム時点の対象アイテムを選定し、資源管理（範囲外の破棄・不足分の生成）と親エフェクトの再構築（顔・声解決→グループ解決）を行う → FrameBuffer 以外の各 `EffectedItemSource` が Source を更新し、`EffectedOutput` の連鎖（処理器の位置基準の再利用・差し替え）＋アイテム変換で DrawDescription を確定 → `DrawOrdering.ordered` が3キーで順序付け → `DrawSegmentBuilder` のセグメント列に従い、抽象描画先（RenderTarget）へ合成する。FrameBuffer アイテムでは描画先を閉じて Source へ渡し、新しい描画先で合成を続ける。Source・処理器・描画先の実物（素材デコード・GPU 実行）は未実装であり、現時点では契約と実行手順のみが偽実装で検証されている。
+- 描画（実行部まで）: `TimelineComposer.update` が `ItemPicker.pickItems` でフレーム時点の対象アイテムを選定し、資源管理（範囲外の破棄・不足分の生成）と親エフェクトの再構築（顔・声解決→グループ解決）を行う → FrameBuffer 以外の各 `EffectedItemSource` が Source を更新し、`EffectedOutput` の連鎖（処理器の位置基準の再利用・差し替え）＋アイテム変換で DrawDescription を確定 → `DrawOrdering.ordered` が3キーで順序付け → `DrawSegmentBuilder` のセグメント列に従い、抽象描画先（RenderTarget）へ合成する。FrameBuffer アイテムでは描画先を閉じて Source へ渡し、新しい描画先で合成を続ける。
+- 描画（GPU 実行）: 描画先・DrawingEffect・基本 Source の実物は `Sources/YMM4GPU/`（Metal）。`MetalGraphicsDevices` がデバイスと ImageReference の登録表を所有し、`MetalGraphicsContext`（消費者ごとに生成）が描画先を供給する。DrawingEffect は中間テクスチャを作らず、入力実体へ変換（ズーム×ワールド×透視）と不透明度を記録した実体を出力として登録する（遅延評価）。描画先は画面サイズのテクスチャを実体とし、記録した描画を close() で同期実行する。Source の実物は画像（ImageIO デコード）と図形（SDF 描画）のみで、未対応種別は透明な空 Source になる。デバッグアプリのプレビュー欄はこの経路で合成し、最終テクスチャを CGImage として読み戻して表示する。
 
-**GPU 実行・音声・書き出し・UI は未実装。** 詳細は実装台帳 MAC-0001〜MAC-0010。
+**テキスト描画・個別エフェクト・動画デコード・音声・書き出し・製品 UI は未実装。** 詳細は実装台帳 MAC-0001〜MAC-0012。
 
 ## 実装後の書き方
 
