@@ -137,6 +137,8 @@
 
 **次の担当へ。** 本人の Mac で初回ビルドを通し、実物の .ymmp が手元にあれば開いて読み込み診断と往復チェックの結果を記録すること。本家を動かせる環境は現時点でないため（2026-11-16 本人確認）、フィクスチャ採取による VERIFIED 化は環境が用意されるまで到達不可であり、その間は IMPLEMENTED の格付けを維持する。
 
+**MAC-0006 追補（2026-11-17）— 初回ビルド失敗と修正。** 本人の Mac で `10bf59c`（main）に対し `Apps/DebugApp` で `swift run` を実行し、初回ビルドが失敗した。エラーは `ContentView.swift:21:28` の `'Animation' is ambiguous for type lookup in this context` と、それに伴う34行目の二次的エラー。原因は `YMM4Core.Animation` と `SwiftUI.Animation` の名前衝突（この VM では SwiftUI をビルドできないため事前に検出できなかった）。修正: `ContentView.swift` の型宣言とイニシャライザ呼び出しを `YMM4Core.Animation` と完全修飾した（対象はこの2箇所のみ。`ProjectView.swift` は型名を書いていないため対象外）。再ビルドの結果は本人の再実行待ち。
+
 #### MAC-0007 — 残りの編集操作（DeleteAndMove / 長さ変更 / スナップ）（IMPLEMENTED）
 
 **何を実装したか。** MAC-0004 で未実装だった編集操作3群を、本家 `Timeline`（`YukkuriMovieMaker.Project/Timeline.cs`）の実コードの意味論どおりに実装した。(1) `DeleteAndMove` / `DeleteAndMoveAll`（削除して後続を詰める。戻り値は新しい現在フレーム）。(2) アイテム長変更の一族: 入口 `ChangeSelectedAndGroupedItemsLength`（選択＋グループへ一括適用）、伸縮可能量 `GetExpandableDeltaLength`、開始側変更 `ChangeItemsStart`、終了側変更 `ChangeItemsEnd`。隣接アイテムへの影響モード `NeighborAffectMode`（Default / None / Stretch）は `YukkuriMovieMaker.Settings/NeighborAffectMode.cs` の定義どおり列挙型として追加した。(3) スナップ吸着量 `GetSnappedDelta`。
