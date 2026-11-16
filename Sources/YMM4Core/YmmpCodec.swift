@@ -59,7 +59,7 @@ public enum YmmpCodec {
         if trimmed.hasPrefix("<") {
             throw YmmpError.legacyXMLFormat
         }
-        var parser = JSONParser(text: text)
+        var parser = JSONParser(text: String(trimmed))
         let root: JSONValue
         do {
             root = try parser.parse()
@@ -129,8 +129,17 @@ public enum YmmpCodec {
     }
 
     /// ファイルからプロジェクトを読み込む。
+    ///
+    /// 本家（StreamReader + Newtonsoft）は BOM から文字コードを判定する
+    /// ため、UTF-16（LE / BE）の BOM があればそちらで復号する。
+    /// 既定は UTF-8（BOM の除去は decode 側で行う）。
     public static func load(fromFile path: String) throws -> (project: Project, diagnostics: YmmpLoadDiagnostics) {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let bytes = [UInt8](data.prefix(2))
+        if bytes == [0xFF, 0xFE] || bytes == [0xFE, 0xFF],
+           let text = String(data: data, encoding: .utf16) {
+            return try decode(text)
+        }
         return try decode(String(decoding: data, as: UTF8.self))
     }
 

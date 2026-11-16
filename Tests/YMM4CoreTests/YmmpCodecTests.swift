@@ -182,6 +182,27 @@ final class YmmpCodecTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: directory)
     }
 
+    /// UTF-8 BOM 付きのファイルは本家（Newtonsoft）では読めるため、
+    /// BOM を除去して読み込む（2026-11-17 の実ファイル読み込み失敗への対応）。
+    func testLoadWithUTF8BOM() throws {
+        let json = "{\"Timelines\":[],\"Characters\":[]}"
+        let (project, _) = try YmmpCodec.decode("\u{FEFF}" + json)
+        // Timelines が空の場合は既定のタイムラインが1件補われる（従来仕様）
+        XCTAssertEqual(project.timelines.count, 1)
+    }
+
+    /// UTF-16（BOM 付き）のファイルも、本家の StreamReader と同様に
+    /// BOM から判定して読み込む。
+    func testLoadUTF16File() throws {
+        let json = "{\"Timelines\":[],\"Characters\":[]}"
+        let data = try XCTUnwrap(json.data(using: .utf16))
+        let path = NSTemporaryDirectory() + "ymm4mac-utf16-test-\(UUID().uuidString).ymmp"
+        try data.write(to: URL(fileURLWithPath: path))
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let (project, _) = try YmmpCodec.load(fromFile: path)
+        XCTAssertEqual(project.timelines.count, 1)
+    }
+
     // MARK: - 本家形式の読み込み
 
     /// 本家形式を模した手書きの最小 .ymmp（$type 付き、1行 JSON）。
