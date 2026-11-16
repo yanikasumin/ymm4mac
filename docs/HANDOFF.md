@@ -1,6 +1,14 @@
 # 引継書 — 次の作業者はここから読む
 
-更新: **2026-11-17**。現状: モデル層＋.ymmp 互換層（MAC-0005）＋編集操作・モデル残件（MAC-0007・0008）＋描画層の土台（MAC-0009、`Sources/YMM4Core/Rendering/`）＋合成の実行部（MAC-0010）＋映像アイテム範囲の是正（MAC-0011）＋GPU 実行器と基本 Source（MAC-0012、`Sources/YMM4GPU/`）まで実装済み。デバッグ用アプリの殻（MAC-0006、`Apps/DebugApp/`）は本人の Mac でビルド・実ファイル読み込み・往復まで確認完了し、合成プレビュー欄を追加した。テストは Linux 上で全194件合格。
+更新: **2026-11-17**。現状: モデル層＋.ymmp 互換層（MAC-0005）＋編集操作・モデル残件（MAC-0007・0008）＋描画層の土台（MAC-0009、`Sources/YMM4Core/Rendering/`）＋合成の実行部（MAC-0010）＋映像アイテム範囲の是正（MAC-0011）＋GPU 実行器と基本 Source（MAC-0012、`Sources/YMM4GPU/`）＋音声パイプラインの芯（MAC-0013、`Sources/YMM4Core/Audio/`）まで実装済み。デバッグ用アプリの殻（MAC-0006、`Apps/DebugApp/`）は本人の Mac でビルド・実ファイル読み込み・往復まで確認完了し、合成プレビュー欄を追加した。テストは Linux 上で全214件合格。
+
+## 2026-11-17 更新 — 音声パイプラインの芯（MAC-0013）
+
+- `Sources/YMM4Core/Audio/` に音声パイプラインの芯を実装した（Foundation のみ、Linux でテスト可能）。実装は分離ツリーで先行し、ファイルのコピーで統合した（既存ファイルの変更なし）。型は: AudioStream（本家 AudioStreamBase の意味論 = float32 / 2ch 固定プルモデル、Position はインターリーブ済みサンプル数で内部読み取り分だけ進む、TimeToPosition = ticks × 2 × Hz / 10⁷ で偶数切り捨て、バッファのゼロ初期化は呼び出し側の責務）と InputFrameWindow（範囲外は無音、終端を記録）、PCMProvider / PCMProviderFactory（デコードの差し替え点。本家 IAudioFileSource 相当）と InMemoryPCMProvider、FileAudioStream（provider が nil なら 48000 Hz・長さ 0 の無音）、EffectedAudioItemSource（本家のチェーン順序を再現: NegativeSeekable → 可変レート時 VariablePlaybackRate／定速時 Reverse・Loop・ContentOffset → Echo → 条件付き Resampler → PlaybackRate → VoiceItem のみ Upsampler → タイムライン Hz への Resampler → ユーザー音声エフェクト → VolumePan → Resampler）、処理器群（NegativeSeekable、ContentOffset、Loop、Reverse = 1秒ブロック反転、Echo = フィードバックで反復回数 min(50, ceil(log 0.01 / log decay))、VolumePan = サンプル対ごとに Animation 評価・線形パン法則、Resampler、PlaybackRate、VariablePlaybackRate、Upsampler）、TimelineAudioMixer（読み取り範囲と交差するリソースだけ開閉、レイヤー音量 LayerSettings.Volumes / 100、float 加算ミックス、リミッターなし = 本家どおり）と音声グループバス（AudioGroupResolver がグループ境界で区間分割して DirectGroups と Owner を算出し、完全所有の子は GroupAudioBusSource 経由でのみ鳴らして二重加算を避ける）。詳細と本家との差分は IMPLEMENTATION_LOG の MAC-0013。
+- AudioItemProperties プロトコルには AudioItem / VideoItem / SceneItem / VoiceItem が適合する。VoiceItem の音声フェードは字幕側の fadeIn と名前が衝突するため `audioFadeIn` / `audioFadeOut` として公開した。
+- 未実装・差し替え点のままのもの: デコードの実体（PCMProvider の実物。メディア読み込みの段で扱う）、ユーザー音声エフェクト約40種（AudioEffectProvider の差し替え点のみ。既定は空）、SOLA ピッチ補正（リサンプリングへフォールバック）、Upsampler の Linear / Cubic 以外のカーネル、再生（プレビュー）・書き出しへの接続。音声の実出力はまだどこにもつながっていない。
+- 未解決: Resampler の本家 MFT との等価性は未検証（線形補間を採用し、長さ・シークの変換式のみ本家一致）。Upsampler の本家既定設定値も未検証。シークは ticks 経由で精度が落ちる（本家も同じ）。本家の並列ミックスは逐次加算に置換（結果は同一）。
+- 検証: `~/workspace/tools/swift-6.1.2/usr/bin/swift test`（リポジトリルート）で全214件合格（従来194＋新規20、AudioPipelineTests）、警告なし。本家実機との比較は環境が無いため未実施で IMPLEMENTED 止まり。ローカル作業のみで push はしていない（push は親側の検証後）。
 
 ## 2026-11-17 更新 — GPU 実行器と基本 Source（MAC-0012）
 
@@ -64,7 +72,7 @@
 - 新しい開発リポジトリの作成を確認（当初Private、現在はPublic）。
 - READMEと開発ルール・As-built・詳細実装記録の最初の構成を設置。
 - 本家解析や要件は解析repoに残し、相互参照するようにした。
-- **製品 UI、動画デコード、音声、書き出しの実装はまだない。** GPU 合成は MAC-0012 で基礎（Metal 実行器＋画像・図形 Source）が入ったが、テキスト・エフェクト・動画等の実 Source は未実装。
+- **製品 UI、動画デコード、書き出しの実装はまだない。** GPU 合成は MAC-0012 で基礎（Metal 実行器＋画像・図形 Source）が入ったが、テキスト・エフェクト・動画等の実 Source は未実装。音声は MAC-0013 でパイプラインの芯（ストリーム基盤・処理器連鎖・ミックス・グループバス）が入ったが、デコード実体・ユーザーエフェクト・再生／書き出し接続は未実装。
 
 ## 次にすること
 
