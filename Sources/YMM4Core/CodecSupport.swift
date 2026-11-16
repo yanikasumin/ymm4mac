@@ -116,6 +116,30 @@ enum CodecSupport {
         }
     }
 
+    /// 旧互換プロパティ（set 専用）として保存された `Animation` を読み込む。
+    ///
+    /// 本家では `AnimationJsonConverter` が範囲 (int.MinValue, int.MaxValue)
+    /// で読み込むため、実質的にクランプなしの値として取り出す。取り出した
+    /// 内容は `copyAnimationContents` で本来の保持先へ写す。
+    static func decodeLegacyAnimation(_ value: JSONValue) -> Animation {
+        var animation = Animation(
+            defaultValue: 0,
+            minValue: -2_147_483_648,
+            maxValue: 2_147_483_647
+        )
+        decodeAnimation(value, into: &animation)
+        return animation
+    }
+
+    /// 本家 `Animation.CopyFrom` の範囲（値列・種類・Span・ベジェ）だけを
+    /// 写す。写し先の定義値（既定値・範囲）は保持先のものが残る。
+    static func copyAnimationContents(from source: Animation, into target: inout Animation) {
+        target.values = source.values
+        target.animationType = source.animationType
+        target.span = source.span
+        target.bezier = source.bezier
+    }
+
     static func encodeAnimation(_ animation: Animation) -> JSONValue {
         .object([
             (key: "Values", value: .array(animation.values.map {

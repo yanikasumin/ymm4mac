@@ -77,3 +77,10 @@
 - テスト実行: VM 上の Swift（`~/workspace/tools/swift-6.1.2/usr/bin/swift test`）で全112件合格（従来87件＋新規25件、すべて TimelineEditingTests）。警告・エラーなし。macOS でのビルドは未実施（Foundation のみ）。
 - 観測した本家の癖（差分ではなく再現済み）: DeleteAndMove の現在フレームは「対象の開始位置まで戻す」式で DeleteAndMoveAll の式と非対称。ChangeItemsEnd の Stretch では ContentOffset の丸めが開始側切り取り時のみあり、押し出し時は丸めなし。DeleteAndMoveAll では削除区間を覆っているアイテム自身も詰めの対象になる。
 - 次の作業: 変更なし（本人の Mac でのデバッグ用アプリ初回ビルド確認、描画層の実装着手）。モデル層で残る未実装は Character の型付き範囲の拡張と ShapeParameter 既定インスタンスのプロパティ一式。
+
+## 2026-11-16 更新 — モデル層の残件解消（MAC-0008、未コミット）
+
+- MAC-0007 時点で残っていたモデル層の未実装3件を解消した: (1) 空間を詰める削除の一族（`deleteItemSpace` / `deleteTimelineSpace` / `deleteAllLayerSpaces` / `deleteAllTimelineSpaces` / `deleteIsolatedRanges`、TimelineEditing.swift）。(2) Character の全プロパティ型付き化（保存対象86件＋旧互換2件。プラグイン型は PreservedObject 生保持、TachieType は型名文字列、KeyGesture / VoiceDescription は構造体。Character.swift）。(3) ShapeParameter 既定インスタンスの完全化（新規 ShapeParameter.swift: RectangleShapeParameter と Brush / SolidColorBrushParameter を型付き化、未知 $type は生保持。ShapeItem / EffectItem の旧互換キー転送も実装）。詳細と意図的な差分・未解決事項は実装台帳 MAC-0008。
+- テスト実行: VM 上の Swift（`~/workspace/tools/swift-6.1.2/usr/bin/swift test`、.build を消して再実行）で全127件合格（従来112件＋新規15件）、警告・エラーなし。macOS でのビルドは未実施（Foundation のみ）。
+- 観測した本家の癖（差分ではなく再現済み）: StrokeThickness の既定値は 4000。DeleteAllTimelineSpaces の被覆判定はレイヤーをまたぐ。DeleteIsolatedRanges の詰めには to（選択範囲の終端）の上限がある。ShapeParameter / Brush の既定プラグインは `[PrimaryPlugin]` 属性で決まる（QuadrilateralShapePlugin / SolidColorBrushPlugin）。
+- 次の作業: モデル層の未実装は解消した。本人の Mac でのデバッグ用アプリ初回ビルド確認、実物 .ymmp での読み込み確認、描画層（第1〜3章の技術仕様）の実装着手が残る。
