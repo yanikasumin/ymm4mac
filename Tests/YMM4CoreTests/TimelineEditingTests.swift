@@ -275,4 +275,434 @@ final class TimelineEditingTests: XCTestCase {
         XCTAssertEqual(timeline.length, 50)
         XCTAssertEqual(timeline.maxLayer, 0)
     }
+
+    // MARK: - DeleteAndMove
+
+    /// DeleteAndMove は同じレイヤーの後続だけを詰める。
+    func testDeleteAndMoveShiftsSameLayerOnly() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 0, length: 10, layer: 0)
+        let b = makeItem(frame: 20, length: 10, layer: 0)
+        let c = makeItem(frame: 20, length: 10, layer: 1)
+        timeline.items = [a, b, c]
+        timeline.selectItems([a])
+        timeline.deleteAndMove()
+        XCTAssertEqual(timeline.items.count, 2)
+        XCTAssertEqual(b.frame, 10)
+        XCTAssertEqual(c.frame, 20)
+    }
+
+    /// DeleteAndMove の現在フレームは「対象の開始位置まで戻す」式
+    /// （本家の実コードどおり。DeleteAndMoveAll の式とは非対称）。
+    func testDeleteAndMovePlayheadGoesToDeletedStart() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 10, length: 10, layer: 0)
+        timeline.items = [a]
+        timeline.selectItems([a])
+        timeline.currentFrame = 25
+        // 25 - max(25 - 10, 0) = 10（区間の長さだけ引くのではない）
+        XCTAssertEqual(timeline.deleteAndMove(), 10)
+
+        let timeline2 = Timeline()
+        let b = makeItem(frame: 10, length: 10, layer: 0)
+        timeline2.items = [b]
+        timeline2.selectItems([b])
+        timeline2.currentFrame = 5
+        // 対象より手前にある場合は動かない
+        XCTAssertEqual(timeline2.deleteAndMove(), 5)
+    }
+
+    /// 同じレイヤーで複数選択すると、詰めが累積する。
+    func testDeleteAndMoveMultipleSelectionAccumulates() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 0, length: 10, layer: 0)
+        let b = makeItem(frame: 20, length: 10, layer: 0)
+        let c = makeItem(frame: 50, length: 10, layer: 0)
+        timeline.items = [a, b, c]
+        timeline.selectItems([a, b])
+        timeline.deleteAndMove()
+        XCTAssertEqual(timeline.items.count, 1)
+        // A の削除で 40、B（10へ移動済み）の削除でさらに詰めて 30
+        XCTAssertEqual(c.frame, 30)
+    }
+
+    /// グループはまとめて削除され、各レイヤーで詰めが起きる。
+    func testDeleteAndMoveGroupedItems() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 0, length: 10, layer: 0, group: 1)
+        let b = makeItem(frame: 0, length: 20, layer: 1, group: 1)
+        let c = makeItem(frame: 30, length: 10, layer: 0)
+        let d = makeItem(frame: 30, length: 10, layer: 1)
+        timeline.items = [a, b, c, d]
+        timeline.selectItems([a])
+        timeline.deleteAndMove()
+        XCTAssertEqual(timeline.items.count, 2)
+        XCTAssertEqual(c.frame, 20)
+        XCTAssertEqual(d.frame, 10)
+    }
+
+    /// 選択が無い場合と空タイムラインでは現在フレームがそのまま返る。
+    func testDeleteAndMoveWithoutSelection() {
+        let timeline = Timeline()
+        timeline.currentFrame = 7
+        XCTAssertEqual(timeline.deleteAndMove(), 7)
+        let a = makeItem(frame: 0, length: 10, layer: 0)
+        timeline.items = [a]
+        XCTAssertEqual(timeline.deleteAndMove(), 7)
+        XCTAssertEqual(timeline.items.count, 1)
+        XCTAssertEqual(timeline.deleteAndMoveAll(), 7)
+        XCTAssertEqual(timeline.items.count, 1)
+    }
+
+    // MARK: - DeleteAndMoveAll
+
+    /// DeleteAndMoveAll は全レイヤーの後続を詰め、現在フレームは
+    /// 空き区間と重なる分だけ戻る。
+    func testDeleteAndMoveAllShiftsAllLayers() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 0, length: 10, layer: 0)
+        let b = makeItem(frame: 20, length: 10, layer: 0)
+        let c = makeItem(frame: 20, length: 10, layer: 1)
+        timeline.items = [a, b, c]
+        timeline.selectItems([a])
+        timeline.currentFrame = 25
+        XCTAssertEqual(timeline.deleteAndMoveAll(), 15)
+        XCTAssertEqual(b.frame, 10)
+        XCTAssertEqual(c.frame, 10)
+    }
+
+    /// 削除区間が他レイヤーのアイテムに覆われている部分は詰めない。
+    func testDeleteAndMoveAllCoveredSpaceIsNotShifted() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 0, length: 10, layer: 0)
+        let cover = makeItem(frame: 0, length: 30, layer: 1)
+        let b = makeItem(frame: 40, length: 10, layer: 0)
+        timeline.items = [a, cover, b]
+        timeline.selectItems([a])
+        timeline.currentFrame = 25
+        // 区間 (0, 10) は cover に完全に覆われるため空き区間は無く、
+        // 何も詰まらず現在フレームも動かない
+        XCTAssertEqual(timeline.deleteAndMoveAll(), 25)
+        XCTAssertEqual(b.frame, 40)
+        XCTAssertEqual(timeline.items.count, 2)
+    }
+
+    /// 部分的に覆われた場合は、覆われていない部分だけが詰まる。
+    /// 覆っているアイテム自体も空き区間の後ろにあれば詰めの対象になる
+    /// （本家は Items 全体へ適用する）。
+    func testDeleteAndMoveAllPartiallyCoveredSpace() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 0, length: 10, layer: 0)
+        let cover = makeItem(frame: 5, length: 10, layer: 1)
+        let b = makeItem(frame: 20, length: 10, layer: 2)
+        timeline.items = [a, cover, b]
+        timeline.selectItems([a])
+        timeline.currentFrame = 25
+        // 空き区間は (0, 5) のみ。frame >= 5 のものが 5 詰まる
+        XCTAssertEqual(timeline.deleteAndMoveAll(), 20)
+        XCTAssertEqual(cover.frame, 0)
+        XCTAssertEqual(b.frame, 15)
+    }
+
+    // MARK: - 長さ変更（開始側）
+
+    /// 開始側の短縮: 終了フレームは固定で、ContentOffset は定数レートの
+    /// 消費分だけ進み、キーフレームは開始の移動に連動する。
+    func testChangeItemsStartShrink() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 10, length: 30, layer: 0)
+        item.keyFrames = KeyFrames(frames: [15])
+        timeline.items = [item]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: 10, head: true, neighborAffect: .none
+        )
+        XCTAssertEqual(item.frame, 20)
+        XCTAssertEqual(item.length, 20)
+        XCTAssertEqual(item.keyFrames.frames, [5])
+        // 10 フレーム = 3,333,333 tick（30fps、レート 100%）
+        XCTAssertEqual(item.contentOffset.ticks, 3_333_333)
+    }
+
+    /// 開始側の短縮は先頭キーフレームの手前までしか進まない
+    /// （キーフレームが相対位置 1 以上に残るよう制限される）。
+    func testChangeItemsStartShrinkLimitedByFirstKeyFrame() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 10, length: 30, layer: 0)
+        item.keyFrames = KeyFrames(frames: [5])
+        timeline.items = [item]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: 10, head: true, neighborAffect: .none
+        )
+        // 制限は min(30, 5) - 1 = 4
+        XCTAssertEqual(item.frame, 14)
+        XCTAssertEqual(item.length, 26)
+        XCTAssertEqual(item.keyFrames.frames, [1])
+    }
+
+    /// 開始側の伸長（None）は左隣の終了位置までで止まる。
+    func testChangeItemsStartExpandBlockedByNeighbor() {
+        let timeline = Timeline()
+        let neighbor = makeItem(frame: 0, length: 10, layer: 0)
+        let item = makeItem(frame: 20, length: 10, layer: 0)
+        timeline.items = [neighbor, item]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: -15, head: true, neighborAffect: .none
+        )
+        XCTAssertEqual(item.frame, 10)
+        XCTAssertEqual(item.length, 20)
+        XCTAssertEqual(neighbor.length, 10)
+    }
+
+    /// 開始側の伸長はフレーム 0 で止まる。
+    func testChangeItemsStartExpandClampedAtFrameZero() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 5, length: 10, layer: 0)
+        timeline.items = [item]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: -10, head: true, neighborAffect: .none
+        )
+        XCTAssertEqual(item.frame, 0)
+        XCTAssertEqual(item.length, 15)
+    }
+
+    /// Stretch の開始側伸長では、重なった左隣の終了側が切り取られる。
+    /// 左隣のグループ全員にも同じ長さ変更が及ぶ。
+    func testChangeItemsStartStretchTrimsNeighbor() {
+        let timeline = Timeline()
+        let neighbor = makeItem(frame: 0, length: 20, layer: 0, group: 7)
+        let mate = makeItem(frame: 100, length: 20, layer: 5, group: 7)
+        let item = makeItem(frame: 20, length: 10, layer: 0)
+        timeline.items = [neighbor, mate, item]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: -8, head: true, neighborAffect: .stretch
+        )
+        XCTAssertEqual(item.frame, 12)
+        XCTAssertEqual(item.length, 18)
+        XCTAssertEqual(neighbor.length, 12)
+        XCTAssertEqual(mate.length, 12)
+        XCTAssertEqual(mate.frame, 100)
+    }
+
+    /// Stretch の開始側短縮では、接していた左隣がその分だけ伸びる。
+    func testChangeItemsStartStretchExtendsNeighbor() {
+        let timeline = Timeline()
+        let neighbor = makeItem(frame: 0, length: 10, layer: 0)
+        let item = makeItem(frame: 10, length: 20, layer: 0)
+        timeline.items = [neighbor, item]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: 5, head: true, neighborAffect: .stretch
+        )
+        XCTAssertEqual(item.frame, 15)
+        XCTAssertEqual(item.length, 15)
+        XCTAssertEqual(neighbor.length, 15)
+    }
+
+    /// 非定数レートでの開始側短縮では、ContentOffset が積分テーブルで
+    /// 換算される（分割の非定数ケースと同じレート形状）。
+    func testChangeItemsStartWithNonConstantPlaybackRate() {
+        let timeline = Timeline()
+        let item = TextItem()
+        item.frame = 0
+        item.length = 90
+        item.keyFrames = KeyFrames(frames: [45])
+        item.playbackRate2.animationType = .linear
+        item.playbackRate2.values = [AnimationValue(100), AnimationValue(200), AnimationValue(100)]
+        timeline.items = [item]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: 30, head: true, neighborAffect: .none
+        )
+        XCTAssertEqual(item.frame, 30)
+        XCTAssertEqual(item.length, 60)
+        XCTAssertEqual(item.keyFrames.frames, [15])
+        // 0..30 フレームの平均レートは 133.33% で、消費は 1 秒分の
+        // 1.3333 倍 = 13,333,333 tick
+        XCTAssertEqual(item.contentOffset.ticks, 13_333_333, accuracy: 5)
+    }
+
+    // MARK: - 長さ変更（終了側）
+
+    /// 終了側の短縮は末尾キーフレームの分までしか進まない。
+    /// 対象自身の ContentOffset とキーフレームは変わらない。
+    func testChangeItemsEndShrinkLimitedByLastKeyFrame() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 0, length: 30, layer: 0)
+        item.keyFrames = KeyFrames(frames: [25])
+        timeline.items = [item]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: -10, head: false, neighborAffect: .none
+        )
+        // 制限は -(min(30, 30 - 25) - 1) = -4
+        XCTAssertEqual(item.length, 26)
+        XCTAssertEqual(item.keyFrames.frames, [25])
+        XCTAssertEqual(item.contentOffset.ticks, 0)
+    }
+
+    /// 終了側の伸長（None）は右隣の開始位置までで止まる。
+    func testChangeItemsEndExpandBlockedByNeighbor() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 0, length: 10, layer: 0)
+        let neighbor = makeItem(frame: 15, length: 10, layer: 0)
+        timeline.items = [item, neighbor]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: 10, head: false, neighborAffect: .none
+        )
+        XCTAssertEqual(item.length, 15)
+        XCTAssertEqual(neighbor.frame, 15)
+    }
+
+    /// Stretch の終了側短縮では、接していた右隣が開始側から切り取られ、
+    /// ContentOffset（0 で丸め）とキーフレームも連動する。
+    func testChangeItemsEndStretchPullsNeighbor() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 0, length: 20, layer: 0)
+        let neighbor = makeItem(frame: 20, length: 10, layer: 0)
+        neighbor.keyFrames = KeyFrames(frames: [3])
+        timeline.items = [item, neighbor]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: -5, head: false, neighborAffect: .stretch
+        )
+        XCTAssertEqual(item.length, 15)
+        XCTAssertEqual(neighbor.frame, 15)
+        XCTAssertEqual(neighbor.length, 15)
+        // -5 フレーム分を加えると負になるため 0 に丸められる
+        XCTAssertEqual(neighbor.contentOffset.ticks, 0)
+        XCTAssertEqual(neighbor.keyFrames.frames, [8])
+    }
+
+    /// Stretch の終了側伸長では、重なった右隣が重なり分だけ後ろへ
+    /// ずれる。ContentOffset は丸めなしで加算される。伸長量そのものも、
+    /// 右隣が開始側から切り取れる量（先頭キーフレームの手前まで）で
+    /// 制限される。
+    func testChangeItemsEndStretchPushesNeighbor() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 0, length: 20, layer: 0)
+        let neighbor = makeItem(frame: 20, length: 10, layer: 0)
+        neighbor.keyFrames = KeyFrames(frames: [3])
+        timeline.items = [item, neighbor]
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: 5, head: false, neighborAffect: .stretch
+        )
+        // 右隣の切り取り可能量は min(10, 3) - 1 = 2 のため、伸長は 2 に制限される
+        XCTAssertEqual(item.length, 22)
+        XCTAssertEqual(neighbor.frame, 22)
+        XCTAssertEqual(neighbor.length, 8)
+        // 2 フレーム = 666,667 tick（30fps）
+        XCTAssertEqual(neighbor.contentOffset.ticks, 666_667)
+        XCTAssertEqual(neighbor.keyFrames.frames, [1])
+    }
+
+    /// 変化量 0 と選択なしでは何も起きない。
+    func testChangeItemsLengthNoopCases() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 10, length: 20, layer: 0)
+        timeline.items = [item]
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: 5, head: true, neighborAffect: .none
+        )
+        XCTAssertEqual(item.frame, 10)
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: 0, head: true, neighborAffect: .none
+        )
+        XCTAssertEqual(item.frame, 10)
+        XCTAssertEqual(item.length, 20)
+    }
+
+    // MARK: - スナップ（GetSnappedDelta）
+
+    /// 近傍レイヤーの他アイテムの終了位置へ吸着する。
+    func testGetSnappedDeltaSnapsToNeighborEnd() {
+        let timeline = Timeline()
+        let moving = makeItem(frame: 50, length: 10, layer: 0)
+        let other = makeItem(frame: 40, length: 20, layer: 1)
+        timeline.items = [moving, other]
+        timeline.currentFrame = 0
+        // 代表点 50 に +8 した 58 が、other の終了 60 へ吸着する
+        let delta = timeline.getSnappedDelta(
+            snapTargetFrames: [50], baseLayer: 0, frameDelta: 8,
+            frameDistance: 5, layerDistance: 1, ignoreItems: [moving]
+        )
+        XCTAssertEqual(delta, 10)
+        XCTAssertEqual(50 + delta, 60)
+    }
+
+    /// 同じレイヤーのアイテムと、layerDistance の外のアイテムは
+    /// 候補にならない。
+    func testGetSnappedDeltaIgnoresSameAndFarLayers() {
+        let timeline = Timeline()
+        let moving = makeItem(frame: 50, length: 10, layer: 0)
+        let sameLayer = makeItem(frame: 40, length: 20, layer: 0)
+        let farLayer = makeItem(frame: 40, length: 20, layer: 3)
+        timeline.items = [moving, sameLayer, farLayer]
+        timeline.currentFrame = 0
+        let delta = timeline.getSnappedDelta(
+            snapTargetFrames: [50], baseLayer: 0, frameDelta: 8,
+            frameDistance: 5, layerDistance: 1, ignoreItems: [moving]
+        )
+        XCTAssertEqual(delta, 8)
+    }
+
+    /// 現在フレームも吸着先の候補になる。
+    func testGetSnappedDeltaSnapsToCurrentFrame() {
+        let timeline = Timeline()
+        let moving = makeItem(frame: 50, length: 10, layer: 0)
+        timeline.items = [moving]
+        timeline.currentFrame = 60
+        let delta = timeline.getSnappedDelta(
+            snapTargetFrames: [50], baseLayer: 0, frameDelta: 8,
+            frameDistance: 5, layerDistance: 1, ignoreItems: [moving]
+        )
+        XCTAssertEqual(delta, 10)
+    }
+
+    /// 他アイテムのキーフレーム位置も候補になる。
+    func testGetSnappedDeltaSnapsToKeyFrame() {
+        let timeline = Timeline()
+        let moving = makeItem(frame: 50, length: 10, layer: 0)
+        let other = makeItem(frame: 40, length: 30, layer: 1)
+        other.keyFrames = KeyFrames(frames: [18])
+        timeline.items = [moving, other]
+        timeline.currentFrame = 0
+        // キーフレーム絶対位置 58 は代表点 58 と一致するため移動量は不変
+        let delta = timeline.getSnappedDelta(
+            snapTargetFrames: [50], baseLayer: 0, frameDelta: 8,
+            frameDistance: 5, layerDistance: 1, ignoreItems: [moving]
+        )
+        XCTAssertEqual(delta, 8)
+    }
+
+    /// extraSnapPoints も候補になり、ignoreItems のアイテムは候補から
+    /// 外れる。代表点が空なら移動量はそのまま返る。
+    func testGetSnappedDeltaExtraPointsAndIgnores() {
+        let timeline = Timeline()
+        let moving = makeItem(frame: 50, length: 10, layer: 0)
+        let ignored = makeItem(frame: 40, length: 20, layer: 1)
+        timeline.items = [moving, ignored]
+        timeline.currentFrame = 0
+        // ignored の終了 60 は候補から外れるが、extraSnapPoints の 60 は残る
+        let delta = timeline.getSnappedDelta(
+            snapTargetFrames: [50], baseLayer: 0, frameDelta: 8,
+            frameDistance: 5, layerDistance: 1,
+            ignoreItems: [moving, ignored], extraSnapPoints: [60]
+        )
+        XCTAssertEqual(delta, 10)
+        XCTAssertEqual(
+            timeline.getSnappedDelta(
+                snapTargetFrames: [], baseLayer: 0, frameDelta: 8,
+                frameDistance: 5, layerDistance: 1, ignoreItems: [moving]
+            ),
+            8
+        )
+    }
 }
