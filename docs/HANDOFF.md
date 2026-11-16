@@ -2,6 +2,11 @@
 
 更新: **2026-11-16**。現状: モデル層＋.ymmp 互換層まで実装済み（MAC-0005）。デバッグ用アプリの殻（MAC-0006、`Apps/DebugApp/`）を用意し、本人の Mac で開いて実 .ymmp の読み込みをデバッグできる段階。アプリ側の macOS ビルドは未実施（この VM では SwiftUI をビルドできない）。
 
+## 2026-11-17 更新 — デバッグ用アプリ初回ビルド（失敗→修正済み、再ビルド待ち）
+
+- 本人の Mac で `10bf59c`（main）に対し `swift run` を実行。初回ビルドは `ContentView.swift` の `Animation` 名前衝突（YMM4Core.Animation と SwiftUI.Animation）で失敗。
+- 修正済み: 型宣言とイニシャライザを `YMM4Core.Animation` と完全修飾（IMPLEMENTATION_LOG の MAC-0006 追補）。本人が main を pull して再ビルドすれば確認できる。再ビルド結果と、実 .ymmp があれば読み込み診断・往復チェックの結果が次の記録対象。
+
 ## 2026-11-16 更新 — デバッグ用アプリの殻（MAC-0006）
 
 - 本人の指示「明日の朝までに実ソフトでデバッグできる段階まで」で追加。開き方: 本人の Mac で `Apps/DebugApp/Package.swift` を Xcode で開いて実行する（または同ディレクトリで `swift run`）。
