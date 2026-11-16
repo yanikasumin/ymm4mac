@@ -59,8 +59,8 @@
 - 新規ファイル: `Sources/YMM4Core/` に JSONValue / HonkeFormat / Enums / PlaybackRateMap / CodecSupport / Character / Project / Timeline / TimelineSupport / TimelineEditing / YmmpCodec と `Items/`（BaseItem / MediaItems / TextItems / CompositeItems）。変更: KeyFrames（RemovesLeft/Right）、Animation（setFirstValue・分割連動）。
 - テスト実行: VM 上の Swift（`~/workspace/tools/swift-6.1.2/usr/bin/swift test`）で全87件合格（従来60件＋新規27件: TimelineEditingTests 15件、YmmpCodecTests 12件）。警告なし。macOS でのビルドは未実施（Foundation のみ）。
 - 実装上の判断（台帳に記録済み）: アイテムは参照型（本家の編集意味論が前提）。未知 $type のアイテムは読み飛ばし＋診断記録、入れ子のプラグイン型オブジェクトは生 JSON で保持（本家は null 化するがデータ保全方針を優先）。Timeline の Length / MaxLayer はファイルにあれば復元する。EffectItem / TransitionItem の一時プロパティは「保存時に既定値、読み込み時に破棄」。
-- 未解決: フォント既定値 `Texts.DefaultFont` とタイムライン名のリソース文字列（本家リソースアセンブリの確認が必要）。ShapeParameter の既定インスタンスの全プロパティは未モデル化（$type のみの最小オブジェクトで代用）。本家実機の .ymmp フィクスチャでの往復検証は未実施（FIXTURE-PLAN の P0 採取待ち）で、VERIFIED には進めていない。
-- 次の作業: デバッグ用アプリの殻から本モデル層を呼び出す接続、本家フィクスチャ採取と実ファイル往復テストの追加、描画層（第1〜3章の技術仕様）の実装着手。
+- 未解決: フォント既定値 `Texts.DefaultFont` とタイムライン名のリソース文字列（本家リソースアセンブリの確認が必要）。ShapeParameter の既定インスタンスの全プロパティは未モデル化（$type のみの最小オブジェクトで代用）。本家実機の .ymmp フィクスチャでの往復検証は、本家を動かせる環境が現時点でないため実施できない（2026-11-16 本人確認。FIXTURE-PLAN は凍結）。VERIFIED には進めていない。
+- 次の作業: 本人の Mac でのデバッグ用アプリ初回ビルド確認、実物の .ymmp があれば読み込み確認、描画層（第1〜3章の技術仕様）の実装着手。フィクスチャ採取は Windows 実行環境が用意された場合に再開する。
 
 ## 2026-11-16 更新 — Animation 評価の数式置き換え（MAC-0002、未コミット）
 
