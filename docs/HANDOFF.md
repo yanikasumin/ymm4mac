@@ -1,6 +1,12 @@
 # 引継書 — 次の作業者はここから読む
 
-更新: **2026-11-16**。現状: 開発リポジトリ初期設定。アプリコードはまだなし。
+更新: **2026-11-16**。現状: モデル層＋.ymmp 互換層まで実装済み（MAC-0005）。デバッグ用アプリの殻（MAC-0006、`Apps/DebugApp/`）を用意し、本人の Mac で開いて実 .ymmp の読み込みをデバッグできる段階。アプリ側の macOS ビルドは未実施（この VM では SwiftUI をビルドできない）。
+
+## 2026-11-16 更新 — デバッグ用アプリの殻（MAC-0006）
+
+- 本人の指示「明日の朝までに実ソフトでデバッグできる段階まで」で追加。開き方: 本人の Mac で `Apps/DebugApp/Package.swift` を Xcode で開いて実行する（または同ディレクトリで `swift run`）。
+- できること: .ymmp を開く（読み込み診断＝未知 $type の読み飛ばし・型移行の一覧つき）、タイムライン／アイテム一覧、VisualItem の X/Y/Z アニメーションのスクラブ評価、往復固定点チェック、コピー保存。サンプル Animation の評価スクラブも残してある。
+- 注意: 製品 UI ではなく検証の殻。UI 実装方式は未確定のまま。Package の platforms 宣言はハーネス都合で macOS 14 としてある（製品の最低対応は macOS 26.0 のまま）。
 
 ## 作業環境とリポジトリ
 
@@ -46,6 +52,15 @@
 - テスト実行: VM 上の Swift（`~/workspace/tools/swift-6.1.2/usr/bin/swift test` をリポジトリルートで実行）で全26件合格。macOS でのビルドは未実施。
 - 未実装（本家の数式・方式が未抽出のため）: イージング関数の数式、スプライン重み（Cubic.GetWeight）、ベジェ評価、ランダム移動の乱数生成、反復移動の Span>0。該当箇所はコード内に暫定である旨を明記した。
 - 次の作業: 上記数式群の抽出、Timeline / BaseItem の実装、KeyFrames の RemovesLeft/RemovesRight。
+
+## 2026-11-16 更新 — モデル層の完成＋.ymmp 互換層（MAC-0003〜0005、未コミット）
+
+- ドメインモデル（Project / Timeline / アイテム13クラス / Character / LayerSettings / TimelineVerticalLine）、編集操作（TryAddItems・衝突解決・グループ移動・分割・ChangeFrameRate・削除）、.ymmp 互換層（$type 解決・RenamedTypeResolver・未知要素の保持と診断記録・本家手順の保存）を実装した。詳細は実装台帳 MAC-0003〜0005。
+- 新規ファイル: `Sources/YMM4Core/` に JSONValue / HonkeFormat / Enums / PlaybackRateMap / CodecSupport / Character / Project / Timeline / TimelineSupport / TimelineEditing / YmmpCodec と `Items/`（BaseItem / MediaItems / TextItems / CompositeItems）。変更: KeyFrames（RemovesLeft/Right）、Animation（setFirstValue・分割連動）。
+- テスト実行: VM 上の Swift（`~/workspace/tools/swift-6.1.2/usr/bin/swift test`）で全87件合格（従来60件＋新規27件: TimelineEditingTests 15件、YmmpCodecTests 12件）。警告なし。macOS でのビルドは未実施（Foundation のみ）。
+- 実装上の判断（台帳に記録済み）: アイテムは参照型（本家の編集意味論が前提）。未知 $type のアイテムは読み飛ばし＋診断記録、入れ子のプラグイン型オブジェクトは生 JSON で保持（本家は null 化するがデータ保全方針を優先）。Timeline の Length / MaxLayer はファイルにあれば復元する。EffectItem / TransitionItem の一時プロパティは「保存時に既定値、読み込み時に破棄」。
+- 未解決: フォント既定値 `Texts.DefaultFont` とタイムライン名のリソース文字列（本家リソースアセンブリの確認が必要）。ShapeParameter の既定インスタンスの全プロパティは未モデル化（$type のみの最小オブジェクトで代用）。本家実機の .ymmp フィクスチャでの往復検証は未実施（FIXTURE-PLAN の P0 採取待ち）で、VERIFIED には進めていない。
+- 次の作業: デバッグ用アプリの殻から本モデル層を呼び出す接続、本家フィクスチャ採取と実ファイル往復テストの追加、描画層（第1〜3章の技術仕様）の実装着手。
 
 ## 2026-11-16 更新 — Animation 評価の数式置き換え（MAC-0002、未コミット）
 

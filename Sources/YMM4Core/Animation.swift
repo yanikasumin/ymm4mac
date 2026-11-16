@@ -450,4 +450,45 @@ public struct Animation: Equatable, Sendable {
         }
         return true
     }
+
+    /// 先頭の値を書き換える。本家 `SetFirstValue`。
+    /// 値が無い場合は1つ追加する。
+    public mutating func setFirstValue(_ value: Double) {
+        if values.isEmpty {
+            values = [AnimationValue(value)]
+        } else {
+            values[0] = AnimationValue(value)
+        }
+    }
+
+    /// 分割（左側を取り除く）への連動。本家 `KeyFrames.RemovesLeft` の
+    /// 変更イベントに対する `Animation` 側の反応。
+    ///
+    /// 切断位置での現在値を新しい開始値とし、取り除かれるキーフレームの
+    /// 値を落とす。評価はキーフレームが変わる前の状態（この `Animation`
+    /// が保持する写し）で行うため、所有アイテムはキーフレーム集合を
+    /// 更新する前にこのメソッドを呼ぶこと。キーフレーム非対応の型では
+    /// 値は変わらない。
+    ///
+    /// - Parameters:
+    ///   - cutFrame: 切断位置（アイテム内相対フレーム、切断前の座標）。
+    ///   - removedCount: 取り除かれるキーフレームの個数。
+    public mutating func applyKeyFramesRemovesLeft(cutFrame: Int, removedCount: Int) {
+        guard animationType.isKeyFrameSupported else { return }
+        let cutValue = value(atFrame: cutFrame, length: length, fps: videoFPS)
+        values = [AnimationValue(cutValue)] + Array(values.dropFirst(removedCount + 1))
+    }
+
+    /// 分割（右側を取り除く）への連動。本家 `KeyFrames.RemovesRight` の
+    /// 変更イベントに対する `Animation` 側の反応。
+    ///
+    /// 切断位置での現在値を新しい終了値とし、取り除かれるキーフレームの
+    /// 値と元の終了値を落とす。評価と呼び出し順の注意は
+    /// `applyKeyFramesRemovesLeft` と同じ。
+    public mutating func applyKeyFramesRemovesRight(cutFrame: Int, removedCount: Int) {
+        guard animationType.isKeyFrameSupported else { return }
+        let cutValue = value(atFrame: cutFrame, length: length, fps: videoFPS)
+        let keepCount = max(0, values.count - (removedCount + 1))
+        values = Array(values.prefix(keepCount)) + [AnimationValue(cutValue)]
+    }
 }
