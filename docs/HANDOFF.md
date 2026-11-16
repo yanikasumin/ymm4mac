@@ -1,6 +1,6 @@
 # 引継書 — 次の作業者はここから読む
 
-更新: **2026-11-16**。現状: モデル層＋.ymmp 互換層まで実装済み（MAC-0005）。デバッグ用アプリの殻（MAC-0006、`Apps/DebugApp/`）を用意し、本人の Mac で開いて実 .ymmp の読み込みをデバッグできる段階。アプリ側の macOS ビルドは未実施（この VM では SwiftUI をビルドできない）。
+更新: **2026-11-17**。現状: モデル層＋.ymmp 互換層（MAC-0005）＋編集操作・モデル残件（MAC-0007・0008）＋描画層の土台（MAC-0009、`Sources/YMM4Core/Rendering/`）まで実装済み。デバッグ用アプリの殻（MAC-0006、`Apps/DebugApp/`）は本人の Mac でビルド・実ファイル読み込み・往復まで確認完了。テストは Linux 上で全160件合格。
 
 ## 2026-11-17 更新 — デバッグ用アプリ初回ビルド（失敗→修正済み、再ビルド待ち）
 
@@ -11,6 +11,13 @@
 - **実ファイル判明・検証済み（2026-11-17）**: 本人が古い本家 .ymmp 2件を提供。アプリでは BOM が原因で読み込み失敗（offset 0）となったが、原因を特定して互換層を修正済み（IMPLEMENTATION_LOG の MAC-0005 追補）。ローカル検証では2件とも読み込み成功・読み飛ばし0件・往復の固定点到達を確認した。本人が main を pull してアプリで開き直し、表示（ファイル1: アイテム158件・1920×1080・60 FPS／ファイル2: アイテム142件）が一致するかを確認するのが次の記録対象。
 - **サンプルのタイムライン切替も確認済み（2026-11-17 本人確認）**: sample.ymmp を開いてメイン⇄サブの切替ができた。これでデバッグアプリの確認項目は全て完了。
 - **アプリ側でも確認完了（2026-11-17、スクリーンショットで確認）**: ファイル1（kiminihare.ymmp）をアプリで開き、タイムライン1件・キャラクター0件・1920×1080・60 FPS・48,000 Hz・現在フレーム 4,513・アイテム158件がローカル検証と一致。読み込み診断は「読み飛ばし・型移行なし」、往復チェックは「固定点に到達（780172 バイト）」でローカル検証のバイト数とも一致し、コピー保存（kiminihare.roundtrip.ymmp）も作成された。本人の指摘2点はどちらもファイル側の内容が理由で不具合ではない: (1) タイムラインが1つしか選べないのは、このファイル自体がタイムライン1件のみを含むため（複数タイムラインの切替確認には2件入りのサンプル sample.ymmp を使う）。(2) 選択中 TextItem の X/Y が動かないのは、そのアニメーション種別が「なし」（単一の定数値）のためで、全フレーム同値が正しい評価結果である。
+
+## 2026-11-17 更新 — 描画層の土台（MAC-0009）
+
+- `Sources/YMM4Core/Rendering/` に GPU に触れない合成ロジックを実装した（Foundation のみ、Linux でテスト可能）。内容: ImageReference（描画グラフへの不透明参照）、Source / SourceOutput / DrawingEffectProcessor / FrameBufferSource プロトコルと StandardSourceOutput、DrawDescription 値型、説明レコード（Timeline / Item / Effect）、ItemPicker（CompositeItemPicker 全体／グループ用、TransitionItemPicker）、描画順序（3キー）と ZIndex・四隅算出、DrawSegmentBuilder。詳細と本家との差分は IMPLEMENTATION_LOG の MAC-0009。
+- BSP 本体（PlaneSplitBsp）は未実装。`PlaneSplitOrdering` プロトコルの差し替え点にしてあり、既定の NullPlaneSplitOrdering では全ランが逐次描画へフォールバックする（本家でも Sort が nil なら逐次）。
+- 検証: `~/workspace/tools/swift-6.1.2/usr/bin/swift test`（リポジトリルート、.build を消したクリーンビルドを含む）で全160件合格（従来129＋新規31）、警告なし。ローカル作業のみで push はしていない。
+- 次段の描画系作業（いずれも未着手）: GPU 実行器（IGraphicsDevices 相当・Context・CommandList の記録と合成実行。第1章・第2章の契約）、EffectedItemSource 相当（エフェクト連鎖・ParentEffects 再構築・FrameBuffer 境界）、TimelineSource 相当（資源管理・先読み・合成の統合）、テキスト描画、メディア読み込み（デコーダ）、PlaneSplitBsp 本体。描画バックエンド（Metal 等）は未確定事項であり、採用前に本人の承認と最小限の実証が要る。音声・書き出し・UI も未着手のまま。
 
 ## 2026-11-16 更新 — デバッグ用アプリの殻（MAC-0006）
 
