@@ -2,6 +2,8 @@
 
 macOSネイティブ版 YukkuriMovieMaker 4 移植プロジェクト。
 
+開発リポジトリ `yanikasumin/ymm4mac` と解析リポジトリ `yanikasumin/ymm4-native-research` は、ともに**Public**（2026-11-16にオーナーが変更）。
+
 **現状:** 開発リポジトリの初期設定中。映像編集機能の実装・動作はまだ確認されていません。
 
 ## 開発方針
@@ -22,7 +24,7 @@ macOSネイティブ版 YukkuriMovieMaker 4 移植プロジェクト。
 - [Mac版の設計案](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/02-MAC-DESIGN-PROPOSAL.md)
 - [全体進捗と課題](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/04-STATUS-ISSUES.md)
 
-**注意:** 2026-11-16時点で、要件定義 v0.1 のPRはオーナーによってマージされていますが、文書上の承認状態は未更新です。v1.0への確定を自動的に推定しないでください。要件に反する実装は許可されません。
+**要件定義の正式な状態:** [v1.0](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/REQUIREMENTS.md)は、オーナーが初版v0.1の内容を承認し、2026-11-16に正式発効した。承認は**Muse経由の伝達**として記録され、[正式化PR #2](https://github.com/yanikasumin/ymm4-native-research/pull/2)はマージ済み（`1fbc38827552272cb20bf28b960f264b668a29ea`）。新たな要件変更・例外実装には引き続き本人の明示承認が必要。
 
 ## このリポジトリの文書
 
