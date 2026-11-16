@@ -1,6 +1,15 @@
 # 引継書 — 次の作業者はここから読む
 
-更新: **2026-11-17**。現状: モデル層＋.ymmp 互換層（MAC-0005）＋編集操作・モデル残件（MAC-0007・0008）＋描画層の土台（MAC-0009、`Sources/YMM4Core/Rendering/`）まで実装済み。デバッグ用アプリの殻（MAC-0006、`Apps/DebugApp/`）は本人の Mac でビルド・実ファイル読み込み・往復まで確認完了。テストは Linux 上で全160件合格。
+更新: **2026-11-17**。現状: モデル層＋.ymmp 互換層（MAC-0005）＋編集操作・モデル残件（MAC-0007・0008）＋描画層の土台（MAC-0009、`Sources/YMM4Core/Rendering/`）＋合成の実行部（MAC-0010）まで実装済み。デバッグ用アプリの殻（MAC-0006、`Apps/DebugApp/`）は本人の Mac でビルド・実ファイル読み込み・往復まで確認完了。テストは Linux 上で全187件合格。
+
+## 2026-11-17 更新 — 合成の実行部（MAC-0010）
+
+- `Sources/YMM4Core/Rendering/` に合成の実行部を実装した（Foundation のみ、GPU に触れない抽象描画先の形）。新規ファイル: `EffectedItemSource.swift`（エフェクト連鎖の処理器・定義・組と供給元 EffectPairProvider、描画先の抽象 RenderTarget / RenderTargetFactory、AlphaMaskEffect の境界、EffectedOutput / EffectedItemSource / EffectedItemError）と `TimelineSource.swift`（TimelineScene、TachieSource、TimelineGroupResolver、TimelineComposer / TimelineCompositionError）。MAC-0009 側は `Source.update` と `DrawingEffectProcessor.update` を throws 化しただけ（失敗契約を型で表すため。非 throws の既存実装はそのまま適合）。詳細と本家との差分は IMPLEMENTATION_LOG の MAC-0010。
+- 確定契約の実装ポイント: 連鎖の再利用は位置基準・差し替えは新側の SetInput → Update 完了後に旧側を破棄・再利用時の SetInput は入力参照が変わった場合だけ再発行。出力0件でも有効な出力を返す。失敗時の旧 Output は Source.Update／連鎖の失敗では無事（旧描画先の破棄は全出力の更新完了後）。TimelineComposer は UpdateResources で範囲外の実行部を破棄し、親エフェクトを毎回再構築（顔・声解決→グループ解決の順）。FrameBuffer 境界は所有権移転＋Input/FrameSize 設定＋次回 Update 冒頭での解放までを契約として実装し、実描画は描画先の抽象に留めた。
+- 未実装として残したもの（いずれも台帳に記録）: 先読み（PrefetchResources）、キャッシュ（CacheProvider。呼び出し位置のみ差し替え点）、TimelineItemRects、CameraFinalizer の内部、診断文字列の境界問い合わせとパラメータ JSON。実行部の対象は VisualItem のみで、VoiceItem / TransitionItem は資源を持たない。
+- 照合で見つけた不整合（未解決、選定側は変更していない）: MAC-0009 の ItemPicker が使う VideoItemCandidate の範囲（VisualItem + TachieFaceItem）は、本家 IVideoItem の実装範囲（VisualItem 系譜 + VoiceItem + TransitionItem、TachieFaceItem は含まない）と異なる。逆コンパイル済みコードのクラス宣言で確認した。モデル層の VoiceItem が視覚プロパティを持たない件と合わせて、選定・モデル側の照合が別途要る。
+- 検証: `~/workspace/tools/swift-6.1.2/usr/bin/swift test`（リポジトリルート、.build を消したクリーンビルドを含む）で全187件合格（従来160＋新規27）、警告なし。ローカル作業のみで push はしていない（push は親側の検証後）。
+- 次段の描画系作業（いずれも未着手）: GPU 実行器（IGraphicsDevices 相当・Context・CommandList の実記録と合成実行。第1章・第2章の契約。RenderTarget / Source / 処理器の実物はここで生まれる）、個別エフェクトの実装（モデル層 PreservedObject から VideoEffectDefinition を供給する EffectPairProvider の実物を含む）、基本 Source（画像・図形・テキスト）、テキスト描画、メディア読み込み（デコーダ）、PlaneSplitBsp 本体、先読み・キャッシュ・TimelineItemRects の実物。描画バックエンド（Metal 等）は未確定事項であり、採用前に本人の承認と最小限の実証が要る。音声・書き出し・UI も未着手のまま。
 
 ## 2026-11-17 更新 — デバッグ用アプリ初回ビルド（失敗→修正済み、再ビルド待ち）
 

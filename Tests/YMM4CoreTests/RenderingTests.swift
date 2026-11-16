@@ -34,7 +34,7 @@ private final class FakeSource: Source {
     private(set) var updateCount = 0
     private(set) var disposed = false
 
-    func update(_ description: TimelineItemSourceDescription) {
+    func update(_ description: TimelineItemSourceDescription) throws {
         lastDescription = description
         updateCount += 1
     }
@@ -86,7 +86,7 @@ private func makeItem(
 
 final class SourceContractTests: XCTestCase {
 
-    func testSourceReceivesDescriptionOnUpdate() {
+    func testSourceReceivesDescriptionOnUpdate() throws {
         let source = FakeSource()
         let effect = FakeDrawingEffect()
         let image = ImageReference(label: "fake")
@@ -95,7 +95,7 @@ final class SourceContractTests: XCTestCase {
         let itemDescription = TimelineItemSourceDescription(
             makeBaseDescription(), itemFrame: 15, itemLength: 60, layer: 3
         )
-        source.update(itemDescription)
+        try source.update(itemDescription)
 
         XCTAssertEqual(source.updateCount, 1)
         XCTAssertEqual(source.lastDescription?.itemPosition.frame, 15)
