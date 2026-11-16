@@ -1,6 +1,6 @@
 # ymm4mac の実装済みアーキテクチャ
 
-更新: 2026-11-17。状態: **モデル層と .ymmp 互換層に加え、描画層の土台（GPU に触れない合成ロジック）まで実装済み。GPU 実行・音声・UI は未実装。**
+更新: 2026-11-17。状態: **モデル層と .ymmp 互換層に加え、描画層の土台と合成の実行部（GPU に触れない合成ロジック）まで実装済み。GPU 実行・音声・UI は未実装。**
 
 この文書は **実装されている構造のみ記載するAs-built**。計画・仮説は[解析側のMac設計案](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/02-MAC-DESIGN-PROPOSAL.md)に記載。
 
@@ -54,7 +54,15 @@
           ItemPickers.swift    アイテム選択（全体／グループ／トランジション）、FaceItem
           DrawOrdering.swift   描画順序（3キー）、ZIndex、四隅算出、セグメント構築
                                （BSP は PlaneSplitOrdering の差し替え点）
-      Tests/YMM4CoreTests/     上記のユニットテスト（160件）
+          EffectedItemSource.swift 合成の実行部（アイテム単位）: エフェクト連鎖の
+                               処理器・定義・組と供給元、描画先の抽象
+                               （RenderTarget / Factory）、アルファマスクの境界、
+                               EffectedOutput / EffectedItemSource
+          TimelineSource.swift 合成の実行部（タイムライン単位）: TimelineScene、
+                               TimelineGroupResolver（グループ階層の解決）、
+                               TimelineComposer（資源管理・親エフェクト再構築・
+                               FrameBuffer 境界・合成の統合）
+      Tests/YMM4CoreTests/     上記のユニットテスト（187件）
       docs/ARCHITECTURE.md     本文書
       docs/IMPLEMENTATION_LOG.md
       docs/STATUS.md
@@ -68,9 +76,9 @@
 - 編集: `Timeline` の編集操作（TimelineEditing.swift）がアイテム（参照型）を直接書き換える。本家の意味論どおり、前処理は入力を書き換え、原子的保証はコミット段階のみ。`Timeline.Length` / `MaxLayer` はキャッシュとして保守される。
 - 保存: `YmmpCodec.encode` がモデルを追加フィールドごと JSON 化（1行）→ 一時ファイルへ書き出し → 再読込で検証 → 本ファイルへコピー。
 - アイテムの複製は JSON 往復（本家 GetClone と同じ経路）で、`BaseItem.cloned()` が担う。分割はこの複製を左右に作ってから行う。
-- 描画（土台のみ）: `ItemPicker.pickItems` がフレーム時点の対象アイテムを選定 → 次段の EffectedItemSource 相当が各アイテムの DrawDescription 群と平面分割の四隅を評価 → `DrawOrdering.ordered` が3キーで順序付け → `DrawSegmentBuilder` が単独／平面分割のセグメント列を構築 → GPU 実行層（未実装）がセグメントを描く。現時点では選定・順序・セグメント構築までが実装済みで、Source の実物（素材デコード・エフェクト連鎖・合成実行）は存在しない。
+- 描画（実行部まで）: `TimelineComposer.update` が `ItemPicker.pickItems` でフレーム時点の対象アイテムを選定し、資源管理（範囲外の破棄・不足分の生成）と親エフェクトの再構築（顔・声解決→グループ解決）を行う → FrameBuffer 以外の各 `EffectedItemSource` が Source を更新し、`EffectedOutput` の連鎖（処理器の位置基準の再利用・差し替え）＋アイテム変換で DrawDescription を確定 → `DrawOrdering.ordered` が3キーで順序付け → `DrawSegmentBuilder` のセグメント列に従い、抽象描画先（RenderTarget）へ合成する。FrameBuffer アイテムでは描画先を閉じて Source へ渡し、新しい描画先で合成を続ける。Source・処理器・描画先の実物（素材デコード・GPU 実行）は未実装であり、現時点では契約と実行手順のみが偽実装で検証されている。
 
-**GPU 実行・音声・書き出し・UI は未実装。** 詳細は実装台帳 MAC-0001〜MAC-0009。
+**GPU 実行・音声・書き出し・UI は未実装。** 詳細は実装台帳 MAC-0001〜MAC-0010。
 
 ## 実装後の書き方
 

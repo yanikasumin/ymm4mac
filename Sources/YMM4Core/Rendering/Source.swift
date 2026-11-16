@@ -15,8 +15,10 @@ public protocol DrawingEffectProcessor: AnyObject {
     /// 入力を解除する。解除された入力は破棄されない。
     func clearInput()
     /// 説明に基づいて出力を更新し、確定した描画変換を返す。
+    /// 失敗した場合は例外を投げる（本家 IVideoEffectProcessor.Update と同じ。
+    /// 呼び出し側の失敗意味論は第4章の精密化どおり）。
     @discardableResult
-    func update(_ description: EffectDescription) -> DrawDescription
+    func update(_ description: EffectDescription) throws -> DrawDescription
     /// 自身が所有する資源を解放する。
     func dispose()
 }
@@ -109,7 +111,9 @@ public protocol Source: AnyObject {
     /// 現在の出力集合。
     var outputs: [any SourceOutput] { get }
     /// 説明に基づいて出力を最新化する。
-    func update(_ description: TimelineItemSourceDescription)
+    /// 失敗した場合は例外を投げ、Outputs は前回の状態を保つ
+    /// （第4章の精密化: Source.Update の失敗では旧 Output は無事）。
+    func update(_ description: TimelineItemSourceDescription) throws
     /// 自身が所有する資源（Context・出力・素材資源）を解放する。
     func dispose()
 }
