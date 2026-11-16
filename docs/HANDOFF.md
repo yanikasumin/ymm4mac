@@ -38,3 +38,20 @@
 ## 2026-11-16 更新 — 正式要件v1.0同期（本PRはレビュー待ち）
 
 本家解析リポジトリで[PR #2](https://github.com/yanikasumin/ymm4-native-research/pull/2)がマージされ、要件v1.0が正式発効した。今回の`ymm4mac`側作業は`README.md`、`AGENTS.md`、`docs/STATUS.md`、`docs/HANDOFF.md`の承認状態とPublic表記の同期に限る。**本開発リポジトリ側PRはMuseの差分レビューと本人判断までマージしない。** 実装コード、技術選定、ビルド、テストは変更していない。
+
+## 2026-11-16 更新 — モデル層の土台を実装（MAC-0001、未コミット）
+
+- `Package.swift` と `Sources/YMM4Core/`（VideoInfo・Animation・KeyFrames・AnimationType・FrameTime・Color）、`Tests/YMM4CoreTests/` を新規追加した。作業ツリー上の変更であり、コミット・push はまだ行っていない。
+- 仕様の正本は解析側の `MODEL-SPEC-EXTRACTION.md`（訂正記録を含む）§3・§6。キーフレーム連動は「キーフレーム対応の AnimationType のみ」という訂正済みの理解で実装済み。
+- テスト実行: VM 上の Swift（`~/workspace/tools/swift-6.1.2/usr/bin/swift test` をリポジトリルートで実行）で全26件合格。macOS でのビルドは未実施。
+- 未実装（本家の数式・方式が未抽出のため）: イージング関数の数式、スプライン重み（Cubic.GetWeight）、ベジェ評価、ランダム移動の乱数生成、反復移動の Span>0。該当箇所はコード内に暫定である旨を明記した。
+- 次の作業: 上記数式群の抽出、Timeline / BaseItem の実装、KeyFrames の RemovesLeft/RemovesRight。
+
+## 2026-11-16 更新 — Animation 評価の数式置き換え（MAC-0002、未コミット）
+
+- 数式群の抽出が完了（解析側 `ANIMATION-FORMULAS.md`、全項目確定済み）し、暫定評価を全て置き換えた。新規ファイル: `Sources/YMM4Core/Easing.swift`、`Cubic.swift`、`StatelessRandom.swift`、`BezierAnimation.swift`。`Animation.swift` の評価は本家 `GetValue` の分岐連鎖どおりに再構成し、キーフレーム系4経路は最終処理を通らない早期 return とした（MAC-0001 の全型への最終処理適用は本家と異なる暫定措置だった）。
+- 仕様書側の誤り（_Int の割り当てが逆）は解析側 `MODEL-SPEC-EXTRACTION.md` の訂正記録4に記録した。本文 §6.3・§6.4 の書き換えはしていない。
+- 実装上の判断: 補間移動経路のループ上限は `ANIMATION-FORMULAS.md` §1.1 の擬似コード表記ではなく本家 `Animation.cs` の実コード（区間数 + 1 まで、末尾フォールバックで最後の値）を優先した。数式側の確認事項として残す。
+- テスト実行: VM 上の Swift（`~/workspace/tools/swift-6.1.2/usr/bin/swift test`）で全60件合格（従来26件＋新規34件）。既存テストの期待値修正2件（反復移動 Span = 0 のパリティ反転、瞬間移動の最終フレーム＝最後の区間の開始値）はいずれも本家コードに合わせたもの。
+- 未確定事項: ランダム移動のシード材料である本家 `GetHashCode()` の具体値との対応付け（Swift 側は `Animation.randomSeed` で代用し、決定的性質のみ保証）。本家実機での乱数列採取が必要。
+- 次の作業: Timeline / BaseItem の実装、KeyFrames の RemovesLeft/RemovesRight、Golden Master 比較素材の整備。
