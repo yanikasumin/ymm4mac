@@ -1,6 +1,6 @@
 # ymm4mac の実装済みアーキテクチャ
 
-更新: 2026-11-16。状態: **モデル層と .ymmp 互換層まで実装済み。描画・音声・UI は未実装。**
+更新: 2026-11-17。状態: **モデル層と .ymmp 互換層に加え、描画層の土台（GPU に触れない合成ロジック）まで実装済み。GPU 実行・音声・UI は未実装。**
 
 この文書は **実装されている構造のみ記載するAs-built**。計画・仮説は[解析側のMac設計案](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/02-MAC-DESIGN-PROPOSAL.md)に記載。
 
@@ -42,7 +42,19 @@
           TextItems.swift      TextItem / VoiceItem / TextDecoration / TextAppearance
           CompositeItems.swift Shape / Effect / Group / Scene / FrameBuffer /
                                Tachie / TachieFace / Transition の各アイテム
-      Tests/YMM4CoreTests/     上記のユニットテスト（127件）
+        Rendering/             描画層の土台（Foundation のみ。GPU 実行は含まない）
+          Geometry.swift       Vector2 / Vector3 / Matrix4x4 / RectF
+                               （System.Numerics 互換の行優先・行ベクトル規約）
+          ImageReference.swift 描画グラフへの不透明な参照（本家 ID2D1Image の置換）
+          DrawDescription.swift 描画変換の値型、VideoController 等の操作点
+          SourceDescriptions.swift 更新の説明レコード（Timeline / Item / Effect）、
+                               FramePosition、TimelineSourceUsage、SceneInfo
+          Source.swift         Source / SourceOutput / DrawingEffectProcessor /
+                               FrameBufferSource の各プロトコル、StandardSourceOutput
+          ItemPickers.swift    アイテム選択（全体／グループ／トランジション）、FaceItem
+          DrawOrdering.swift   描画順序（3キー）、ZIndex、四隅算出、セグメント構築
+                               （BSP は PlaneSplitOrdering の差し替え点）
+      Tests/YMM4CoreTests/     上記のユニットテスト（160件）
       docs/ARCHITECTURE.md     本文書
       docs/IMPLEMENTATION_LOG.md
       docs/STATUS.md
@@ -56,8 +68,9 @@
 - 編集: `Timeline` の編集操作（TimelineEditing.swift）がアイテム（参照型）を直接書き換える。本家の意味論どおり、前処理は入力を書き換え、原子的保証はコミット段階のみ。`Timeline.Length` / `MaxLayer` はキャッシュとして保守される。
 - 保存: `YmmpCodec.encode` がモデルを追加フィールドごと JSON 化（1行）→ 一時ファイルへ書き出し → 再読込で検証 → 本ファイルへコピー。
 - アイテムの複製は JSON 往復（本家 GetClone と同じ経路）で、`BaseItem.cloned()` が担う。分割はこの複製を左右に作ってから行う。
+- 描画（土台のみ）: `ItemPicker.pickItems` がフレーム時点の対象アイテムを選定 → 次段の EffectedItemSource 相当が各アイテムの DrawDescription 群と平面分割の四隅を評価 → `DrawOrdering.ordered` が3キーで順序付け → `DrawSegmentBuilder` が単独／平面分割のセグメント列を構築 → GPU 実行層（未実装）がセグメントを描く。現時点では選定・順序・セグメント構築までが実装済みで、Source の実物（素材デコード・エフェクト連鎖・合成実行）は存在しない。
 
-**描画・音声・書き出し・UI は未実装。** 詳細は実装台帳 MAC-0001〜MAC-0008。
+**GPU 実行・音声・書き出し・UI は未実装。** 詳細は実装台帳 MAC-0001〜MAC-0009。
 
 ## 実装後の書き方
 
