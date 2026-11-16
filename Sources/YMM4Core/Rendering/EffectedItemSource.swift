@@ -80,7 +80,7 @@ public struct EffectPair {
 /// 実物に差し替える。この層の既定実装は何も供給しない（連鎖は素通しになる）。
 public protocol EffectPairProvider {
     /// アイテム自身のエフェクト（本家 Item.VideoEffects）。
-    func ownEffectPairs(for item: VisualItem) -> [EffectPair]
+    func ownEffectPairs(for item: BaseItem & VideoItemProperties) -> [EffectPair]
     /// グループのエフェクト（本家 GroupItem.GroupEffects）。子位置と子総数は
     /// グループ解決側（TimelineGroupResolver）が算出して渡す。
     func groupEffectPairs(for group: GroupItem, childIndex: Int, childCount: Int) -> [EffectPair]
@@ -92,7 +92,7 @@ public protocol EffectPairProvider {
 public struct EmptyEffectPairProvider: EffectPairProvider {
     public init() {}
 
-    public func ownEffectPairs(for item: VisualItem) -> [EffectPair] { [] }
+    public func ownEffectPairs(for item: BaseItem & VideoItemProperties) -> [EffectPair] { [] }
     public func groupEffectPairs(for group: GroupItem, childIndex: Int, childCount: Int) -> [EffectPair] { [] }
     public func faceEffectPairs(for faceItem: BaseItem) -> [EffectPair] { [] }
 }
@@ -202,8 +202,9 @@ public enum EffectedItemError: Error {
 /// - Dispose は処理器群を ClearInput → Dispose し、Output を nil にする。
 ///   DrawingEffect と入力画像は借用であり破棄しない。
 public final class EffectedOutput {
-    /// 対象アイテム。
-    public let item: VisualItem
+    /// 対象アイテム（本家 IVideoItem の範囲: VisualItem 系譜 + VoiceItem +
+    /// TransitionItem）。
+    public let item: BaseItem & VideoItemProperties
 
     /// アイテム変形を適用する前の出力（連鎖の最終段の出力）。
     public private(set) var preRenderOutput: ImageReference?
@@ -231,7 +232,7 @@ public final class EffectedOutput {
     private let zoomInterpolationMode: InterpolationMode
 
     public init(
-        item: VisualItem,
+        item: BaseItem & VideoItemProperties,
         cameraFinalizer: @escaping (DrawDescription) -> DrawDescription = { $0 },
         zoomInterpolationMode: InterpolationMode = .linear
     ) {
@@ -516,8 +517,9 @@ public final class EffectedOutput {
 ///   実際に失敗するのは GPU 実行層の段であり、タイミングの構造だけを
 ///   ここで再現する。
 public final class EffectedItemSource {
-    /// 対象アイテム。
-    public let item: VisualItem
+    /// 対象アイテム（本家 IVideoItem の範囲: VisualItem 系譜 + VoiceItem +
+    /// TransitionItem）。
+    public let item: BaseItem & VideoItemProperties
     /// 素材の Source（所有）。
     public let source: any Source
     /// アイテム変形を適用するか（本家の applyItemTransform）。
@@ -543,7 +545,7 @@ public final class EffectedItemSource {
     private let alphaMaskFactory: (any AlphaMaskEffectFactory)?
 
     public init(
-        item: VisualItem,
+        item: BaseItem & VideoItemProperties,
         source: any Source,
         targetFactory: any RenderTargetFactory,
         effectProvider: any EffectPairProvider = EmptyEffectPairProvider(),
