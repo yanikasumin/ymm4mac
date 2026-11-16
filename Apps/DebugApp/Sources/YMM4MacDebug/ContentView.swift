@@ -18,8 +18,8 @@ struct ContentView: View {
     private let totalFrames = 90
     private let videoInfo = VideoInfo()
 
-    private var animation: Animation {
-        Animation(
+    private var animation: YMM4Core.Animation {
+        YMM4Core.Animation(
             defaultValue: 0,
             minValue: -1000,
             maxValue: 1000,
