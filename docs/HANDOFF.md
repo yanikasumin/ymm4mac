@@ -6,7 +6,7 @@
 
 - MAC-0010 の照合で残した不整合を解消した。モデル層: `VideoItemProperties` プロトコル（本家 IVideoItem の映像プロパティ一式）を `Items/BaseItem.swift` に追加し、VisualItem・VoiceItem・TransitionItem が適合。VoiceItem は字幕側プロパティを jimakuX 等から x / y / … / videoEffects へ改名して保持し、保存キーを本家の [JsonProperty] 指定どおりに是正した（**JimakuX の保存キーは "Y"、JimakuY は "X" と入れ替わる**。Z 以降は IVideoItem と同名キー、FadeIn / FadeOut と VideoEffects は Jimaku* のまま）。TransitionItem は従来「保存時に既定値を書き、読み込み時は捨てる」だった一式を、既定値を初期値として型付き保持し往復させる形に変えた（本家は get 専用で値を保持しない。データ保全優先の意図的な差分で、本家が書くファイルでは常に既定値のため実ファイルでは差は出ない）。
 - 描画層: EffectedOutput / EffectedItemSource の対象型、EffectPairProvider.ownEffectPairs、TimelineComposer の sourceProvider と資源対象、OrderedDrawResource の便利初期化子を `BaseItem & VideoItemProperties` に統一。TimelineComposer は VoiceItem / TransitionItem にも資源を生成し、TachieFaceItem は資源を持たない。isVideoItemEquivalent は適合判定そのものになった。PickFaceItems の対象（TachieFaceItem / VoiceItem）は変更なし。詳細と差分は IMPLEMENTATION_LOG の MAC-0011。
-- 未解決として残るもの: VoiceItem の JimakuVisibility / キャラクター解決は未実装（自前値をそのまま公開する。字幕 Source＝本家 JimakuSource の段で置き場を決める）。X / Y 入れ替わりは逆コンパイル済みコードが唯一の根拠で、VoiceItem を含む実ファイルでの裏取りは未実施。旧形式キー（MAC-0010 以前の ymm4mac が書いた "JimakuX" 等）を含むファイルでは該当キーが追加フィールド保持になる（デバッグ用サンプル sample.ymmp が該当）。
+- 未解決として残るもの: VoiceItem の JimakuVisibility / キャラクター解決は未実装（自前値をそのまま公開する。字幕 Source＝本家 JimakuSource の段で置き場を決める）。X / Y 入れ替わりは逆コンパイル済みコードが唯一の根拠で、VoiceItem を含む実ファイルでの裏取りは未実施。旧形式キー（MAC-0010 以前の ymm4mac が書いた "JimakuX" 等）を含むファイルでは該当キーが追加フィールド保持になる。デバッグ用サンプル sample.ymmp は MAC-0011 追補で現行コーデックにより再生成済みのため、もう該当しない。
 - 検証: `~/workspace/tools/swift-6.1.2/usr/bin/swift test`（リポジトリルート）で全194件合格（従来187＋新規7）、警告なし。ローカル作業のみで push はしていない（push は親側の検証後）。
 
 ## 2026-11-17 更新 — 合成の実行部（MAC-0010）
