@@ -54,4 +54,29 @@ public struct KeyFrames: Equatable, Sendable {
             frames[i] = (i + 1) * length / (count + 1)
         }
     }
+
+    // MARK: - 分割用の一括削除（本家 RemovesLeft / RemovesRight）
+
+    /// `frame` 以下のキーフレームを取り除き、残りを `frame` だけ前へ
+    /// ずらした集合。本家 `RemovesLeft(frame)` の結果。
+    public func removingLeft(_ frame: Int) -> KeyFrames {
+        KeyFrames(frames: frames.filter { frame < $0 }.map { $0 - frame })
+    }
+
+    /// `frame` 以上のキーフレームを取り除いた集合。
+    /// 本家 `RemovesRight(frame)` の結果。
+    public func removingRight(_ frame: Int) -> KeyFrames {
+        KeyFrames(frames: frames.filter { $0 < frame })
+    }
+
+    /// `RemovesLeft(frame)` で取り除かれる個数（`frame` 以下の個数）。
+    /// 本家が変更イベントで渡すインデックスに一致する。
+    public func removedCountByRemovingLeft(_ frame: Int) -> Int {
+        frames.count - removingLeft(frame).frames.count
+    }
+
+    /// `RemovesRight(frame)` で取り除かれる個数（`frame` 以上の個数）。
+    public func removedCountByRemovingRight(_ frame: Int) -> Int {
+        frames.count - removingRight(frame).frames.count
+    }
 }
