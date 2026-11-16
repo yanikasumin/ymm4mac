@@ -27,11 +27,14 @@
         Enums.swift            Blend / WordWrap / Style / BasePoint 等の列挙（未知の名前は保持）
         PlaybackRateMap.swift  再生速度の積分テーブル（分割時の素材時刻計算）
         CodecSupport.swift     互換層の内部共通処理（Animation 等の JSON 形状変換）
-        Character.swift        キャラクター（型付きは4プロパティ、残りは追加フィールドで保持）
+        Character.swift        キャラクター（全プロパティ型付き。KeyGesture / VoiceDescription を含む）
+        ShapeParameter.swift   図形パラメータ（RectangleShapeParameter と Brush を型付き、
+                               それ以外の $type は生保持。旧 ShapeType の変換表を含む）
         Project.swift          プロジェクト（Timelines / Characters / ToolStates 等）
         Timeline.swift         タイムライン（Length / MaxLayer はキャッシュ済み派生値）
         TimelineSupport.swift  LayerSetting(s)、TimelineVerticalLine、SerializableToolState
-        TimelineEditing.swift  編集操作（追加・衝突解決・移動・分割・ChangeFrameRate・削除）
+        TimelineEditing.swift  編集操作（追加・衝突解決・移動・分割・ChangeFrameRate・削除・
+                               空間を詰める削除の一族）
         YmmpCodec.swift        .ymmp の読み込み・保存（$type 解決、型移行、診断記録）
         Items/
           BaseItem.swift       BaseItem / VisualItem（アニメーション文脈の伝播、分割）
@@ -39,7 +42,7 @@
           TextItems.swift      TextItem / VoiceItem / TextDecoration / TextAppearance
           CompositeItems.swift Shape / Effect / Group / Scene / FrameBuffer /
                                Tachie / TachieFace / Transition の各アイテム
-      Tests/YMM4CoreTests/     上記のユニットテスト（87件）
+      Tests/YMM4CoreTests/     上記のユニットテスト（127件）
       docs/ARCHITECTURE.md     本文書
       docs/IMPLEMENTATION_LOG.md
       docs/STATUS.md
@@ -54,7 +57,7 @@
 - 保存: `YmmpCodec.encode` がモデルを追加フィールドごと JSON 化（1行）→ 一時ファイルへ書き出し → 再読込で検証 → 本ファイルへコピー。
 - アイテムの複製は JSON 往復（本家 GetClone と同じ経路）で、`BaseItem.cloned()` が担う。分割はこの複製を左右に作ってから行う。
 
-**描画・音声・書き出し・UI は未実装。** 詳細は実装台帳 MAC-0001〜MAC-0005。
+**描画・音声・書き出し・UI は未実装。** 詳細は実装台帳 MAC-0001〜MAC-0008。
 
 ## 実装後の書き方
 
