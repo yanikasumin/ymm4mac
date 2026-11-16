@@ -17,6 +17,7 @@ let package = Package(
             name: "YMM4MacDebug",
             dependencies: [
                 .product(name: "YMM4Core", package: "YMM4Mac"),
+                .product(name: "YMM4GPU", package: "YMM4Mac"),
             ]
         ),
     ]
