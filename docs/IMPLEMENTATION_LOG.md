@@ -137,6 +137,22 @@
 
 **次の担当へ。** 本人の Mac で初回ビルドを通し、実物の .ymmp が手元にあれば開いて読み込み診断と往復チェックの結果を記録すること。本家を動かせる環境は現時点でないため（2026-11-16 本人確認）、フィクスチャ採取による VERIFIED 化は環境が用意されるまで到達不可であり、その間は IMPLEMENTED の格付けを維持する。
 
+#### MAC-0007 — 残りの編集操作（DeleteAndMove / 長さ変更 / スナップ）（IMPLEMENTED）
+
+**何を実装したか。** MAC-0004 で未実装だった編集操作3群を、本家 `Timeline`（`YukkuriMovieMaker.Project/Timeline.cs`）の実コードの意味論どおりに実装した。(1) `DeleteAndMove` / `DeleteAndMoveAll`（削除して後続を詰める。戻り値は新しい現在フレーム）。(2) アイテム長変更の一族: 入口 `ChangeSelectedAndGroupedItemsLength`（選択＋グループへ一括適用）、伸縮可能量 `GetExpandableDeltaLength`、開始側変更 `ChangeItemsStart`、終了側変更 `ChangeItemsEnd`。隣接アイテムへの影響モード `NeighborAffectMode`（Default / None / Stretch）は `YukkuriMovieMaker.Settings/NeighborAffectMode.cs` の定義どおり列挙型として追加した。(3) スナップ吸着量 `GetSnappedDelta`。
+
+**どこを変更したか。** `Sources/YMM4Core/TimelineEditing.swift`（`Timeline` の extension に3群を追加）、`Sources/YMM4Core/Enums.swift`（`NeighborAffectMode` 追加）、`Tests/YMM4CoreTests/TimelineEditingTests.swift`（新規25件）。ローカル作業のみ（push なし）。
+
+**どう実装したか。** DeleteAndMove は対象ごとに「同じレイヤーで対象終了位置以降のアイテムを対象の長さだけ前進」→削除→Refresh の順で処理し、現在フレームは対象ごとに `newFrame - max(newFrame - 対象.Frame, 0)` で更新する（本家の実コードどおりの式。DeleteAndMoveAll の「空き区間と重なる分だけ引く」式とは非対称であり、本家の挙動としてそのまま採用した）。DeleteAndMoveAll は対象ごとに空き区間リストを他アイテムで分割（本家のローカル関数 GetSpace の3分岐）し、空き区間を後ろから順に全レイヤーへ適用する。GetExpandableDeltaLength は4分岐（開始短縮／終了短縮／開始伸長／終了伸長）を本家どおりに再現し、短縮側は長さとキーフレーム位置から「相対位置1以上を残す」制限、伸長側は同レイヤー隣接アイテムとの間隔（None）または隣接側の切り取り可能量（Stretch、再帰呼び出しで算出）で制限する。本家の再帰呼び出しは `int.MinValue` / `int.MaxValue` を変化量として渡すが、Swift の Int 演算で溢れないよう等価な比較式に置き換えた（意味は同一）。ChangeItemsStart は開始フレーム移動・長さ増減・ContentOffset の換算（定数レートは比率換算、非定数レートは PlaybackRateMap の積分テーブル。分割処理と同一の流儀）・キーフレーム連動・Stretch 時の隣接アイテム調整（重なり分の切り取り／接していた隣の伸長、グループ全員に波及）を実装。ChangeItemsEnd は長さ増減のみで、Stretch 時は隣の開始側を切り取る（ContentOffset は0で丸め）か、重なり分を後ろへ押し出す（ContentOffset は丸めなし加算。本家の非対称性どおり）。GetSnappedDelta は近傍レイヤー（baseLayer 自身は除外）の他アイテムの開始・終了・キーフレーム絶対位置、extraSnapPoints（本家の引数 snapPoints）、現在フレームを候補とし、代表点群との最小距離が frameDistance 以内の最近候補へ吸着する移動量を返す（同点の場合は列挙順の早い方。本家の安定ソート＋First と等価）。
+
+**本家との差分。** 意図的な差分は次の3点のみ。(a) `GetExpandableDeltaLength` は本家では空のアイテム列に対して例外を投げるが、Swift 側の入口 `changeSelectedAndGroupedItemsLength` は選択が空なら何もしない（本家の UI 経路でも選択なしでは呼ばれない前提であり、防御的な内部差分）。(b) 伸長分岐で `NeighborAffectMode.Default` が渡された場合、本家は `NotImplementedException` を投げる。Swift では前提違反として fatalError とした（Default は設定値であり、ViewModel が None / Stretch へ解決してから渡すのが本家の実経路。TimelineItemViewModel.cs で確認）。(c) 本家の `Math.Max(x, -2147483647)` 等の Int32 溢れ対策は Swift の 64bit Int では不要なため省略した。その他の観測された本家の癖（DeleteAndMove の現在フレーム式、ChangeItemsEnd の ContentOffset 丸めの有無の非対称、DeleteAndMoveAll で覆っているアイテム自身も詰めの対象になること）は差分ではなく本家の挙動として再現した。なお本家の隣接削除系（DeleteItemSpace 等）は今回の対象外。
+
+**メモリ・並行性。** すべて値の読み書きのみで新規の所有関係は生じない。DeleteAndMoveAll の空き区間リストは対象ごとに使い捨て。
+
+**検証。** `~/workspace/tools/swift-6.1.2/usr/bin/swift test`（Linux、Swift 6.1.2）で全112件合格（従来87件＋新規25件）、警告・エラーなし。新規テストは DeleteAndMove 5件（同レイヤーのみ／現在フレームの式／複数選択の累積／グループ／選択なし・空）、DeleteAndMoveAll 3件（全レイヤー／完全被覆／部分被覆）、開始側変更7件（短縮・キーフレーム制限・隣接ブロック・フレーム0制限・Stretch 切り取りと伸長・非定数レート）、終了側変更5件（キーフレーム制限・隣接ブロック・Stretch 引き寄せと押し出し・変化量0と選択なし）、スナップ5件（終了位置吸着・同レイヤーと遠方レイヤーの除外・現在フレーム・キーフレーム・extraSnapPoints と ignoreItems）。期待値はすべて本家コードから手計算で導いた。本家実機との比較試験は未実施のため IMPLEMENTED 止まり（環境がない間は到達不可、MAC-0006 と同じ事情）。
+
+**次の担当へ。** MAC-0004 の「次の担当へ」にあった3群は本エントリで解消。残るモデル層の未実装は Character の型付き範囲の拡張と ShapeParameter 既定インスタンスのプロパティ一式（MAC-0003 / 0005 の記録どおり）。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）

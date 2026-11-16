@@ -70,3 +70,10 @@
 - テスト実行: VM 上の Swift（`~/workspace/tools/swift-6.1.2/usr/bin/swift test`）で全60件合格（従来26件＋新規34件）。既存テストの期待値修正2件（反復移動 Span = 0 のパリティ反転、瞬間移動の最終フレーム＝最後の区間の開始値）はいずれも本家コードに合わせたもの。
 - 未確定事項: ランダム移動のシード材料である本家 `GetHashCode()` の具体値との対応付け（Swift 側は `Animation.randomSeed` で代用し、決定的性質のみ保証）。本家実機での乱数列採取が必要。
 - 次の作業: Timeline / BaseItem の実装、KeyFrames の RemovesLeft/RemovesRight、Golden Master 比較素材の整備。
+
+## 2026-11-16 更新 — 残りの編集操作（MAC-0007、未コミット）
+
+- MAC-0004 で未実装だった3群を本家 `Timeline.cs` の実コードどおりに実装した: DeleteAndMove / DeleteAndMoveAll（戻り値は新しい現在フレーム）、長さ変更の一族（`changeSelectedAndGroupedItemsLength` / `getExpandableDeltaLength` / `changeItemsStart` / `changeItemsEnd`、隣接影響モード `NeighborAffectMode` を Enums に追加）、スナップ `getSnappedDelta`。詳細と本家との差分（意図的なもの3点）は実装台帳 MAC-0007。
+- テスト実行: VM 上の Swift（`~/workspace/tools/swift-6.1.2/usr/bin/swift test`）で全112件合格（従来87件＋新規25件、すべて TimelineEditingTests）。警告・エラーなし。macOS でのビルドは未実施（Foundation のみ）。
+- 観測した本家の癖（差分ではなく再現済み）: DeleteAndMove の現在フレームは「対象の開始位置まで戻す」式で DeleteAndMoveAll の式と非対称。ChangeItemsEnd の Stretch では ContentOffset の丸めが開始側切り取り時のみあり、押し出し時は丸めなし。DeleteAndMoveAll では削除区間を覆っているアイテム自身も詰めの対象になる。
+- 次の作業: 変更なし（本人の Mac でのデバッグ用アプリ初回ビルド確認、描画層の実装着手）。モデル層で残る未実装は Character の型付き範囲の拡張と ShapeParameter 既定インスタンスのプロパティ一式。

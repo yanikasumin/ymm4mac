@@ -387,3 +387,35 @@ public enum ItemSplitSelectionMode: Sendable {
     case center
     case both
 }
+
+/// 長さ変更時に隣接アイテムへ影響を与える方法。本家 `NeighborAffectMode`
+/// （Default = 0, None = 1, Stretch = 2）。
+///
+/// `default` は設定上の値で、本家の ViewModel が設定と修飾キーから
+/// `none` / `stretch` のどちらかへ解決してから Timeline へ渡す。
+/// Timeline の長さ変更メソッドへ `default` が渡るのは伸長方向だけであり、
+/// 本家はその場合に例外になる（到達不能な分岐として扱う）。
+public enum NeighborAffectMode: HonkeEnum {
+    case `default`  // Default = 0
+    case none       // None = 1
+    case stretch    // Stretch = 2
+    case unknown(String)
+
+    public var honkeName: String {
+        switch self {
+        case .default: return "Default"
+        case .none: return "None"
+        case .stretch: return "Stretch"
+        case .unknown(let name): return name
+        }
+    }
+
+    public init(honkeName: String) {
+        switch honkeName {
+        case "Default": self = .default
+        case "None": self = .none
+        case "Stretch": self = .stretch
+        default: self = .unknown(honkeName)
+        }
+    }
+}
