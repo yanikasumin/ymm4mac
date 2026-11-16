@@ -4,11 +4,12 @@ import Foundation
 ///
 /// 本家で IVideoItem を実装するのは VisualItem の系譜に加えて VoiceItem と
 /// TransitionItem であり、TachieFaceItem は実装しない（IFaceItem のみ）。
-/// MAC-0009 の ItemPicker が使う VideoItemCandidate（VisualItem +
-/// TachieFaceItem）とは範囲が異なる。こちらは本家の実装範囲に合わせ、
-/// 選定側との不整合は未解決事項として台帳に記録する。
+/// MAC-0010 の照合で、MAC-0009 の候補範囲（VisualItem + TachieFaceItem）と
+/// 実行部の対象（VisualItem のみ）がこの範囲と異なることが判明したため、
+/// MAC-0011 で VideoItemProperties への適合範囲に統一して是正した。
+/// 判定は適合の有無そのもので行う。
 func isVideoItemEquivalent(_ item: BaseItem) -> Bool {
-    item is VisualItem || item is VoiceItem || item is TransitionItem
+    item is any VideoItemProperties
 }
 
 /// シーン（タイムライン＋識別子）。本家 ISceneInfo の具象に相当する。
@@ -159,7 +160,7 @@ public final class TimelineComposer {
 
     private let picker: any ItemPicker
     private let targetFactory: any RenderTargetFactory
-    private let sourceProvider: (VisualItem) -> any Source
+    private let sourceProvider: (BaseItem & VideoItemProperties) -> any Source
     private let effectProvider: any EffectPairProvider
     private let segmentBuilder: DrawSegmentBuilder
     private let zoomInterpolationMode: InterpolationMode
@@ -179,7 +180,7 @@ public final class TimelineComposer {
         scene: TimelineScene,
         picker: any ItemPicker = CompositeItemPicker(),
         targetFactory: any RenderTargetFactory,
-        sourceProvider: @escaping (VisualItem) -> any Source,
+        sourceProvider: @escaping (BaseItem & VideoItemProperties) -> any Source,
         effectProvider: any EffectPairProvider = EmptyEffectPairProvider(),
         segmentBuilder: DrawSegmentBuilder = DrawSegmentBuilder(),
         zoomInterpolationMode: InterpolationMode = .linear,
@@ -272,7 +273,7 @@ public final class TimelineComposer {
         for item in childItems {
             guard let effected = resources[ObjectIdentifier(item)] else { continue }
             drawResources.append(OrderedDrawResource(
-                visualItem: effected.item,
+                videoItem: effected.item,
                 isFrameBufferSource: effected.source as? FrameBufferSource != nil,
                 drawDescriptions: effected.outputDrawDescriptions,
                 planeSplitQuad: effected.getPlaneSplitQuad()
@@ -418,10 +419,11 @@ public final class TimelineComposer {
     /// 資源管理（本家 UpdateResources に対応）。選定されたアイテム列を返す。
     ///
     /// - 範囲外のアイテムと非合成グループの実行部はその場で破棄する。
-    /// - 不足分を生成する。資源を持つのは映像アイテムだけであり、
+    /// - 不足分を生成する。資源を持つのは映像アイテム（本家 IVideoItem の
+    ///   範囲: VisualItem 系譜 + VoiceItem + TransitionItem）だけであり、
     ///   非合成グループは資源を持たない（合成グループは1アイテムとして
-    ///   資源を持つ）。この層の実行部は VisualItem を対象とするため、
-    ///   VoiceItem / TransitionItem は資源を持たない（台帳に記録）。
+    ///   資源を持つ）。TachieFaceItem は映像アイテムではないため資源を
+    ///   持たない（MAC-0011 で是正）。
     /// - 親エフェクトは毎回再構築する: 全資源の親エフェクトを消去 →
     ///   立ち絵の顔・声解決（顔エフェクト）→ グループの親エフェクト
     ///   （近い親の順）の順で積む。
@@ -439,13 +441,13 @@ public final class TimelineComposer {
         }
 
         for item in childItems {
-            guard let visual = item as? VisualItem else { continue }
-            if let group = visual as? GroupItem, !group.isComposite { continue }
+            guard let videoItem = item as? BaseItem & VideoItemProperties else { continue }
+            if let group = item as? GroupItem, !group.isComposite { continue }
             let id = ObjectIdentifier(item)
             if resources[id] == nil {
                 resources[id] = EffectedItemSource(
-                    item: visual,
-                    source: sourceProvider(visual),
+                    item: videoItem,
+                    source: sourceProvider(videoItem),
                     targetFactory: targetFactory,
                     effectProvider: effectProvider,
                     cameraFinalizer: cameraFinalizer,
@@ -500,7 +502,7 @@ public final class TimelineComposer {
     /// 評価値から ComposeRenderScale で合成する。
     private func itemDescription(
         base: TimelineSourceDescription,
-        item: VisualItem,
+        item: BaseItem & VideoItemProperties,
         itemFrame: Int,
         itemLength: Int
     ) -> TimelineItemSourceDescription {

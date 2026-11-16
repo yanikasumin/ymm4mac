@@ -39,18 +39,18 @@ public struct OrderedDrawResource {
         self.planeSplitQuad = planeSplitQuad
     }
 
-    /// 映像アイテムから順序キーを取る初期化子。
+    /// 映像アイテム（本家 IVideoItem の範囲）から順序キーを取る初期化子。
     public init(
-        visualItem: VisualItem,
+        videoItem: BaseItem & VideoItemProperties,
         isFrameBufferSource: Bool,
         drawDescriptions: [DrawDescription],
         planeSplitQuad: [Vector3]?
     ) {
         self.init(
-            item: visualItem,
-            alwaysOnTop: visualItem.isAlwaysOnTop,
-            zOrderEnabled: visualItem.isZOrderEnabled,
-            layer: visualItem.layer,
+            item: videoItem,
+            alwaysOnTop: videoItem.isAlwaysOnTop,
+            zOrderEnabled: videoItem.isZOrderEnabled,
+            layer: videoItem.layer,
             isFrameBufferSource: isFrameBufferSource,
             drawDescriptions: drawDescriptions,
             planeSplitQuad: planeSplitQuad
