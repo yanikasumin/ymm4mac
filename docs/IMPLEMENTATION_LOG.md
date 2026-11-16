@@ -56,6 +56,87 @@
 
 **次の担当へ。** 残課題は `GetHashCode()` 対応付けの確定（本家実機での乱数列採取が必要）、Timeline / BaseItem の実装、KeyFrames の RemovesLeft/RemovesRight、`ANIMATION-FORMULAS.md` §1.1 のループ上限表記の確認。
 
+### MAC-0003 — ドメインモデル: Project / Timeline / アイテム13クラス（IMPLEMENTED）
+
+**何を実装したか。** モデル層の中心となるドメインモデル一式。`Project`（Timelines / Characters / CollapsedGroups / LayoutXml / ToolStates / FilePath / SelectedTimelineIndex）、`Timeline`（Items / CurrentFrame / Length・MaxLayer のキャッシュ / LayerSettings / TimelineVerticalLine / 選択）、アイテム13クラス（Audio / Video / Voice / Text / Image / Shape / Effect / Group / Scene / FrameBuffer / Tachie / TachieFace / Transition）と共通基底 `BaseItem` / `VisualItem`、`Character`（型付きは Name / GroupName / Color / Layer のみ）。仕様の正本は解析側 `MODEL-SPEC-EXTRACTION.md`（訂正記録を含む）と実コード。
+
+**どこを変更したか。** 本リポジトリの作業ツリー（本記録時点では未コミット・未 push）。新規: `Sources/YMM4Core/Items/BaseItem.swift`（BaseItem / VisualItem）、`Items/MediaItems.swift`（Audio / Video / Image）、`Items/TextItems.swift`（TextDecoration / TextAppearance / Text / Voice）、`Items/CompositeItems.swift`（Shape / Effect / Group / Scene / FrameBuffer / Tachie / TachieFace / Transition）、`Project.swift`、`Timeline.swift`、`TimelineSupport.swift`（LayerSetting / LayerSettings / TimelineVerticalLine / SerializableToolState）、`Character.swift`、`Enums.swift`（Blend 他9種）、`HonkeFormat.swift`（TimeSpanValue / Color の "#AARRGGBB" / RenamedTypeResolver / PreservedObject / AnimationType のメンバ名対応）、`PlaybackRateMap.swift`。変更: `KeyFrames.swift`（removingLeft / removingRight と除去個数）、`Animation.swift`（setFirstValue、分割連動 applyKeyFramesRemovesLeft / Right）。
+
+**どう実装したか。**
+- アイテムはクラス（参照型）とした。本家の編集操作は「コミット前の入力アイテム自体の書き換え」を含み、C# の参照セマンティクスが前提のため。`Animation` の文脈（キーフレーム・長さ・基準 FPS）は本家同様、所有アイテムから `forEachAnimation` のオーバーライド列挙で全 `Animation` へ伝播する。`KeyFrames` / `Length` の代入（didSet）と `SetFPS` が伝播点。
+- `Timeline.Length` / `MaxLayer` は本家と同じく保持フィールドを持つキャッシュで、追加・置換・移動では Expand（最大へ広げる）、削除では Refresh（再計算）という使い分けもそのまま再現した。CurrentFrame は負値を 0 に丸め、ロック中は変更できない。
+- 意味論をモデル化しない値（エフェクト列、図形・遷移・発音・音声パラメータ等のプラグイン型オブジェクト）は `PreservedObject`（$type を含む生 JSON）で保持する。モデル化していないプロパティは各モデル型の `additionalFields`（順序保持）に残し、保存時に書き戻す。
+- `Character` は約50プロパティのうち識別・表示に必要な4つだけを型付けし、残りは追加フィールドで往復保持する。
+- 列挙型は StringEnumConverter のメンバ名で読み書きし、未知の名前は `unknown` として名前を保持して書き戻す。
+- `TimeSpan` は tick（Int64）の値型 `TimeSpanValue` で保持し、"c" 形式文字列と相互変換する。色は "#AARRGGBB"、Guid は小文字の "d" 形式。
+- 分割時の右側 `ContentOffset` 計算のため `PlaybackRateMap`（フレームごとのレート評価＋台形積分の累積テーブル、GetSourceTime / GetConsumedContent）を実装した。定数判定は「レートの型が なし」。
+
+**本家との差分。** ユーザーから見える差として意図したものはない。内部実装の違い・既知の割り切り:
+- `GroupItem` が本家で独自保持に上書きする FadeIn / Opacity 等は、保存形式が同一のため継承した保持をそのまま使う。
+- `EffectItem.Zoom`（get 専用・毎回新規）と `IsInverted`（JsonIgnore）、`TransitionItem` の一時プロパティ群（X 等の get 専用、IsClippingWithObjectAbove と VideoEffects の setter 無効）は、本家の観測可能な挙動に合わせて「保存時は既定値を書き、読み込み時は捨てる」キーとして扱う。
+- `ShapeItem` / `EffectItem` の新規作成時の ShapeParameter 既定値は、本家は `RectangleShapeParameter` の全プロパティを持つインスタンスだが、ここでは $type のみの最小オブジェクトで代用する（本家で読み込みは可能だが、本家で再保存した際の形とは異なる）。
+- TextItem / VoiceItem のフォント既定値は本家リソース `Texts.DefaultFont` の実文字列が逆コンパイル済みコードから特定できず、空文字列とした（未解決）。
+- `Timeline` の新規作成時の名前（本家はリソース文字列）も同様に空文字列。
+- `ContentLength` / `OriginalContentLength` は本家ではファイルから求める派生値のため、モデルでは保持値（既定 0）とし、ファイルからの算出は行わない。
+- `Project.FilePath` の「参照ファイルが無ければ空にする」規則は保存スナップショット構築側の責務として、モデルでは保持のみとした。
+- AddItems / ReplaceItems / MoveItems は本家では private だが、アプリ側の利用のため public にした。
+
+**仕様書と実コードの矛盾（実コードを優先した点）。** (1) 衝突判定 `IntersectsWith` は仕様書で半開区間の重なりと「推定」されていたが、実コードの条件式を場合分けで検証し、長さ1以上の区間では半開区間の重なりと等価であることを確認した。(2) `ResolveItemCollision` のデルタ列は仕様書の「+(999 - layer)」ではなく実コードの Range 意味論どおり最大 +(998 - layer)、負側は -(layer - 1) まで。(3) `Length` / `MaxLayer` / `KeyFrames.Frames` 等の private setter プロパティは、Newtonsoft が復元するため読み込み時に復元する方針とした（仕様書では未検証だった点）。
+
+**メモリ・並行性。** アイテム・Timeline・Project・Character・LayerSettings はクラス（参照セマンティクスが本家の意味論に必要）。それ以外は値型。スレッドや非同期は扱わない。
+
+**検証。** MAC-0005 の互換層テストと MAC-0004 の編集テストで検証（全87件合格、うち新規27件）。本家実機との比較試験は未実施のため IMPLEMENTED 止まり。
+
+**次の担当へ。** Character の型付き範囲の拡張は必要になった時点で。フォント既定値とタイムライン名のリソース文字列は本家実機（リソースアセンブリ）の確認が必要。
+
+### MAC-0004 — 編集操作: 追加・衝突解決・グループ移動・分割・ChangeFrameRate・削除（IMPLEMENTED）
+
+**何を実装したか。** `Timeline` の編集操作一式を `Sources/YMM4Core/TimelineEditing.swift` に実装した。対象は本家 `Timeline` の TryAddItems / IsMovable / GetMovableDeltaFrame / MoveSelectedAndGroupedItems / ResolveItemCollision（3形態）/ ResolveItemCollisionInItems / ResolveAllItemsCollision / RenewGroupIDs / Group・Ungroup / SplitItems（+ SplitItemsCore、選択モード5種と Center の履歴処理）/ ChangeFrameRate / DeleteItems 系と、アイテム側の `BaseItem.split(atRelativeFrame:)`（KeyFrames の RemovesLeft / RemovesRight 連動を含む）。
+
+**どう実装したか。** 本家の実コードを逐条で写した。特に:
+- TryAddItems: 前処理（SetFPS→集合内衝突解決→グループ ID 再発行）は入力アイテム自体を書き換え、原子的保証は Items へのコミット段階のみ。レイヤー探索は希望オフセットから増加方向に 999 - maxLayer まで、次に -minLayer から希望の直前まで。
+- 集合内衝突解決 `ResolveItemCollisionInItems` は「自分と重なる他者がいる側が上がる」ため、処理順の早いアイテムが上がる（直観と逆だが本家の挙動どおりで、テストで固定した）。
+- GetMovableDeltaFrame: 範囲外の境界補正（フレーム下限、レイヤー下限、キャッシュ済み MaxLayer による上限）の後に、衝突距離の最大分だけフレームデルタを縮小する。フレームデルタ 0 で動けない場合はレイヤーデルタを 0 へ寄せる。「移動不可なのに衝突相手が無い」場合は本家は例外を投げるため、到達不能分岐として fatalError にした。
+- 分割: 左右とも JSON 往復による複製から作る（本家 GetClone と同じ経路）。キーフレーム連動はキーフレーム対応の AnimationType のみで、切断位置の現在値を開始値（右）／終了値（左）として値列を再構築する。評価はキーフレーム集合を更新する前に行う。グループ ID の再発行は左右の断片集合に対して別々に行われ、単独になった側は解散する。右側の ContentOffset は定数レートなら消費分の加算、非定数なら PlaybackRateMap の積分で置換（開始レートが負なら反転）。
+- ChangeFrameRate: Frame / Length は比率の切り捨て換算、キーフレームは換算後に前方向（単調化）・後方向（Length 未満化）・先頭ずらし（Length 延長）の3段修復。書き戻し順（率 > 1 で後ろから）は SetFrame の置換イベントが値を変えないため一括置換と等価。換算後に重なりが生じたレイヤーには LayerSettings.Insert で空レイヤーを挿入し、重なるアイテムをフレーム降順に1つずつ下げ、範囲内の GroupItem.GroupRange を広げる。CurrentFrame は整数演算で換算。
+
+**本家との差分。** なし（意味論の再現が目的）。GetMovableDeltaFrame は本家 private だが検証とアプリ利用のため public にした。
+
+**検証。** `Tests/YMM4CoreTests/TimelineEditingTests.swift` 15件: 衝突解決の探索順（増加優先・減少への回り込み）、TryAddItems の探索順と前処理（衝突の上がり方向、グループ再発行と単独解散、失敗時も前処理の書き換えが残ること）、グループ移動のデルタ縮小と 0 クランプ、分割のキーフレーム連動（対応型／非対応型、定数レートと非定数レートの ContentOffset）、分割でのグループ解散、ChangeFrameRate 30→60 / 30→24（キーフレーム修復、レイヤー挿入）、削除時のキャッシュ再計算。全件合格。本家実機との比較は未実施のため IMPLEMENTED。
+
+**次の担当へ。** DeleteAndMove、長さ変更（ChangeItemsStart / End 系）、スナップ（GetSnappedDelta）は未実装。必要になった時点で本家コードから起こす。
+
+### MAC-0005 — .ymmp 互換層（IMPLEMENTED）
+
+**何を実装したか。** `Sources/YMM4Core/YmmpCodec.swift` と基盤の `JSONValue.swift`（順序保持 JSON 値＋自前パーサ／シリアライザ）、`CodecSupport.swift`（Animation 等の JSON 形状変換）。読み込み（$type 解決、RenamedTypeResolver の移行、未知 $type の読み飛ばしと診断記録、旧形式の単一 Timeline 取り込み、YMM3 XML の拒否）と、保存（1行 JSON、一時ファイル→再読込検証→コピー）。
+
+**どう実装したか。**
+- Newtonsoft の設定を再現: TypeNameHandling.Auto、Simple アセンブリ形式、StringEnumConverter、エラー時は $type を握り潰す（ここでは読み飛ばして `YmmpLoadDiagnostics.skippedItems` に記録し、呼び出し側が取得できる形で返す）。型移行はアイテムの $type では診断にも記録し、エフェクト等の入れ子では保持オブジェクトの $type を書き換える（本家は移行先の型で読むため再保存時は移行先名になる）。
+- データ保全: モデル化していないプロパティは追加フィールド（順序保持）として保持し書き戻す。数値は元のリテラル文字列を保持するため、読み込んだ数値は一字一句そのまま書き戻される。モデル側が生成する数値は Newtonsoft の最短往復形式で整形する。
+- デコードは「既定インスタンスを生成してからキーを文書順に適用する」Newtonsoft の方式に合わせた。旧互換の set 専用プロパティ（Animation の From / To、Text / Voice の LineHeight / LetterSpacing、GroupItem の IsCompressFrame）は読み込み時の指令として処理し、書き出さない。ShapeItem の旧互換プロパティはパラメータの実型依存のため型付けせず追加フィールドで往復保持する方針とした。
+- 読み込み後、各タイムラインのアイテムへ VideoInfo の FPS を注入する（本家でタイムライン配置時に行われる注入の再現）。Timeline の Length / MaxLayer はファイルにあれば復元し、無ければ再計算する。
+- 保存の検証は「一時ファイルを再読込して例外なく復元できること」。本家は復元結果が null でないことの確認であり、それより強めの検証になっている（内部実装の違いのみ）。
+
+**本家との差分。** (1) 未知 $type の「アイテム」は本家同様に読み飛ばすが、エフェクト等の入れ子オブジェクトは本家では null 化されるところを、データ保全方針（本人の確定方針）を優先して生 JSON のまま保持する。(2) 保存時の本ファイルへのコピーは削除＋コピーの2段（本家は File.Copy の上書き）。(3) 未知の enum 名は本家では例外になるところを、名前を保持して書き戻す。
+
+**検証。** `Tests/YMM4CoreTests/YmmpCodecTests.swift` 12件: 数値リテラルの保持、往復の固定点（複数種のアイテム・キャラクター・ツール状態・レイヤー設定を含む Project を保存→再読込→再保存し、正規化 JSON の差分ゼロ。型移行が適用されるため固定点は2回目の往復で判定）、ファイル保存の往復、本家形式を模した手書き JSON の読み込み（Length / MaxLayer の復元を含む）、未知 $type の読み飛ばしと記録、未知プロパティの保持、型移行の適用、旧形式の取り込み、XML の拒否、TimeSpan / AnimationType 名 / 色の形式。全件合格（全体で87件）。本家実機が生成した実ファイルでの検証は未実施（フィクスチャ採取待ち）のため IMPLEMENTED 止まり。
+
+**次の担当へ。** 本家実機の .ymmp フィクスチャ（FIXTURE-PLAN の P0 群）が採取できたら、本テスト群に実ファイルの往復を追加して VERIFIED へ進めること。設定ファイル（SettingsBase 系）も同じ Json 設定を共有するため、設定の読み書きが必要になったら本互換層を再利用できる。
+
+#### MAC-0006 — デバッグ用アプリの殻（IMPLEMENTED）
+
+**何を実装したか。** 本人が実ソフトでデバッグできる段階として、YMM4Core を呼び出す検証用アプリを用意した。製品 UI ではなく、読み込み経路とアニメーション評価を Xcode でステップ実行・目視確認するための殻であり、UI 実装方式の未確定事項（基本指示 第9章）に対する決定ではない。
+
+**どこを変更したか。** 新規パッケージ `Apps/DebugApp/`（ルートパッケージとは独立した SwiftPM パッケージとし、ルートの `swift test` が Linux で回り続けるように分離）。`Package.swift`（YMM4Core へのパス依存）、`Sources/YMM4MacDebug/YMM4MacDebugApp.swift`、`ContentView.swift`、`ProjectView.swift`。
+
+**どう実装したか。** ContentView は VideoInfo 既定値の表示、サンプル Animation のフレームスクラブ評価、.ymmp ファイルの選択（fileImporter）と `YmmpCodec.load(fromFile:)` による読み込みを行う。読み込み後は ProjectView がタイムライン切替、VideoInfo と現在フレーム、アイテム一覧（型名・ラベル・Frame / Length / Layer / Group）、選択アイテムの詳細を表示し、VisualItem については X / Y / Z アニメーションをアイテム内フレームでスクラブ評価する。読み込み診断（読み飛ばした未知 $type アイテムと型移行の一覧）をそのまま表示し、往復チェックとして「読み込み→保存文字列生成→再読込→再保存文字列生成」の固定点一致を確認できるほか、本家手順の保存（`YmmpCodec.save`）でコピーを書き出せる。
+
+**本家との差分。** 検証用の殻であり、本家 UI の再現ではない（ユーザーから見える違いとして意図的に割り切った範囲であり、製品 UI の仕様決定ではない）。
+
+**検証。** この VM（Linux）では SwiftUI / AppKit をビルドできないため、アプリ側のビルドは未実施。呼び出す YMM4Core 側は `swift test` 全87件合格で検証済み。アプリのビルド確認は macOS 上（本人の Mac の Xcode）で Package を開くことが初回確認となる — 未実施と明記する。
+
+**次の担当へ。** 本人の Mac で初回ビルドを通し、実 .ymmp（本家で保存したもの）を開いて読み込み診断と往復チェックの結果を記録すること。フィクスチャ P0 群の採取と組み合わせて VERIFIED へ進める。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）

@@ -1,14 +1,15 @@
 # Mac版開発の進捗・課題
 
-更新: 2026-11-16。基準: リポジトリの初期化段階。
+更新: 2026-11-16。基準: モデル層と .ymmp 互換層の実装完了（MAC-0005）＋デバッグ用アプリの殻（MAC-0006）時点。
 
 | 項目 | 状態 | 根拠 |
 |---|---|---|
 | Publicの開発リポジトリ `yanikasumin/ymm4mac` | VERIFIED | GitHubでPublic設定を確認（2026-11-16にオーナーが変更）。解析リポジトリもPublic |
 | README・作業規則・設計／実装／引継ぎ文書 | IMPLEMENTED | 本リポジトリに保存 |
 | 要件定義v1.0への参照 | VERIFIED | オーナー承認済みのv1.0が正式発効。解析repoの[PR #2](https://github.com/yanikasumin/ymm4-native-research/pull/2)がマージ済み |
-| Macネイティブアプリのコード | **モデル層の土台のみ IMPLEMENTED** | `Package.swift` と `Sources/YMM4Core/`（VideoInfo・Animation・KeyFrames・AnimationType・FrameTime・Color・Easing・Cubic・StatelessRandom・BezierAnimation）を追加。Linux 上の Swift 6.1.2 で `swift test` 全60件合格（2026-11-16、MAC-0001・MAC-0002）。Animation の評価は抽出済み数式で全分岐を実装済み。UI・描画・音声・書き出しは未着手。本家実機との比較試験は未実施であり VERIFIED ではない。ランダム移動の乱数列は本家 `GetHashCode()` との対応付けが未確定 |
-| Windows本家とMac版の互換テスト | NOT STARTED | 比較対象のMac版実装なし |
+| Macネイティブアプリのコード | **モデル層＋.ymmp 互換層まで IMPLEMENTED** | `Sources/YMM4Core/` に VideoInfo・Animation 評価（MAC-0001・0002）に加え、Project / Timeline / アイテム13クラスのドメインモデル（MAC-0003）、編集操作一式（MAC-0004）、.ymmp 互換層（MAC-0005）を実装。Linux 上の Swift 6.1.2 で `swift test` 全87件合格（2026-11-16）。UI・描画・音声・書き出しは未着手。本家実機との比較試験（実ファイルの往復・Golden Master）は未実施であり VERIFIED ではない。ランダム移動の乱数列は本家 `GetHashCode()` との対応付けが未確定。フォント既定値（Texts.DefaultFont）とタイムライン名のリソース文字列は未確定 |
+| デバッグ用アプリ（検証の殻） | IMPLEMENTED（macOS ビルド未実施） | `Apps/DebugApp/` に独立 SwiftPM パッケージとして用意（MAC-0006）。実 .ymmp を開いて中身・読み込み診断・往復固定点を確認できる。製品 UI ではない。この VM では SwiftUI をビルドできないため、初回ビルド確認は本人の Mac で行う |
+| Windows本家とMac版の互換テスト | NOT STARTED | 実ファイルの往復検証はフィクスチャ採取待ち |
 | 技術選定、GPU、UI、Audio、Export | PROPOSED | 解析repoの設計案のみ |
 
 ## 次の優先課題
