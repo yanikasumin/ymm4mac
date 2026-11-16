@@ -11,7 +11,7 @@ macOSネイティブ版 YukkuriMovieMaker 4 移植プロジェクト。
 - **UI・操作:** 本家YMM4の画面構成・操作体系・編集結果に可能な限り忠実。
 - **バックエンド:** Windows依存を、同等機能を持つmacOS標準APIや実績あるOSSで機能代替。
 - **品質:** 高速、安定、軽量、簡潔な設計、読みやすいコード。
-- **対象:** macOS、Apple Silicon優先。Wine・Windows仮想環境に依存しない。
+- **対象:** macOS 26.0以降、Apple Silicon専用（Intel Macは非対応）。実装言語はSwift。Wine・Windows仮想環境に依存しない。
 - **変更管理:** 要件変更・例外実装は事前に理由と影響を説明し、ユーザー承認を得る。
 
 ## 仕様と解析資料
@@ -24,7 +24,7 @@ macOSネイティブ版 YukkuriMovieMaker 4 移植プロジェクト。
 - [Mac版の設計案](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/02-MAC-DESIGN-PROPOSAL.md)
 - [全体進捗と課題](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/04-STATUS-ISSUES.md)
 
-**要件定義の正式な状態:** [v1.0](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/REQUIREMENTS.md)は、オーナーが初版v0.1の内容を承認し、2026-11-16に正式発効した。承認は**Muse経由の伝達**として記録され、[正式化PR #2](https://github.com/yanikasumin/ymm4-native-research/pull/2)はマージ済み（`1fbc38827552272cb20bf28b960f264b668a29ea`）。新たな要件変更・例外実装には引き続き本人の明示承認が必要。
+**要件定義の正式な状態:** 現行の正式な開発基準は[要件定義 v1.2](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/REQUIREMENTS.md)（2026-11-16発効）。v1.1で最低対応OSをmacOS 26.0 Tahoeに確定し（CR-001）、v1.2で実装言語をSwiftに確定した（CR-002）。新たな要件変更・例外実装には引き続き本人の明示承認が必要。
 
 ## このリポジトリの文書
 
