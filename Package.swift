@@ -5,10 +5,14 @@ let package = Package(
     name: "YMM4Mac",
     products: [
         .library(name: "YMM4Core", targets: ["YMM4Core"]),
+        .library(name: "YMM4GPU", targets: ["YMM4GPU"]),
     ],
     targets: [
         // モデル層。Foundation のみに依存し、macOS 専用フレームワークは使わない。
         .target(name: "YMM4Core"),
+        // GPU 実行層（Metal）。全ソースを #if os(macOS) で包み、Linux では
+        // 空モジュールになる（`swift test` は従来どおり Linux で通る）。
+        .target(name: "YMM4GPU", dependencies: ["YMM4Core"]),
         .testTarget(name: "YMM4CoreTests", dependencies: ["YMM4Core"]),
     ]
 )

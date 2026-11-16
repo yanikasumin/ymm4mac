@@ -14,6 +14,10 @@ struct ProjectView: View {
     @State private var scrubFrame: Double = 0
     @State private var roundTripResult: String?
     @State private var saveResult: String?
+    @State private var previewFrame: Double = 0
+    @State private var previewBox: PreviewBox?
+    @State private var previewImage: CGImage?
+    @State private var previewError: String?
 
     init(project: Project, diagnostics: YmmpLoadDiagnostics, sourceURL: URL) {
         self.project = project
@@ -59,6 +63,7 @@ struct ProjectView: View {
                 .onChange(of: timelineIndex) { _, _ in
                     selectedItemIndex = nil
                     scrubFrame = 0
+                    resetPreview()
                 }
 
                 let info = timeline.videoInfo
@@ -98,8 +103,74 @@ struct ProjectView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let timeline {
+                previewView(timeline: timeline)
+            }
+
             diagnosticsView
             roundTripView
+        }
+        .onAppear { resetPreview() }
+    }
+
+    @ViewBuilder
+    private func previewView(timeline: Timeline) -> some View {
+        GroupBox("プレビュー（合成）") {
+            VStack(alignment: .leading, spacing: 8) {
+                if let previewImage {
+                    Image(previewImage, scale: 1, label: Text("合成プレビュー"))
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 360)
+                        .background(Color.black)
+                } else {
+                    Text(previewError ?? "合成結果なし")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("フレーム")
+                    Slider(value: $previewFrame, in: 0...Double(max(timeline.length, 1)), step: 1)
+                        .onChange(of: previewFrame) { _, _ in renderPreview() }
+                    Text("\(Int(previewFrame)) / \(timeline.length)")
+                        .monospacedDigit()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: - プレビュー
+
+    /// セッション（ファイル＋タイムライン）が変わったときの初期化。
+    /// フレームはタイムラインの現在フレームへ合わせる。
+    private func resetPreview() {
+        previewBox?.dispose()
+        previewBox = nil
+        previewImage = nil
+        previewError = nil
+        guard let timeline else { return }
+        previewFrame = Double(timeline.currentFrame)
+        let key = PreviewBox.SessionKey(url: sourceURL, timelineIndex: timelineIndex)
+        guard let box = PreviewBox(
+            key: key, timeline: timeline,
+            baseDirectory: sourceURL.deletingLastPathComponent()
+        ) else {
+            previewError = "Metal デバイスを初期化できませんでした"
+            return
+        }
+        previewBox = box
+        renderPreview()
+    }
+
+    private func renderPreview() {
+        guard let previewBox, let timeline else { return }
+        if let image = previewBox.render(frame: Int(previewFrame), timeline: timeline) {
+            previewImage = image
+            previewError = nil
+        } else {
+            previewImage = nil
+            previewError = "合成に失敗しました（例外または出力なし）"
         }
     }
 
