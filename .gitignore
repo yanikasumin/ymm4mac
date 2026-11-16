@@ -1,0 +1,35 @@
+# macOS / local
+.DS_Store
+*.swp
+*.swo
+*.log
+.env
+.env.*
+!.env.example
+DerivedData/
+.build/
+.swiftpm/
+*.xcuserstate
+xcuserdata/
+# .NET
+bin/
+obj/
+# Local media and data
+*.mp4
+*.mov
+*.mkv
+*.wav
+*.mp3
+*.ymmp
+*.zip
+# Windows binaries / native binaries
+*.exe
+*.dll
+*.pdb
+# Secrets, generated output
+*.dmg
+*.app/
+*.xcarchive/
+*.ipa
+coverage/
+.cache/
