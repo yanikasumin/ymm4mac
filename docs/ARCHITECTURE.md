@@ -37,7 +37,10 @@
                                空間を詰める削除の一族）
         YmmpCodec.swift        .ymmp の読み込み・保存（$type 解決、型移行、診断記録）
         Items/
-          BaseItem.swift       BaseItem / VisualItem（アニメーション文脈の伝播、分割）
+          BaseItem.swift       BaseItem / VisualItem / VideoItemProperties
+                               （アニメーション文脈の伝播、分割。本家 IVideoItem の
+                               映像プロパティ一式で、適合は VisualItem 系譜 +
+                               VoiceItem + TransitionItem）
           MediaItems.swift     AudioItem / VideoItem / ImageItem
           TextItems.swift      TextItem / VoiceItem / TextDecoration / TextAppearance
           CompositeItems.swift Shape / Effect / Group / Scene / FrameBuffer /
@@ -62,7 +65,7 @@
                                TimelineGroupResolver（グループ階層の解決）、
                                TimelineComposer（資源管理・親エフェクト再構築・
                                FrameBuffer 境界・合成の統合）
-      Tests/YMM4CoreTests/     上記のユニットテスト（187件）
+      Tests/YMM4CoreTests/     上記のユニットテスト（194件）
       docs/ARCHITECTURE.md     本文書
       docs/IMPLEMENTATION_LOG.md
       docs/STATUS.md

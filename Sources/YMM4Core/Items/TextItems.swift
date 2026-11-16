@@ -288,6 +288,12 @@ public final class TextItem: VisualItem {
 /// 音声本体と字幕（字幕側の外観・配置）の両方を持つ。`FilePath` は本家では
 /// 計算プロパティ（保存対象外）のためモデル化しない。口形の時系列
 /// `LipSyncFrames` は意味論を持たず生 JSON のまま保持する。
+///
+/// 映像プロパティ一式（x 〜 videoEffects）は字幕側の保持であり、本家では
+/// `Jimaku*` プロパティとして保存される。本家の IVideoItem 実装は
+/// JimakuVisibility とキャラクターによる解決（カスタム以外では
+/// キャラクター側の値を優先する）を行うが、ここでは解決を行わず自前の
+/// 保持値をそのまま公開する（解決は字幕 Source 実装の段で扱う。台帳に記録）。
 public final class VoiceItem: BaseItem {
     public override class var typeName: String {
         "YukkuriMovieMaker.Project.Items.VoiceItem, YukkuriMovieMaker"
@@ -338,36 +344,37 @@ public final class VoiceItem: BaseItem {
     public var audioEffects: [PreservedObject] = []
     /// 字幕の表示方法。
     public var jimakuVisibility: JimakuVisibility = .useCharacterSetting
-    /// 字幕の X 座標。
-    public var jimakuX: Animation = Animation(defaultValue: 0, minValue: -100_000, maxValue: 100_000)
-    /// 字幕の Y 座標。
-    public var jimakuY: Animation = Animation(defaultValue: 0, minValue: -100_000, maxValue: 100_000)
-    /// 字幕の Z 座標。
-    public var jimakuZ: Animation = Animation(defaultValue: 0, minValue: -100_000, maxValue: 100_000)
-    /// 字幕の不透明度（%）。
-    public var jimakuOpacity: Animation = Animation(defaultValue: 100, minValue: 0, maxValue: 100)
-    /// 字幕の拡大率（%）。
-    public var jimakuZoom: Animation = Animation(defaultValue: 100, minValue: 0, maxValue: 100_000)
-    /// 字幕の回転角。
-    public var jimakuRotation: Animation = Animation(defaultValue: 0, minValue: -100_000, maxValue: 100_000)
-    /// 字幕のフェードイン（秒）。
-    public var jimakuFadeIn: Double = 0
-    /// 字幕のフェードアウト（秒）。
-    public var jimakuFadeOut: Double = 0
-    /// 字幕の合成方法。
-    public var jimakuBlend: Blend = .normal
-    /// 字幕を反転するか。
-    public var jimakuIsInverted: Bool = false
-    /// 字幕を1つ上のオブジェクトで切り抜くか。
-    public var jimakuIsClippingWithObjectAbove: Bool = false
-    /// 字幕を常に手前に表示するか。
-    public var jimakuIsAlwaysOnTop: Bool = false
-    /// 字幕の Z オーダーを有効にするか。
-    public var jimakuIsZOrderEnabled: Bool = false
+    /// 字幕の X 座標。本家 `JimakuX`。保存キーは "Y"（本家の
+    /// [JsonProperty("Y")] 指定により X と Y が入れ替わる。互換層を参照）。
+    public var x: Animation = Animation(defaultValue: 0, minValue: -100_000, maxValue: 100_000)
+    /// 字幕の Y 座標。本家 `JimakuY`。保存キーは "X"（同上）。
+    public var y: Animation = Animation(defaultValue: 0, minValue: -100_000, maxValue: 100_000)
+    /// 字幕の Z 座標。本家 `JimakuZ`。
+    public var z: Animation = Animation(defaultValue: 0, minValue: -100_000, maxValue: 100_000)
+    /// 字幕の不透明度（%）。本家 `JimakuOpacity`。
+    public var opacity: Animation = Animation(defaultValue: 100, minValue: 0, maxValue: 100)
+    /// 字幕の拡大率（%）。本家 `JimakuZoom`。
+    public var zoom: Animation = Animation(defaultValue: 100, minValue: 0, maxValue: 100_000)
+    /// 字幕の回転角。本家 `JimakuRotation`。
+    public var rotation: Animation = Animation(defaultValue: 0, minValue: -100_000, maxValue: 100_000)
+    /// 字幕のフェードイン（秒）。本家 `JimakuFadeIn`。
+    public var fadeIn: Double = 0
+    /// 字幕のフェードアウト（秒）。本家 `JimakuFadeOut`。
+    public var fadeOut: Double = 0
+    /// 字幕の合成方法。本家 `JimakuBlend`。
+    public var blend: Blend = .normal
+    /// 字幕を反転するか。本家 `JimakuIsInverted`。
+    public var isInverted: Bool = false
+    /// 字幕を1つ上のオブジェクトで切り抜くか。本家 `JimakuIsClippingWithObjectAbove`。
+    public var isClippingWithObjectAbove: Bool = false
+    /// 字幕を常に手前に表示するか。本家 `JimakuIsAlwaysOnTop`。
+    public var isAlwaysOnTop: Bool = false
+    /// 字幕の Z オーダーを有効にするか。本家 `JimakuIsZOrderEnabled`。
+    public var isZOrderEnabled: Bool = false
     /// 字幕のフォント外観。
     public var appearance = TextAppearance()
-    /// 字幕の映像エフェクト（生 JSON で保持）。
-    public var jimakuVideoEffects: [PreservedObject] = []
+    /// 字幕の映像エフェクト（生 JSON で保持）。本家 `JimakuVideoEffects`。
+    public var videoEffects: [PreservedObject] = []
     /// 立ち絵表情パラメータ（プラグイン型、生 JSON で保持）。
     public var tachieFaceParameter: PreservedObject?
     /// 立ち絵表情エフェクト（生 JSON で保持）。
@@ -377,12 +384,12 @@ public final class VoiceItem: BaseItem {
         super.forEachAnimation(body)
         body(&volume)
         body(&pan)
-        body(&jimakuX)
-        body(&jimakuY)
-        body(&jimakuZ)
-        body(&jimakuOpacity)
-        body(&jimakuZoom)
-        body(&jimakuRotation)
+        body(&x)
+        body(&y)
+        body(&z)
+        body(&opacity)
+        body(&zoom)
+        body(&rotation)
         appearance.forEachAnimation(body)
     }
 
@@ -411,23 +418,30 @@ public final class VoiceItem: BaseItem {
             (key: "EchoAttenuation", value: .number(echoAttenuation)),
             (key: "AudioEffects", value: .array(audioEffects.map { $0.value })),
             (key: "JimakuVisibility", value: .string(jimakuVisibility.honkeName)),
-            (key: "JimakuX", value: CodecSupport.encodeAnimation(jimakuX)),
-            (key: "JimakuY", value: CodecSupport.encodeAnimation(jimakuY)),
-            (key: "JimakuZ", value: CodecSupport.encodeAnimation(jimakuZ)),
-            (key: "JimakuOpacity", value: CodecSupport.encodeAnimation(jimakuOpacity)),
-            (key: "JimakuZoom", value: CodecSupport.encodeAnimation(jimakuZoom)),
-            (key: "JimakuRotation", value: CodecSupport.encodeAnimation(jimakuRotation)),
-            (key: "JimakuFadeIn", value: .number(jimakuFadeIn)),
-            (key: "JimakuFadeOut", value: .number(jimakuFadeOut)),
-            (key: "JimakuBlend", value: .string(jimakuBlend.honkeName)),
-            (key: "JimakuIsInverted", value: .bool(jimakuIsInverted)),
-            (key: "JimakuIsClippingWithObjectAbove", value: .bool(jimakuIsClippingWithObjectAbove)),
-            (key: "JimakuIsAlwaysOnTop", value: .bool(jimakuIsAlwaysOnTop)),
-            (key: "JimakuIsZOrderEnabled", value: .bool(jimakuIsZOrderEnabled)),
+            // 映像プロパティの保存キーは本家の [JsonProperty] 指定どおり:
+            // JimakuX は "Y"、JimakuY は "X"（X と Y が入れ替わる本家の
+            // 指定をそのまま再現する）、JimakuZ 以降は IVideoItem と同じ
+            // キー名（"Z" / "Opacity" / "Zoom" / "Rotation" / "Blend" /
+            // "IsInverted" / "IsClippingWithObjectAbove" /
+            // "IsAlwaysOnTop" / "IsZOrderEnabled"）になる。FadeIn /
+            // FadeOut と VideoEffects だけは Jimaku* の名前のまま保存される。
+            (key: "Y", value: CodecSupport.encodeAnimation(x)),
+            (key: "X", value: CodecSupport.encodeAnimation(y)),
+            (key: "Z", value: CodecSupport.encodeAnimation(z)),
+            (key: "Opacity", value: CodecSupport.encodeAnimation(opacity)),
+            (key: "Zoom", value: CodecSupport.encodeAnimation(zoom)),
+            (key: "Rotation", value: CodecSupport.encodeAnimation(rotation)),
+            (key: "JimakuFadeIn", value: .number(fadeIn)),
+            (key: "JimakuFadeOut", value: .number(fadeOut)),
+            (key: "Blend", value: .string(blend.honkeName)),
+            (key: "IsInverted", value: .bool(isInverted)),
+            (key: "IsClippingWithObjectAbove", value: .bool(isClippingWithObjectAbove)),
+            (key: "IsAlwaysOnTop", value: .bool(isAlwaysOnTop)),
+            (key: "IsZOrderEnabled", value: .bool(isZOrderEnabled)),
         ]
         fields += appearance.encodeFields()
         fields += [
-            (key: "JimakuVideoEffects", value: .array(jimakuVideoEffects.map { $0.value })),
+            (key: "JimakuVideoEffects", value: .array(videoEffects.map { $0.value })),
             (key: "TachieFaceParameter", value: tachieFaceParameter?.value ?? .null),
             (key: "TachieFaceEffects", value: .array(tachieFaceEffects.map { $0.value })),
         ]
@@ -482,34 +496,36 @@ public final class VoiceItem: BaseItem {
             audioEffects = CodecSupport.preservedList(value)
         case "JimakuVisibility":
             jimakuVisibility = CodecSupport.enumeration(value, default: jimakuVisibility)
-        case "JimakuX":
-            CodecSupport.decodeAnimation(value, into: &jimakuX)
-        case "JimakuY":
-            CodecSupport.decodeAnimation(value, into: &jimakuY)
-        case "JimakuZ":
-            CodecSupport.decodeAnimation(value, into: &jimakuZ)
-        case "JimakuOpacity":
-            CodecSupport.decodeAnimation(value, into: &jimakuOpacity)
-        case "JimakuZoom":
-            CodecSupport.decodeAnimation(value, into: &jimakuZoom)
-        case "JimakuRotation":
-            CodecSupport.decodeAnimation(value, into: &jimakuRotation)
+        case "Y":
+            // 本家 JimakuX の保存キー（X と Y が入れ替わる。encode 側を参照）
+            CodecSupport.decodeAnimation(value, into: &x)
+        case "X":
+            // 本家 JimakuY の保存キー（同上）
+            CodecSupport.decodeAnimation(value, into: &y)
+        case "Z":
+            CodecSupport.decodeAnimation(value, into: &z)
+        case "Opacity":
+            CodecSupport.decodeAnimation(value, into: &opacity)
+        case "Zoom":
+            CodecSupport.decodeAnimation(value, into: &zoom)
+        case "Rotation":
+            CodecSupport.decodeAnimation(value, into: &rotation)
         case "JimakuFadeIn":
-            jimakuFadeIn = CodecSupport.double(value, default: jimakuFadeIn)
+            fadeIn = CodecSupport.double(value, default: fadeIn)
         case "JimakuFadeOut":
-            jimakuFadeOut = CodecSupport.double(value, default: jimakuFadeOut)
-        case "JimakuBlend":
-            jimakuBlend = CodecSupport.enumeration(value, default: jimakuBlend)
-        case "JimakuIsInverted":
-            jimakuIsInverted = CodecSupport.bool(value, default: jimakuIsInverted)
-        case "JimakuIsClippingWithObjectAbove":
-            jimakuIsClippingWithObjectAbove = CodecSupport.bool(value, default: jimakuIsClippingWithObjectAbove)
-        case "JimakuIsAlwaysOnTop":
-            jimakuIsAlwaysOnTop = CodecSupport.bool(value, default: jimakuIsAlwaysOnTop)
-        case "JimakuIsZOrderEnabled":
-            jimakuIsZOrderEnabled = CodecSupport.bool(value, default: jimakuIsZOrderEnabled)
+            fadeOut = CodecSupport.double(value, default: fadeOut)
+        case "Blend":
+            blend = CodecSupport.enumeration(value, default: blend)
+        case "IsInverted":
+            isInverted = CodecSupport.bool(value, default: isInverted)
+        case "IsClippingWithObjectAbove":
+            isClippingWithObjectAbove = CodecSupport.bool(value, default: isClippingWithObjectAbove)
+        case "IsAlwaysOnTop":
+            isAlwaysOnTop = CodecSupport.bool(value, default: isAlwaysOnTop)
+        case "IsZOrderEnabled":
+            isZOrderEnabled = CodecSupport.bool(value, default: isZOrderEnabled)
         case "JimakuVideoEffects":
-            jimakuVideoEffects = CodecSupport.preservedList(value)
+            videoEffects = CodecSupport.preservedList(value)
         case "TachieFaceParameter":
             tachieFaceParameter = CodecSupport.preservedObject(value)
         case "TachieFaceEffects":
@@ -523,3 +539,5 @@ public final class VoiceItem: BaseItem {
         return true
     }
 }
+
+extension VoiceItem: VideoItemProperties {}

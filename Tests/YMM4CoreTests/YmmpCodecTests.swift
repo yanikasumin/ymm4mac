@@ -604,4 +604,215 @@ final class YmmpCodecTests: XCTestCase {
         let third = YmmpCodec.encode(reloaded)
         XCTAssertEqual(try canonical(second), try canonical(third))
     }
+
+    // MARK: - MAC-0011: VoiceItem / TransitionItem の映像プロパティ
+
+    /// 映像プロパティの保存キー群（VoiceItem / TransitionItem 共通の検査用）。
+    private static let videoPropertyKeys: Set<String> = [
+        "X", "Y", "Z", "Opacity", "Zoom", "Rotation",
+        "JimakuFadeIn", "JimakuFadeOut", "FadeIn", "FadeOut",
+        "Blend", "IsInverted", "IsClippingWithObjectAbove",
+        "IsAlwaysOnTop", "IsZOrderEnabled", "JimakuVideoEffects", "VideoEffects",
+    ]
+
+    /// Animation の先頭値を raw JSON から取り出す。
+    private func firstAnimationValue(_ value: JSONValue?) -> Double? {
+        value?.field("Values")?.arrayValue?.first?.field("Value")?.doubleValue
+    }
+
+    /// VoiceItem の映像プロパティ（字幕側）が型付きで往復し、追加フィールドに
+    /// 残らない。保存キーは本家の [JsonProperty] 指定どおりで、X と Y が
+    /// 入れ替わる（"X" キーに Y の値、"Y" キーに X の値が入る）。
+    func testVoiceItemVideoPropertiesRoundTrip() throws {
+        let project = Project()
+        let timeline = Timeline()
+        let voice = VoiceItem()
+        voice.frame = 0
+        voice.length = 90
+        voice.layer = 1
+        voice.x.values = [AnimationValue(11)]
+        voice.y.values = [AnimationValue(22)]
+        voice.z.values = [AnimationValue(33)]
+        voice.opacity.values = [AnimationValue(44)]
+        voice.zoom.values = [AnimationValue(55)]
+        voice.rotation.values = [AnimationValue(66)]
+        voice.fadeIn = 0.5
+        voice.fadeOut = 0.25
+        voice.blend = .screen
+        voice.isInverted = true
+        voice.isClippingWithObjectAbove = true
+        voice.isAlwaysOnTop = true
+        voice.isZOrderEnabled = true
+        voice.videoEffects = [
+            PreservedObject(.object([
+                (key: "$type", value: .string("Some.Plugin.Effect, SomePlugin")),
+            ])),
+        ]
+        timeline.items = [voice]
+        timeline.refreshTimelineLengthAndMaxLayer()
+        project.timelines = [timeline]
+
+        let first = YmmpCodec.encode(project)
+
+        // raw JSON 上のキー配置: 本家の指定により "X" には Y の値、
+        // "Y" には X の値が入る。"JimakuX" のようなキーは存在しない。
+        var parser = JSONParser(text: first)
+        let root = try parser.parse()
+        let itemJSON = try XCTUnwrap(
+            root.field("Timelines")?.arrayValue?.first?.field("Items")?.arrayValue?.first
+        )
+        XCTAssertEqual(firstAnimationValue(itemJSON.field("X")), 22)
+        XCTAssertEqual(firstAnimationValue(itemJSON.field("Y")), 11)
+        XCTAssertEqual(firstAnimationValue(itemJSON.field("Z")), 33)
+        XCTAssertNil(itemJSON.field("JimakuX"))
+        XCTAssertNil(itemJSON.field("JimakuY"))
+        XCTAssertNil(itemJSON.field("JimakuBlend"))
+
+        let (loaded, _) = try YmmpCodec.decode(first)
+        let loadedVoice = try XCTUnwrap(loaded.timelines.first?.items.first as? VoiceItem)
+        XCTAssertEqual(loadedVoice.x.firstValue, 11)
+        XCTAssertEqual(loadedVoice.y.firstValue, 22)
+        XCTAssertEqual(loadedVoice.z.firstValue, 33)
+        XCTAssertEqual(loadedVoice.opacity.firstValue, 44)
+        XCTAssertEqual(loadedVoice.zoom.firstValue, 55)
+        XCTAssertEqual(loadedVoice.rotation.firstValue, 66)
+        XCTAssertEqual(loadedVoice.fadeIn, 0.5)
+        XCTAssertEqual(loadedVoice.fadeOut, 0.25)
+        XCTAssertEqual(loadedVoice.blend, .screen)
+        XCTAssertTrue(loadedVoice.isInverted)
+        XCTAssertTrue(loadedVoice.isClippingWithObjectAbove)
+        XCTAssertTrue(loadedVoice.isAlwaysOnTop)
+        XCTAssertTrue(loadedVoice.isZOrderEnabled)
+        XCTAssertEqual(loadedVoice.videoEffects.count, 1)
+        XCTAssertEqual(loadedVoice.videoEffects[0].typeName, "Some.Plugin.Effect, SomePlugin")
+        // 映像プロパティのキーは追加フィールドに残らない
+        XCTAssertTrue(
+            loadedVoice.additionalFields.allSatisfy { !Self.videoPropertyKeys.contains($0.key) },
+            "追加フィールドに映像プロパティが残っている: \(loadedVoice.additionalFields.map { $0.key })"
+        )
+
+        // 固定点
+        let second = YmmpCodec.encode(loaded)
+        let (reloaded, _) = try YmmpCodec.decode(second)
+        let third = YmmpCodec.encode(reloaded)
+        XCTAssertEqual(try canonical(second), try canonical(third))
+    }
+
+    /// 本家形式のキー配置（"X" / "Y" / "Z" / "Opacity" / "Zoom" /
+    /// "Rotation" / "Blend" / "IsInverted" 等 + "JimakuFadeIn" /
+    /// "JimakuFadeOut" / "JimakuVideoEffects"）で書かれた VoiceItem を
+    /// 読み込むと、型付きプロパティへ入り、追加フィールドは空になる。
+    func testVoiceItemVideoPropertiesDecodeHonkeKeys() throws {
+        let animation = #"{"Values":[{"Value":__V__}],"Span":0.0,"AnimationType":"なし","Bezier":{"Points":[],"IsQuadratic":false}}"#
+        func anim(_ value: String) -> String { animation.replacingOccurrences(of: "__V__", with: value) }
+        let json = """
+        {"FilePath":null,"SelectedTimelineIndex":0,"Timelines":[{"ID":"3f2504e0-4f89-11d3-9a0c-0305e82c3301","Name":"メイン","VideoInfo":{"FPS":30,"Hz":48000,"Width":640,"Height":360,"BackgroundColor":"#FF000000"},"Items":[{"$type":"YukkuriMovieMaker.Project.Items.VoiceItem, YukkuriMovieMaker","Frame":10,"Length":60,"Layer":2,"Serif":"セリフ","X":\(anim("22.0")),"Y":\(anim("11.0")),"Z":\(anim("33.0")),"Opacity":\(anim("44.0")),"Zoom":\(anim("55.0")),"Rotation":\(anim("66.0")),"JimakuFadeIn":0.5,"JimakuFadeOut":0.25,"Blend":"Screen","IsInverted":true,"IsClippingWithObjectAbove":true,"IsAlwaysOnTop":true,"IsZOrderEnabled":true,"JimakuVideoEffects":[{"$type":"Some.Plugin.Effect, SomePlugin"}]}],"CurrentFrame":0,"Length":70,"MaxLayer":2}],"Characters":[],"CollapsedGroups":[],"LayoutXml":"","ToolStates":null}
+        """
+        let (project, diagnostics) = try YmmpCodec.decode(json)
+        XCTAssertEqual(diagnostics.skippedItems.count, 0)
+        let voice = try XCTUnwrap(project.timelines.first?.items.first as? VoiceItem)
+        // "X" キーの値は Y へ、"Y" キーの値は X へ入る（本家の指定どおり）
+        XCTAssertEqual(voice.x.firstValue, 11)
+        XCTAssertEqual(voice.y.firstValue, 22)
+        XCTAssertEqual(voice.z.firstValue, 33)
+        XCTAssertEqual(voice.opacity.firstValue, 44)
+        XCTAssertEqual(voice.zoom.firstValue, 55)
+        XCTAssertEqual(voice.rotation.firstValue, 66)
+        XCTAssertEqual(voice.fadeIn, 0.5)
+        XCTAssertEqual(voice.fadeOut, 0.25)
+        XCTAssertEqual(voice.blend, .screen)
+        XCTAssertTrue(voice.isInverted)
+        XCTAssertTrue(voice.isClippingWithObjectAbove)
+        XCTAssertTrue(voice.isAlwaysOnTop)
+        XCTAssertTrue(voice.isZOrderEnabled)
+        XCTAssertEqual(voice.videoEffects.count, 1)
+        XCTAssertTrue(voice.additionalFields.isEmpty)
+
+        // 再保存しても同じ配置で往復する
+        let second = YmmpCodec.encode(project)
+        let (reloaded, _) = try YmmpCodec.decode(second)
+        let third = YmmpCodec.encode(reloaded)
+        XCTAssertEqual(try canonical(second), try canonical(third))
+    }
+
+    /// TransitionItem の映像プロパティが型付きで往復し、追加フィールドに
+    /// 残らない（本家では既定値を返す get 専用だが、ここでは保持する
+    /// 意図的な差分。MAC-0011）。
+    func testTransitionItemVideoPropertiesRoundTrip() throws {
+        let project = Project()
+        let timeline = Timeline()
+        let transition = TransitionItem()
+        transition.frame = 30
+        transition.length = 15
+        transition.layer = 0
+        transition.transitionType = "YukkuriMovieMaker.Transition.PushTransition, YukkuriMovieMaker"
+        transition.x.values = [AnimationValue(10)]
+        transition.y.values = [AnimationValue(20)]
+        transition.opacity.values = [AnimationValue(50)]
+        transition.zoom.values = [AnimationValue(150)]
+        transition.rotation.values = [AnimationValue(45)]
+        transition.fadeIn = 0.3
+        transition.fadeOut = 0.2
+        transition.blend = .multiply
+        transition.isInverted = true
+        transition.isAlwaysOnTop = true
+        transition.isZOrderEnabled = true
+        transition.isClippingWithObjectAbove = true
+        transition.videoEffects = [
+            PreservedObject(.object([
+                (key: "$type", value: .string("Some.Plugin.Effect, SomePlugin")),
+            ])),
+        ]
+        timeline.items = [transition]
+        timeline.refreshTimelineLengthAndMaxLayer()
+        project.timelines = [timeline]
+
+        let first = YmmpCodec.encode(project)
+        let (loaded, _) = try YmmpCodec.decode(first)
+        let loadedTransition = try XCTUnwrap(loaded.timelines.first?.items.first as? TransitionItem)
+        XCTAssertEqual(loadedTransition.x.firstValue, 10)
+        XCTAssertEqual(loadedTransition.y.firstValue, 20)
+        XCTAssertEqual(loadedTransition.opacity.firstValue, 50)
+        XCTAssertEqual(loadedTransition.zoom.firstValue, 150)
+        XCTAssertEqual(loadedTransition.rotation.firstValue, 45)
+        XCTAssertEqual(loadedTransition.fadeIn, 0.3)
+        XCTAssertEqual(loadedTransition.fadeOut, 0.2)
+        XCTAssertEqual(loadedTransition.blend, .multiply)
+        XCTAssertTrue(loadedTransition.isInverted)
+        XCTAssertTrue(loadedTransition.isAlwaysOnTop)
+        XCTAssertTrue(loadedTransition.isZOrderEnabled)
+        XCTAssertTrue(loadedTransition.isClippingWithObjectAbove)
+        XCTAssertEqual(loadedTransition.videoEffects.count, 1)
+        XCTAssertTrue(
+            loadedTransition.additionalFields.allSatisfy { !Self.videoPropertyKeys.contains($0.key) },
+            "追加フィールドに映像プロパティが残っている: \(loadedTransition.additionalFields.map { $0.key })"
+        )
+
+        let second = YmmpCodec.encode(loaded)
+        let (reloaded, _) = try YmmpCodec.decode(second)
+        let third = YmmpCodec.encode(reloaded)
+        XCTAssertEqual(try canonical(second), try canonical(third))
+    }
+
+    /// 既定値のままの TransitionItem は、本家が書き出すのと同じ既定値で
+    /// 保存される（X=0 / Opacity=100 / Zoom=100 / Rotation=0 /
+    /// FadeIn=FadeOut=0 / Blend=Normal / フラグは全て false /
+    /// VideoEffects は空）。
+    func testTransitionItemVideoPropertyDefaults() throws {
+        let transition = TransitionItem()
+        XCTAssertEqual(transition.x.firstValue, 0)
+        XCTAssertEqual(transition.y.firstValue, 0)
+        XCTAssertEqual(transition.z.firstValue, 0)
+        XCTAssertEqual(transition.opacity.firstValue, 100)
+        XCTAssertEqual(transition.zoom.firstValue, 100)
+        XCTAssertEqual(transition.rotation.firstValue, 0)
+        XCTAssertEqual(transition.fadeIn, 0)
+        XCTAssertEqual(transition.fadeOut, 0)
+        XCTAssertEqual(transition.blend, .normal)
+        XCTAssertFalse(transition.isInverted)
+        XCTAssertFalse(transition.isAlwaysOnTop)
+        XCTAssertFalse(transition.isZOrderEnabled)
+        XCTAssertFalse(transition.isClippingWithObjectAbove)
+        XCTAssertTrue(transition.videoEffects.isEmpty)
+    }
 }

@@ -340,3 +340,47 @@ public class VisualItem: BaseItem {
         return true
     }
 }
+
+/// 映像プロパティ一式。本家 `IVideoItem` に対応する。
+///
+/// 本家で IVideoItem を実装するのは VisualItem の系譜と VoiceItem /
+/// TransitionItem であり、TachieFaceItem は実装しない（IFaceItem のみ）。
+/// 適合はこの範囲に一致させること（MAC-0011 で是正）。
+/// プロパティの意味と既定値は本家 IVideoItem の定義どおり:
+/// X / Y / Z / Opacity / Zoom / Rotation は Animation、
+/// FadeIn / FadeOut は秒（double）、Blend は合成方法、
+/// IsClippingWithObjectAbove だけが本家では set 可能。
+/// VideoEffects は意味論をモデル化せず PreservedObject の生保持とする
+/// （既存方針）。
+public protocol VideoItemProperties: AnyObject {
+    /// X 座標。
+    var x: Animation { get }
+    /// Y 座標。
+    var y: Animation { get }
+    /// Z 座標。
+    var z: Animation { get }
+    /// 不透明度（%）。
+    var opacity: Animation { get }
+    /// 拡大率（%）。
+    var zoom: Animation { get }
+    /// 回転角。
+    var rotation: Animation { get }
+    /// フェードイン（秒）。
+    var fadeIn: Double { get }
+    /// フェードアウト（秒）。
+    var fadeOut: Double { get }
+    /// 合成方法。
+    var blend: Blend { get }
+    /// 反転するか。
+    var isInverted: Bool { get }
+    /// 1つ上のオブジェクトで切り抜くか。
+    var isClippingWithObjectAbove: Bool { get }
+    /// 常に手前に表示するか。
+    var isAlwaysOnTop: Bool { get }
+    /// Z オーダーを有効にするか。
+    var isZOrderEnabled: Bool { get }
+    /// 映像エフェクト（生 JSON で保持）。
+    var videoEffects: [PreservedObject] { get }
+}
+
+extension VisualItem: VideoItemProperties {}
