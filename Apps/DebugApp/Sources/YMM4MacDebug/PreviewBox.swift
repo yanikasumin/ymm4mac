@@ -19,7 +19,7 @@ final class PreviewBox {
     private let composer: TimelineComposer
     private var isDisposed = false
 
-    init?(key: SessionKey, timeline: Timeline, baseDirectory: URL?) {
+    init?(key: SessionKey, timeline: Timeline, timelines: [Timeline]? = nil, baseDirectory: URL?) {
         guard let devices = MetalGraphicsDevices() else { return nil }
         self.key = key
         self.devices = devices
@@ -27,11 +27,20 @@ final class PreviewBox {
         self.context = devices.makeContext(
             targetSize: PixelSize(width: videoInfo.width, height: videoInfo.height)
         )
-        let provider = MetalSourceProvider(devices: devices, baseDirectory: baseDirectory)
+        // シーン参照はプロジェクト全体のタイムライン列から解決する。
+        let allTimelines = timelines ?? [timeline]
+        let provider = MetalSourceProvider(
+            devices: devices, baseDirectory: baseDirectory,
+            sceneResolver: { id in allTimelines.first { $0.id == id } },
+            // 合成グループの内部合成は、このタイムラインを再合成する。
+            timeline: timeline
+        )
         self.composer = TimelineComposer(
             scene: TimelineScene(timeline: timeline),
             targetFactory: context,
-            sourceProvider: provider.source(for:)
+            sourceProvider: provider.source(for:),
+            // GPU 処理系エフェクト（第1段の対象）は Metal 処理器で描画する。
+            effectProvider: MetalEffectPairProvider(devices: devices)
         )
     }
 
