@@ -11,6 +11,11 @@ import YMM4Core
 /// 編集が確定したら `onEdited` を呼び、呼び出し側がプレビュー再合成
 /// などを行う。アニメーション付き数値の行は `animationContext`
 /// （プレビュー中のフレーム）での評価値を表示する。
+/// 数値系の行（数値・整数・アニメーション付き数値）は、本家と同様に
+/// 入力欄の横へ横スライダを並べる。範囲は記述子が持つ値域
+/// （アニメーションでは `Animation` 自身の minValue / maxValue）を
+/// 使い、ドラッグした時点でモデルへ即時反映して `onEdited` まで
+/// つなぐ。値域を持たないプロパティにはスライダを付けない。
 struct PropertyInspectorView: View {
     let descriptors: [PropertyDescriptor]
     let animationContext: AnimationEvaluationContext
@@ -94,6 +99,7 @@ private struct NumberRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
     @State private var text: String
+    @FocusState private var isFocused: Bool
 
     init(descriptor: PropertyDescriptor, onEdited: @escaping () -> Void) {
         self.descriptor = descriptor
@@ -102,10 +108,44 @@ private struct NumberRowView: View {
     }
 
     var body: some View {
-        TextField("", text: $text)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 110)
-            .onSubmit { commit() }
+        HStack(spacing: 6) {
+            TextField("", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 110)
+                .focused($isFocused)
+                .onSubmit { commit() }
+                // Enter だけでなく、フォーカスを外した時点でも確定する。
+                // 確定経路が Enter のみだと、入力後に他所をクリックした編集が
+                // モデルへ届かず、行が作り直されたときに旧値へ戻って見える。
+                .onChange(of: isFocused) { _, focused in
+                    if !focused { commit() }
+                }
+            if let range {
+                Slider(value: sliderBinding, in: range)
+                    .frame(minWidth: 60)
+            }
+        }
+    }
+
+    /// 記述子が値域を持つ場合のみスライダを出す。
+    private var range: ClosedRange<Double>? {
+        guard case .number(let range) = descriptor.kind, let range,
+              range.upperBound > range.lowerBound
+        else { return nil }
+        return range
+    }
+
+    /// スライダはドラッグのたびにモデルへ即時反映し、入力欄の表示も
+    /// 追従させる（確定はスライダ側では行わない）。
+    private var sliderBinding: Binding<Double> {
+        Binding(
+            get: { descriptor.numberValue ?? 0 },
+            set: { newValue in
+                descriptor.setNumberValue(newValue)
+                text = formatNumber(descriptor.numberValue ?? newValue)
+                onEdited()
+            }
+        )
     }
 
     private func commit() {
@@ -123,6 +163,7 @@ private struct IntegerRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
     @State private var text: String
+    @FocusState private var isFocused: Bool
 
     init(descriptor: PropertyDescriptor, onEdited: @escaping () -> Void) {
         self.descriptor = descriptor
@@ -135,13 +176,44 @@ private struct IntegerRowView: View {
             TextField("", text: $text)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 80)
+                .focused($isFocused)
                 .onSubmit { commit() }
+                .onChange(of: isFocused) { _, focused in
+                    if !focused { commit() }
+                }
             Stepper("", value: Binding(
                 get: { descriptor.integerValue ?? 0 },
                 set: { descriptor.setIntegerValue($0); text = String($0); onEdited() }
             ))
             .labelsHidden()
+            if let range {
+                Slider(
+                    value: sliderBinding,
+                    in: Double(range.lowerBound)...Double(range.upperBound),
+                    step: 1
+                )
+                .frame(minWidth: 60)
+            }
         }
+    }
+
+    /// 記述子が値域を持つ場合のみスライダを出す。
+    private var range: ClosedRange<Int>? {
+        guard case .integer(let range) = descriptor.kind, let range,
+              range.upperBound > range.lowerBound
+        else { return nil }
+        return range
+    }
+
+    private var sliderBinding: Binding<Double> {
+        Binding(
+            get: { Double(descriptor.integerValue ?? 0) },
+            set: { newValue in
+                descriptor.setIntegerValue(Int(newValue.rounded()))
+                text = String(descriptor.integerValue ?? Int(newValue.rounded()))
+                onEdited()
+            }
+        )
     }
 
     private func commit() {
@@ -161,6 +233,7 @@ private struct TextRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
     @State private var text: String
+    @FocusState private var isFocused: Bool
 
     init(descriptor: PropertyDescriptor, onEdited: @escaping () -> Void) {
         self.descriptor = descriptor
@@ -171,10 +244,16 @@ private struct TextRowView: View {
     var body: some View {
         TextField("", text: $text)
             .textFieldStyle(.roundedBorder)
-            .onSubmit {
-                descriptor.setStringValue(text)
-                onEdited()
+            .focused($isFocused)
+            .onSubmit { commit() }
+            .onChange(of: isFocused) { _, focused in
+                if !focused { commit() }
             }
+    }
+
+    private func commit() {
+        descriptor.setStringValue(text)
+        onEdited()
     }
 }
 
@@ -244,6 +323,7 @@ private struct AnimationRowView: View {
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
     @State private var text: String
+    @FocusState private var isFocused: Bool
 
     init(
         descriptor: PropertyDescriptor, animationContext: AnimationEvaluationContext,
@@ -262,14 +342,52 @@ private struct AnimationRowView: View {
             TextField("", text: $text)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 110)
+                .focused($isFocused)
                 .onSubmit { commit() }
+                // 数値行と同じく、フォーカスを外した時点でも確定する。
+                .onChange(of: isFocused) { _, focused in
+                    if !focused { commit() }
+                }
             if let animation = descriptor.animationValue {
+                // 本家と同様、入力欄の横にスライダを並べる。範囲は
+                // アニメーション自身の定義値（minValue / maxValue）。
+                if animation.maxValue > animation.minValue {
+                    Slider(
+                        value: sliderBinding,
+                        in: animation.minValue...animation.maxValue
+                    )
+                    .frame(minWidth: 60)
+                }
                 Text(caption(for: animation))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
+    }
+
+    /// スライダの現在値は文脈での評価値。ドラッグは入力欄の確定と
+    /// 同じ書き込み経路（定数なら定数化、補間ありなら先頭値のみ）で
+    /// 即時反映し、入力欄の表示も追従させる。
+    private var sliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                guard let animation = descriptor.animationValue else { return 0 }
+                return animationContext.value(of: animation)
+            },
+            set: { newValue in
+                guard let animation = descriptor.animationValue else { return }
+                if animation.animationType == .none {
+                    descriptor.setAnimationConstantValue(newValue)
+                } else {
+                    descriptor.setAnimationFirstValue(newValue)
+                }
+                if let updated = descriptor.animationValue {
+                    text = formatNumber(animationContext.value(of: updated))
+                }
+                onEdited()
+            }
+        )
     }
 
     private func caption(for animation: YMM4Core.Animation) -> String {
@@ -283,7 +401,11 @@ private struct AnimationRowView: View {
     }
 
     private func commit() {
-        guard let value = Double(text), let animation = descriptor.animationValue else {
+        guard let animation = descriptor.animationValue else { return }
+        guard let value = Double(text) else {
+            // 解釈できない入力（全角数字など）は確定せず、表示を
+            // モデルの現在値へ戻す（未確定の入力が残って見えないように）。
+            text = formatNumber(animationContext.value(of: animation))
             return
         }
         if animation.animationType == .none {
