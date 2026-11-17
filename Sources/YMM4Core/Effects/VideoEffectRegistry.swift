@@ -253,6 +253,9 @@ public final class TypedEffectPairProvider: EffectPairProvider {
 
     private var cache: [ObjectIdentifier: CachedDefinitions] = [:]
     private var groupedDrawingCache: [ObjectIdentifier: GroupedDrawingEffectDefinition] = [:]
+    /// トランジション前後エフェクト用のキャッシュ。前後で別エントリに
+    /// しないと、所有アイテムが同じため通常のキャッシュと衝突する。
+    private var transitionCache: [ObjectIdentifier: [Bool: CachedDefinitions]] = [:]
 
     public init() {}
 
@@ -316,6 +319,7 @@ public final class TypedEffectPairProvider: EffectPairProvider {
     public func invalidateCache() {
         cache = [:]
         groupedDrawingCache = [:]
+        transitionCache = [:]
     }
 
     private func definitions(
@@ -342,6 +346,37 @@ public final class TypedEffectPairProvider: EffectPairProvider {
         }
         cache[key] = entry
         return entry.definitions
+    }
+
+    /// トランジション前後の全体エフェクト（本家 TransitionItem の
+    /// BeforeVideoEffects / AfterVideoEffects）。時間基準はトランジション
+    /// アイテム自身。定義の同一性を保つため前後別々にキャッシュする
+    /// （MAC-0036）。
+    public func transitionEffectPairs(
+        for item: TransitionItem, isBefore: Bool
+    ) -> [EffectPair] {
+        let source = isBefore ? item.beforeVideoEffects : item.afterVideoEffects
+        let key = ObjectIdentifier(item)
+        var entry: CachedDefinitions
+        if let cached = transitionCache[key]?[isBefore], cached.source == source {
+            entry = cached
+        } else {
+            entry = CachedDefinitions(
+                source: source,
+                definitions: source.compactMap { VideoEffectRegistry.decode($0) },
+                appliedKeyFrames: nil
+            )
+        }
+        if entry.appliedKeyFrames != item.keyFrames {
+            for definition in entry.definitions {
+                definition.setKeyFrames(item.keyFrames)
+            }
+            entry.appliedKeyFrames = item.keyFrames
+        }
+        transitionCache[key, default: [:]][isBefore] = entry
+        return entry.definitions.map {
+            EffectPair(timeSource: item, definition: $0)
+        }
     }
 
     private func groupedDrawingDefinition(for group: GroupItem) -> GroupedDrawingEffectDefinition {

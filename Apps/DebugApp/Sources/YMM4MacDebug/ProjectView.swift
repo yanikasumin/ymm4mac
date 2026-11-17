@@ -14,9 +14,13 @@ final class ExportUIState: ObservableObject {
     var cancellation: TimelineExportCancellation?
 }
 
-/// 書き出しジョブ。モデルオブジェクト（Timeline 等）は Sendable では
-/// ないが、ジョブは生成後に単一のバックグラウンドスレッドからのみ
-/// 触れ、UI 状態へは MainActor 経由でのみ書き込むため unchecked とする。
+/// 書き出しジョブ。保持するモデルは、書き出し開始時に
+/// `Project.makeExportSnapshot(of:)` で作ったジョブ専有の
+/// スナップショットであり、編集中のプロジェクトとはインスタンスを
+/// 共有しない（AUD-07）。モデルオブジェクト（Timeline 等）は Sendable
+/// ではないが、スナップショットは生成後に単一のバックグラウンド
+/// スレッドからのみ触れ、UI 状態へは MainActor 経由でのみ書き込む
+/// ため unchecked とする。
 final class ExportJob: @unchecked Sendable {
     private let timeline: Timeline
     private let timelines: [Timeline]
@@ -1453,17 +1457,29 @@ struct ProjectView: View {
     /// 出力先が決まった状態で、バックグラウンドで書き出しを実行する。
     /// 供給側（Metal 合成・音声ミックス）はスレッド安全性を持たないため、
     /// TimelineExporter の構築から実行までを detached タスク内に閉じる。
+    /// ジョブへ渡すモデルは開始時点のスナップショット（コーデック往復に
+    /// よる専有複製）であり、書き出し中の編集とは競合しない（AUD-07）。
+    /// スナップショットを作れない場合は、編集中のモデルを共有する形へ
+    /// フォールバックせず、書き出し自体を中止する。
     private func runExport(timeline: Timeline, outputURL: URL) {
+        let snapshot: (timelines: [Timeline], timeline: Timeline)
+        do {
+            snapshot = try project.makeExportSnapshot(of: timeline)
+        } catch {
+            exportState.status = "書き出しを開始できませんでした: \(error)"
+            return
+        }
+
         let cancellation = TimelineExportCancellation()
         exportState.cancellation = cancellation
         exportState.isRunning = true
         exportState.framesDone = 0
-        exportState.framesTotal = timeline.length
+        exportState.framesTotal = snapshot.timeline.length
         exportState.status = "書き出し中（音声解析を含む）…"
 
         let job = ExportJob(
-            timeline: timeline,
-            timelines: project.timelines,
+            timeline: snapshot.timeline,
+            timelines: snapshot.timelines,
             baseDirectory: baseDirectory,
             outputURL: outputURL,
             cancellation: cancellation,
