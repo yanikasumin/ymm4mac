@@ -772,7 +772,8 @@
   - `FakeProviders.swift`: StubEffectProvider を集約した。
   - 計画からの変更点: RenderingTests と CompositionTests の FakeDrawingEffect は同名だが仕様が全く異なる（入力・破棄の記録 vs 名前＋イベントログ＋エラー注入）ため、集約するとテストの振る舞いが変わる。集約せず各ファイルに残した。
 - **ハーネスの git 管理化**: Mac 側の作業領域に散らばっていた画素検証ハーネス9件（mac0023 / mac0025 / mac0026 / mac0027 / mac0028 / mac0031 / mac0033 / mac0034 / mac0035）を `Harnesses/` へ取り込んだ。各 Package.swift の依存パスは検証用コピーの絶対パスからリポジトリルートへの相対パス（`../..`）へ変更し、`Harnesses/README.md` に目的・実行方法・期待値を文書化した。ffmpeg スタブ（mac0026）には実行権限を付けた。旧世代の metalfx ハーネスと性能監査用ベンチ（perfbench / resamplebench）は現役の検証資産ではないため取り込み対象外とした。
-- **検証**: Linux で影響範囲のテスト（AudioPipeline / AudioDrift / AudioSampleAccuracy / ExportAudioProvider / EffectWiring / CompositeGroup の66件と AudioResamplerQuality）を実行し全合格。Mac 実機でルート＋DebugApp のビルド成功・警告0、取り込んだハーネス9件をリポジトリ内配置から実行し従来値どおり全合格（mac0023 = 25、mac0025 = 18、mac0026 = 19、mac0027 = 15、mac0028 = 90、mac0031 = IoU 1.000、mac0033 = 通常ケース2件・失敗ケースは既定 SKIP、mac0034 = 25、mac0035 = 27）。全自動テストの release レポート比較では、整理前（MAC-0039 時点のレポート）と整理後で合成 p95 が 5.19 ms → 4.89 ms、リサンプラ実時間比が 2.90 / 2.95 → 3.12 / 3.12 と同等であることを確認した（測定の正本はレポートファイル）。
+- **検証**: Linux で影響範囲のテストを実行し全合格（対象6クラス計55件・0失敗。内訳: AudioPipeline 20件、AudioDrift 7件、AudioSampleAccuracy 11件、CompositeGroup 5件、EffectWiring 4件、ExportAudioProvider 8件。これに AudioResamplerQualityTests 9件・0失敗を加え、合計64件・全合格）。Mac 実機でルート＋DebugApp のビルド成功・警告0、取り込んだハーネス9件をリポジトリ内配置から実行し従来値どおり全合格（mac0023 = 25、mac0025 = 18、mac0026 = 19、mac0027 = 15、mac0028 = 90、mac0031 = IoU 1.000、mac0033 = 通常ケース2件・失敗ケースは既定 SKIP、mac0034 = 25、mac0035 = 27）。全自動テストの release レポート比較では、整理前（MAC-0039 時点のレポート）と整理後で合成 p95 が 5.19 ms → 4.89 ms、リサンプラ実時間比が 2.90 / 2.95 → 3.12 / 3.12 と同等であることを確認した（測定の正本はレポートファイル）。
+- **件数訂正（2026-11-18）**: 本項の当初記載（66件）と PR #69 本文の当初記載（計86件とその内訳）は、実測の裏付けのない誤記であったため、上記の実測値（対象6クラス計55件＋AudioResamplerQualityTests 9件＝合計64件・全合格）に訂正した。結論（全合格・Mac ビルド警告0・ハーネス値・全自動テスト比較）に変更はない。
 
 ## 以降の記載テンプレート
 
