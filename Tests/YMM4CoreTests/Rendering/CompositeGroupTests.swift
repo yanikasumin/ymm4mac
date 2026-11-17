@@ -1,113 +1,6 @@
 import XCTest
 @testable import YMM4Core
 
-// MARK: - 偽の実装（合成グループ検証用）
-
-private final class StubSource: Source {
-    var controllers: [VideoController] = []
-    var outputs: [any SourceOutput] = []
-    private(set) var updateCount = 0
-    private(set) var disposed = false
-
-    init(imageLabel: String) {
-        outputs = [StandardSourceOutput(
-            output: ImageReference(label: imageLabel),
-            drawingEffect: StubDrawingEffect()
-        )]
-    }
-
-    func update(_ description: TimelineItemSourceDescription) throws {
-        updateCount += 1
-    }
-
-    func dispose() { disposed = true }
-}
-
-private final class StubDrawingEffect: DrawingEffectProcessor {
-    var output: ImageReference? = ImageReference(label: "de-out")
-    func setInput(_ image: ImageReference?) {}
-    func clearInput() {}
-    func update(_ description: EffectDescription) throws -> DrawDescription {
-        description.drawDescription
-    }
-    func dispose() {}
-}
-
-private final class StubTarget: RenderTarget {
-    let image = ImageReference(label: "target")
-    private(set) var drawBlendCount = 0
-    func beginDraw() {}
-    func clear() {}
-    func fillRect(_ rect: RectF, color: Color) {}
-    func drawImage(_ image: ImageReference) {}
-    func drawImage(_ image: ImageReference, blend: Blend, interpolation: InterpolationMode) {
-        drawBlendCount += 1
-    }
-    func endDraw() {}
-    func close() throws {}
-    func dispose() {}
-}
-
-private final class StubTargetFactory: RenderTargetFactory {
-    private(set) var targets: [StubTarget] = []
-    func makeTarget() -> any RenderTarget {
-        let target = StubTarget()
-        targets.append(target)
-        return target
-    }
-}
-
-private final class StubProcessor: VideoEffectProcessor {
-    var output: ImageReference? = ImageReference(label: "fx-out")
-    let zDelta: Double
-    private(set) var updateDescriptions: [EffectDescription] = []
-
-    init(zDelta: Double) { self.zDelta = zDelta }
-
-    func setInput(_ image: ImageReference?) {}
-    func clearInput() {}
-    func update(_ description: EffectDescription) throws -> DrawDescription {
-        updateDescriptions.append(description)
-        var result = description.drawDescription
-        result.draw.z += zDelta
-        return result
-    }
-    func dispose() {}
-}
-
-private final class StubDefinition: VideoEffectDefinition {
-    var isEnabled = true
-    let zDelta: Double
-    private(set) var processors: [StubProcessor] = []
-
-    init(zDelta: Double = 0) { self.zDelta = zDelta }
-
-    func createProcessor() -> any VideoEffectProcessor {
-        let processor = StubProcessor(zDelta: zDelta)
-        processors.append(processor)
-        return processor
-    }
-}
-
-private final class StubEffectProvider: EffectPairProvider {
-    var ownPairs: [ObjectIdentifier: [EffectPair]] = [:]
-    var groupDefinitions: [ObjectIdentifier: [any VideoEffectDefinition]] = [:]
-    private(set) var groupCalls: [(group: GroupItem, childIndex: Int, childCount: Int)] = []
-
-    func ownEffectPairs(for item: BaseItem & VideoItemProperties) -> [EffectPair] {
-        ownPairs[ObjectIdentifier(item)] ?? []
-    }
-
-    func groupEffectPairs(for group: GroupItem, childIndex: Int, childCount: Int) -> [EffectPair] {
-        groupCalls.append((group, childIndex, childCount))
-        return (groupDefinitions[ObjectIdentifier(group)] ?? []).map {
-            EffectPair(timeSource: group, definition: $0, groupIndex: childIndex, groupCount: childCount)
-        }
-    }
-
-    func faceEffectPairs(for faceItem: BaseItem) -> [EffectPair] { [] }
-}
-
 // MARK: - 合成グループ
 
 final class CompositeGroupTests: XCTestCase {
@@ -132,12 +25,12 @@ final class CompositeGroupTests: XCTestCase {
         return item
     }
 
-    /// 外側・内側の合成器とアイテムごとの StubSource をまとめた検証環境。
+    /// 外側・内側の合成器とアイテムごとの RecordingStubSource をまとめた検証環境。
     private final class Fixture {
         let timeline = Timeline()
         let factory = StubTargetFactory()
         let provider = StubEffectProvider()
-        private(set) var stubSources: [ObjectIdentifier: StubSource] = [:]
+        private(set) var stubSources: [ObjectIdentifier: RecordingStubSource] = [:]
         private(set) var providerCalls: [ObjectIdentifier] = []
 
         func composer(picker: any ItemPicker) -> TimelineComposer {
@@ -150,7 +43,7 @@ final class CompositeGroupTests: XCTestCase {
                     if let source = stubSources[ObjectIdentifier(item)] {
                         return source
                     }
-                    let source = StubSource(imageLabel: "img")
+                    let source = RecordingStubSource(imageLabel: "img")
                     stubSources[ObjectIdentifier(item)] = source
                     return source
                 },
@@ -158,7 +51,7 @@ final class CompositeGroupTests: XCTestCase {
             )
         }
 
-        func source(for item: BaseItem) -> StubSource? {
+        func source(for item: BaseItem) -> RecordingStubSource? {
             stubSources[ObjectIdentifier(item)]
         }
     }

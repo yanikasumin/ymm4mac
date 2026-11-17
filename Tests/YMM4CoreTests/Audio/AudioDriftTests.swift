@@ -1,53 +1,6 @@
 import XCTest
 @testable import YMM4Core
 
-// MARK: - テスト用の供給元（AudioPipelineTests と同じ流儀）
-
-private final class DriftProviderFactory: PCMProviderFactory {
-    var providers: [String: PCMProvider] = [:]
-
-    func createProvider(filePath: String?, audioTrackIndex: Int) -> PCMProvider? {
-        guard let filePath else { return nil }
-        return providers[filePath]
-    }
-}
-
-/// フレーム番号をそのまま値にしたランプ波形（L = R = フレーム番号）。
-/// 出力サンプルの値から「いま何フレーム目の素材が鳴っているか」を
-/// 直接読み取れるため、内容位置のドリフト測定に使う。
-/// Float32 で整数を正確に表せるのは 2^24 フレームまでで、それを超える
-/// 測定点では表現誤差（ulp）が最大で 1 フレーム程度乗る。許容幅は
-/// その分を見込んで設定し、ドリフトの有無は「偏差の時間変化」で判定する。
-private func rampProvider(frames: Int, hz: Int) -> InMemoryPCMProvider {
-    var samples: [Float] = []
-    samples.reserveCapacity(frames * 2)
-    for frame in 0..<frames {
-        samples.append(Float(frame))
-        samples.append(Float(frame))
-    }
-    return InMemoryPCMProvider(samples: samples, hz: hz)
-}
-
-private func constantAnimation(_ value: Double) -> Animation {
-    Animation(
-        defaultValue: value, minValue: -100_000, maxValue: 100_000,
-        animationType: .none, values: [AnimationValue(value)]
-    )
-}
-
-private func makeAudioItem(
-    filePath: String, frame: Int = 0, length: Int = 30, layer: Int = 0
-) -> AudioItem {
-    let item = AudioItem()
-    item.frame = frame
-    item.length = length
-    item.layer = layer
-    item.filePath = filePath
-    item.volume = constantAnimation(100)
-    item.pan = constantAnimation(0)
-    return item
-}
-
 private func makeTimeline(items: [BaseItem], fps: Int = 30, hz: Int = 48_000) -> Timeline {
     let timeline = Timeline()
     var info = VideoInfo()
@@ -99,7 +52,7 @@ final class AudioDriftTests: XCTestCase {
     // MARK: - リサンプル跨ぎチェーン（44.1kHz 素材 → 48kHz タイムライン）
 
     func testResamplerChainDriftFiveMinutes() {
-        let factory = DriftProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["song"] = rampProvider(frames: 44_100 * 305, hz: 44_100)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         // 9000 フレーム @30fps = 5 分。素材は 44.1kHz（CD 音源の想定）。
@@ -141,7 +94,7 @@ final class AudioDriftTests: XCTestCase {
     /// 書き出しの実経路は 1 フレーム単位の読み取りになる。読み取り
     /// 粒度が変わっても位置・内容がずれないことを 3 分で確認する。
     func testResamplerChainDriftPerFrameReads() {
-        let factory = DriftProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["song"] = rampProvider(frames: 44_100 * 185, hz: 44_100)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let item = makeAudioItem(filePath: "song", length: 5400)
@@ -169,7 +122,7 @@ final class AudioDriftTests: XCTestCase {
     // MARK: - タイムラインミキサー（48kHz 同 Hz・等速の素通し経路）
 
     func testMixerDriftFiveMinutes() {
-        let factory = DriftProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["song"] = rampProvider(frames: 48_000 * 305, hz: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let item = makeAudioItem(filePath: "song", length: 9000)
@@ -225,7 +178,7 @@ final class AudioDriftTests: XCTestCase {
     // MARK: - 可変速（100% → 200% 線形、3 分）
 
     func testVariableRateDriftThreeMinutes() {
-        let factory = DriftProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["v"] = rampProvider(frames: 48_000 * 280, hz: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let item = makeAudioItem(filePath: "v", length: 5400)
@@ -264,7 +217,7 @@ final class AudioDriftTests: XCTestCase {
     // MARK: - グループバス経由（1 分）
 
     func testGroupBusDriftOneMinute() {
-        let factory = DriftProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = rampProvider(frames: 48_000 * 65, hz: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let group = GroupItem()

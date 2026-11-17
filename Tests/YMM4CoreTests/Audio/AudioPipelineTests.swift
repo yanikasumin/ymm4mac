@@ -1,57 +1,6 @@
 import XCTest
 @testable import YMM4Core
 
-// MARK: - テスト用の供給元
-
-private final class MapProviderFactory: PCMProviderFactory {
-    var providers: [String: PCMProvider] = [:]
-
-    func createProvider(filePath: String?, audioTrackIndex: Int) -> PCMProvider? {
-        guard let filePath else { return nil }
-        return providers[filePath]
-    }
-}
-
-private func constantProvider(
-    _ value: Float, frames: Int, hz: Int = 48_000
-) -> InMemoryPCMProvider {
-    InMemoryPCMProvider(
-        samples: [Float](repeating: value, count: frames * 2), hz: hz
-    )
-}
-
-/// フレーム番号をそのまま値にしたランプ波形（L = R = フレーム番号）。
-private func rampProvider(frames: Int, hz: Int) -> InMemoryPCMProvider {
-    var samples: [Float] = []
-    samples.reserveCapacity(frames * 2)
-    for frame in 0..<frames {
-        samples.append(Float(frame))
-        samples.append(Float(frame))
-    }
-    return InMemoryPCMProvider(samples: samples, hz: hz)
-}
-
-private func constantAnimation(_ value: Double) -> Animation {
-    Animation(
-        defaultValue: value, minValue: -100_000, maxValue: 100_000,
-        animationType: .none, values: [AnimationValue(value)]
-    )
-}
-
-private func makeAudioItem(
-    filePath: String, frame: Int = 0, length: Int = 30, layer: Int = 0,
-    volume: Double = 100
-) -> AudioItem {
-    let item = AudioItem()
-    item.frame = frame
-    item.length = length
-    item.layer = layer
-    item.filePath = filePath
-    item.volume = constantAnimation(volume)
-    item.pan = constantAnimation(0)
-    return item
-}
-
 private func makeTimeline(
     items: [BaseItem], fps: Int = 30, hz: Int = 48_000
 ) -> Timeline {
@@ -166,7 +115,7 @@ final class AudioPipelineTests: XCTestCase {
     // MARK: - チェーン（EffectedAudioItemSource）
 
     func testEffectedSourceNegativePositionAndDurationClamp() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = constantProvider(0.8, frames: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let item = makeAudioItem(filePath: "a")
@@ -190,7 +139,7 @@ final class AudioPipelineTests: XCTestCase {
     }
 
     func testPlaybackRateConstantDouble() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["r"] = rampProvider(frames: 96_000, hz: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let item = makeAudioItem(filePath: "r")
@@ -206,7 +155,7 @@ final class AudioPipelineTests: XCTestCase {
     }
 
     func testContentOffsetShiftsStart() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         // 値 = 経過秒になるランプ（フレーム番号 / Hz）。
         var samples: [Float] = []
         for frame in 0..<96_000 {
@@ -226,7 +175,7 @@ final class AudioPipelineTests: XCTestCase {
     }
 
     func testLoopWrapsContent() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["l"] = constantProvider(0.8, frames: 12_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let item = makeAudioItem(filePath: "l")
@@ -240,7 +189,7 @@ final class AudioPipelineTests: XCTestCase {
     }
 
     func testVariableRateIdentityAndDouble() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["v"] = rampProvider(frames: 100, hz: 100)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
 
@@ -363,7 +312,7 @@ final class AudioPipelineTests: XCTestCase {
     // MARK: - タイムラインミックス
 
     func testMixerAddsItemsWithLayerVolume() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = constantProvider(0.5, frames: 48_000)
         factory.providers["b"] = constantProvider(0.25, frames: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
@@ -387,7 +336,7 @@ final class AudioPipelineTests: XCTestCase {
     }
 
     func testMixerIntervalBoundaries() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = constantProvider(0.8, frames: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         // 1 秒目から 1 秒間だけ鳴るアイテム。タイムラインは 2 秒。
@@ -413,7 +362,7 @@ final class AudioPipelineTests: XCTestCase {
     }
 
     func testMixerExcludesHiddenLayer() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = constantProvider(0.8, frames: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let item = makeAudioItem(filePath: "a", layer: 3)
@@ -428,7 +377,7 @@ final class AudioPipelineTests: XCTestCase {
     // MARK: - グループバス
 
     func testGroupBusRoutesFullyOwnedItem() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = constantProvider(0.6, frames: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let group = GroupItem()
@@ -454,7 +403,7 @@ final class AudioPipelineTests: XCTestCase {
     }
 
     func testGroupBusPartialOverlapSplitsAtBoundary() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = constantProvider(0.6, frames: 96_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let group = GroupItem()
@@ -481,7 +430,7 @@ final class AudioPipelineTests: XCTestCase {
     // MARK: - シーン / ボイス
 
     func testSceneItemPullsNestedTimeline() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = constantProvider(0.4, frames: 48_000)
         let nestedItem = makeAudioItem(filePath: "a")
         let nested = makeTimeline(items: [nestedItem])
@@ -502,7 +451,7 @@ final class AudioPipelineTests: XCTestCase {
     }
 
     func testVoiceItemThroughUpsampler() {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         let sourceFactory = AudioSourceFactory(
             providerFactory: factory,
             voiceProviderResolver: { _ in constantProvider(0.3, frames: 24_000, hz: 24_000) }
