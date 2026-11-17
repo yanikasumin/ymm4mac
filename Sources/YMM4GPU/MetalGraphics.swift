@@ -100,6 +100,12 @@ public final class MetalGraphicsDevices {
     let blurPipeline: MTLRenderPipelineState
     /// モザイク（矩形）のコンピュートカーネル。
     let mosaicPipeline: MTLComputePipelineState
+    /// ワープ系エフェクトのパス（MAC-0028: アルファマスク・色収差・タイリング）。
+    let warpPipeline: MTLRenderPipelineState
+    /// 合成系エフェクトのパス（MAC-0028: 影・塗り・枠線・複写反転）。
+    let compositePipeline: MTLRenderPipelineState
+    /// モルフォロジーのコンピュートカーネル（MAC-0028）。
+    let morphologyPipeline: MTLComputePipelineState
     let nearestSampler: MTLSamplerState
     let linearSampler: MTLSamplerState
     /// 範囲外を透明黒として読むサンプラ（ぼかしの Soft 境界用）。
@@ -130,7 +136,10 @@ public final class MetalGraphicsDevices {
               let shapeFunction = library.makeFunction(name: "ymm4ShapeFragment"),
               let effectFunction = library.makeFunction(name: "ymm4ColorEffectFragment"),
               let blurFunction = library.makeFunction(name: "ymm4BlurFragment"),
-              let mosaicFunction = library.makeFunction(name: "ymm4MosaicKernel")
+              let mosaicFunction = library.makeFunction(name: "ymm4MosaicKernel"),
+              let warpFunction = library.makeFunction(name: "ymm4WarpFragment"),
+              let compositeFunction = library.makeFunction(name: "ymm4CompositeFragment"),
+              let morphologyFunction = library.makeFunction(name: "ymm4MorphologyKernel")
         else { return nil }
 
         let vertexDescriptor = MTLVertexDescriptor()
@@ -182,11 +191,17 @@ public final class MetalGraphicsDevices {
         }
         guard let effect = makeEffectPipeline(fragment: effectFunction),
               let blur = makeEffectPipeline(fragment: blurFunction),
-              let mosaic = try? device.makeComputePipelineState(function: mosaicFunction)
+              let mosaic = try? device.makeComputePipelineState(function: mosaicFunction),
+              let warp = makeEffectPipeline(fragment: warpFunction),
+              let composite = makeEffectPipeline(fragment: compositeFunction),
+              let morphology = try? device.makeComputePipelineState(function: morphologyFunction)
         else { return nil }
         effectPipeline = effect
         blurPipeline = blur
         mosaicPipeline = mosaic
+        warpPipeline = warp
+        compositePipeline = composite
+        morphologyPipeline = morphology
 
         func makeSampler(filter: MTLSamplerMinMagFilter) -> MTLSamplerState? {
             let descriptor = MTLSamplerDescriptor()
@@ -541,6 +556,202 @@ public final class MetalGraphicsDevices {
             uint width;
             uint height;
         };
+
+        // ワープ系エフェクトの共通フラグメント（MAC-0028）。出力テクスチャの
+        // 平面座標から入力をサンプルし直す系を mode で切り替える。いずれも
+        // 本家の D2D 効果チェーンの構成を1パスへ畳んだもので、数式の根拠は
+        // 各処理器のコメントに記す。
+        // mode: 0=ぼかしアルファによるマスク（縁ぼかし・角丸）, 1=色収差,
+        //       2=タイリング, 3=素のアルファマスク, 4=複写反転, 5=シルエット
+        struct WarpUniforms {
+            float4 inputPlane;
+            float4 maskPlane;
+            float4 param0;
+            float4 param1;
+            float2 inputOffset;
+            float2 maskOffset;
+            float2 outputOrigin;
+            float2 outputSize;
+            uint mode;
+            float pad0;
+            float pad1;
+            float pad2;
+        };
+
+        float2 ymm4WarpUV(float2 plane, float4 rect, float2 offset) {
+            return (plane + offset - rect.xy) / rect.zw;
+        }
+
+        fragment float4 ymm4WarpFragment(
+            VertexOut in [[stage_in]],
+            texture2d<float> input [[texture(0)]],
+            texture2d<float> mask [[texture(1)]],
+            sampler inputSampler [[sampler(0)]],
+            constant WarpUniforms &uniforms [[buffer(0)]]
+        ) {
+            float2 point = uniforms.outputOrigin + in.uv * uniforms.outputSize;
+            switch (uniforms.mode) {
+                case 0: {
+                    // out = 入力 × clamp(clamp(2・ぼかしα − 1) × param0.x)。
+                    // 本家 Primitive.BorderBlur / RoundCorner の
+                    // GaussianBlur → LinearTransfer(AlphaSlope 2, 切片 −1,
+                    // Clamp) → （角丸のみ第2の LinearTransfer）→ AlphaMask。
+                    float4 color = input.sample(
+                        inputSampler, ymm4WarpUV(point, uniforms.inputPlane, uniforms.inputOffset));
+                    float blurredAlpha = mask.sample(
+                        inputSampler, ymm4WarpUV(point, uniforms.maskPlane, uniforms.maskOffset)).a;
+                    float a1 = clamp(2.0 * blurredAlpha - 1.0, 0.0, 1.0);
+                    float a2 = clamp(a1 * uniforms.param0.x, 0.0, 1.0);
+                    return color * a2;
+                }
+                case 1: {
+                    // 色収差: R は 1/(1+s) 拡縮点、G は同点、B は 1/(1−s)
+                    // 拡縮点から取り、Composite(Plus) して [0,1] へクランプ
+                    // する（本家 ChromaticAberration の ColorMatrix 分離 →
+                    // AffineTransform2D → Composite Plus → Clamp の構成）。
+                    float4 cr = input.sample(
+                        inputSampler, ymm4WarpUV(
+                            point / uniforms.param0.x, uniforms.inputPlane, uniforms.inputOffset));
+                    float4 cg = input.sample(
+                        inputSampler, ymm4WarpUV(point, uniforms.inputPlane, uniforms.inputOffset));
+                    float4 cb = input.sample(
+                        inputSampler, ymm4WarpUV(
+                            point / uniforms.param0.y, uniforms.inputPlane, uniforms.inputOffset));
+                    float4 sum = float4(cr.r, cg.g, cb.b, cr.a + cg.a + cb.a);
+                    return clamp(sum, 0.0, 1.0);
+                }
+                case 2: {
+                    // タイリング: param0 = 入力境界 (L, T, W, H)、
+                    // param1.xy = 平行移動量。移動前の座標を入力境界で剰余し
+                    // てサンプルする（本家 Tile + Crop + 平行移動の構成）。
+                    float2 pre = point - uniforms.param1.xy;
+                    float w = uniforms.param0.z;
+                    float h = uniforms.param0.w;
+                    float qx = w > 0.0
+                        ? uniforms.param0.x + (fmod(fmod(pre.x - uniforms.param0.x, w) + w, w))
+                        : pre.x;
+                    float qy = h > 0.0
+                        ? uniforms.param0.y + (fmod(fmod(pre.y - uniforms.param0.y, h) + h, h))
+                        : pre.y;
+                    return input.sample(
+                        inputSampler, ymm4WarpUV(float2(qx, qy), uniforms.inputPlane, uniforms.inputOffset));
+                }
+                case 3: {
+                    // 素のアルファマスク: tex0 × tex1.α（本家 AlphaMask）。
+                    float4 color = input.sample(
+                        inputSampler, ymm4WarpUV(point, uniforms.inputPlane, uniforms.inputOffset));
+                    float maskAlpha = mask.sample(
+                        inputSampler, ymm4WarpUV(point, uniforms.maskPlane, uniforms.maskOffset)).a;
+                    return color * maskAlpha;
+                }
+                case 4: {
+                    // 複写反転: param0 = (分割座標, 中心X, 中心Y, 軸 0=X/1=Y)、
+                    // param1 = (複写の平行移動 dx, dy, 反転符号 sx, sy)、
+                    // maskPlane.xy = (平行移動の半分 dx/2, dy/2)、
+                    // maskPlane.z = 原本側 (0=以上側, 1=以下側)。
+                    float2 pre = point + uniforms.maskPlane.xy;
+                    float coord = uniforms.param0.w < 0.5 ? pre.x : pre.y;
+                    bool isOriginal = uniforms.maskPlane.z < 0.5
+                        ? coord >= uniforms.param0.x
+                        : coord <= uniforms.param0.x;
+                    float2 q = pre;
+                    if (!isOriginal) {
+                        q = float2(
+                            uniforms.param0.y + (pre.x - uniforms.param1.x - uniforms.param0.y) * uniforms.param1.z,
+                            uniforms.param0.z + (pre.y - uniforms.param1.y - uniforms.param0.z) * uniforms.param1.w);
+                    }
+                    return input.sample(
+                        inputSampler, ymm4WarpUV(q, uniforms.inputPlane, uniforms.inputOffset));
+                }
+                case 5: {
+                    // シルエット: param0 = 単色 (Premultiplied) × 入力α。
+                    float4 color = input.sample(
+                        inputSampler, ymm4WarpUV(point, uniforms.inputPlane, uniforms.inputOffset));
+                    return uniforms.param0 * color.a;
+                }
+                default:
+                    return float4(0.0);
+            }
+        }
+
+        // 合成系エフェクトの共通フラグメント（MAC-0028）。平面座標で2つの
+        // 画像をサンプルして合成する。
+        // mode: 0=SourceOver (A over B), 1=DestinationOut の結果 (B × (1 − A.α))
+        struct CompositeUniforms {
+            float4 planeA;
+            float4 planeB;
+            float2 offsetA;
+            float2 offsetB;
+            float2 outputOrigin;
+            float2 outputSize;
+            float opacityA;
+            float opacityB;
+            uint mode;
+            float pad0;
+        };
+
+        fragment float4 ymm4CompositeFragment(
+            VertexOut in [[stage_in]],
+            texture2d<float> texA [[texture(0)]],
+            texture2d<float> texB [[texture(1)]],
+            sampler texSampler [[sampler(0)]],
+            constant CompositeUniforms &uniforms [[buffer(0)]]
+        ) {
+            float2 point = uniforms.outputOrigin + in.uv * uniforms.outputSize;
+            float4 aRaw = texA.sample(
+                texSampler, (point + uniforms.offsetA - uniforms.planeA.xy) / uniforms.planeA.zw);
+            float4 bRaw = texB.sample(
+                texSampler, (point + uniforms.offsetB - uniforms.planeB.xy) / uniforms.planeB.zw);
+            switch (uniforms.mode) {
+                case 0: {
+                    float4 a = aRaw * uniforms.opacityA;
+                    float4 b = bRaw * uniforms.opacityB;
+                    return a + b * (1.0 - a.a);
+                }
+                case 1: {
+                    float4 b = bRaw * uniforms.opacityB;
+                    return b * (1.0 - aRaw.a);
+                }
+                default:
+                    return float4(0.0);
+            }
+        }
+
+        // モルフォロジー（MAC-0028）。1軸ぶんの最大／最小フィルタ。
+        // テクスチャ外のサンプルは透明として扱う（本家の無限平面モデルで
+        // 入力境界の外が透明であることに対応）。mode: 0=縮小 (min),
+        // 1=膨張 (max)。axis: 0=横パス, 1=縦パス。
+        struct MorphologyUniforms {
+            int start;
+            uint count;
+            uint mode;
+            uint axis;
+        };
+
+        kernel void ymm4MorphologyKernel(
+            texture2d<float, access::read> input [[texture(0)]],
+            texture2d<float, access::write> output [[texture(1)]],
+            constant MorphologyUniforms &uniforms [[buffer(0)]],
+            uint2 gid [[thread_position_in_grid]]
+        ) {
+            if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
+                return;
+            }
+            float4 acc = uniforms.mode == 1 ? float4(0.0) : float4(1.0);
+            for (uint i = 0; i < uniforms.count; i++) {
+                int2 coord = int2(gid) + (uniforms.axis == 0
+                    ? int2(uniforms.start + int(i), 0)
+                    : int2(0, uniforms.start + int(i)));
+                float4 value = float4(0.0);
+                if (coord.x >= 0 && coord.y >= 0
+                    && coord.x < int(input.get_width())
+                    && coord.y < int(input.get_height())) {
+                    value = input.read(uint2(coord));
+                }
+                acc = uniforms.mode == 1 ? max(acc, value) : min(acc, value);
+            }
+            output.write(acc, gid);
+        }
 
         kernel void ymm4MosaicKernel(
             texture2d<float, access::read> input [[texture(0)]],

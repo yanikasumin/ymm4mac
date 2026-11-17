@@ -84,7 +84,9 @@ final class MetalEffectDefinition: VideoEffectDefinition {
 
     var diagnosticText: String? { base.diagnosticText }
 
-    /// Metal 処理器が用意できる定義か（第1段の対象）。
+    /// Metal 処理器が用意できる定義か（第1段＋第2段の対象）。
+    /// 第2段の対象は MetalEffectProcessorsStage2.swift に根拠とともに記す。
+    /// ここに無い GPU 系定義は Core の素通り処理器のままになる。
     static func supportsMetalProcessing(_ definition: VideoEffectDefinitionBase) -> Bool {
         switch definition {
         case is InvertEffectDefinition,
@@ -96,7 +98,44 @@ final class MetalEffectDefinition: VideoEffectDefinition {
              is PosterizeEffectDefinition,
              is LinearTransferEffectDefinition,
              is GaussianBlurEffectDefinition,
-             is MosaicEffectDefinition:
+             is MosaicEffectDefinition,
+             // 第2段: 幾何変換系
+             is RotateEffectDefinition,
+             is SkewEffectDefinition,
+             is CenterPointEffectDefinition,
+             is CropEffectDefinition,
+             is MarginEffectDefinition,
+             is CopyAndReverseEffectDefinition,
+             is TilingEffectDefinition,
+             is AutomaticZoomEffectDefinition,
+             is RoundCornerEffectDefinition,
+             // 第2段: ぼかし・色収差
+             is BorderBlurEffectDefinition,
+             is DirectionalBlurEffectDefinition,
+             is ChromaticAberrationEffectDefinition,
+             // 第2段: 影・塗り・枠線（単色ブラシのみ）
+             is ShadowEffectDefinition,
+             is FillBackgroundEffectDefinition,
+             is FillForegroundEffectDefinition,
+             is FrameLineEffectDefinition,
+             // 第2段: ワープ系
+             is MorphologyEffectDefinition,
+             is DrawLazyEffectEffectDefinition,
+             is JumpEffectDefinition,
+             // 第2段: イン／アウト系
+             is InOutBorderBlurEffectDefinition,
+             is InOutGaussianBlurEffectDefinition,
+             is InOutMosaicEffectDefinition,
+             is InOutMoveFromOutsideImageEffectDefinition,
+             is InOutGetUpEffectDefinition,
+             is InOutRotateEffectDefinition,
+             is InOutSkewEffectDefinition,
+             is InOutJumpEffectDefinition,
+             // 第2段: ランダム／反復系
+             is RandomRotateEffectDefinition,
+             is RandomSkewEffectDefinition,
+             is RepeatRotateEffectDefinition,
+             is RepeatSkewEffectDefinition:
             return true
         default:
             return false
@@ -125,6 +164,69 @@ final class MetalEffectDefinition: VideoEffectDefinition {
             return MetalGaussianBlurProcessor(context: context, definition: definition)
         case let definition as MosaicEffectDefinition:
             return MetalMosaicProcessor(context: context, definition: definition)
+        // 第2段（MetalEffectProcessorsStage2.swift）
+        case let definition as RotateEffectDefinition:
+            return MetalRotateProcessor(context: context, definition: definition)
+        case let definition as SkewEffectDefinition:
+            return MetalSkewProcessor(context: context, definition: definition)
+        case let definition as CenterPointEffectDefinition:
+            return MetalCenterPointProcessor(context: context, definition: definition)
+        case let definition as CropEffectDefinition:
+            return MetalCropProcessor(context: context, definition: definition)
+        case let definition as MarginEffectDefinition:
+            return MetalMarginProcessor(context: context, definition: definition)
+        case let definition as CopyAndReverseEffectDefinition:
+            return MetalCopyAndReverseProcessor(context: context, definition: definition)
+        case let definition as TilingEffectDefinition:
+            return MetalTilingProcessor(context: context, definition: definition)
+        case let definition as AutomaticZoomEffectDefinition:
+            return MetalAutomaticZoomProcessor(context: context, definition: definition)
+        case let definition as RoundCornerEffectDefinition:
+            return MetalRoundCornerProcessor(context: context, definition: definition)
+        case let definition as BorderBlurEffectDefinition:
+            return MetalBorderBlurProcessor(context: context, definition: definition)
+        case let definition as DirectionalBlurEffectDefinition:
+            return MetalDirectionalBlurProcessor(context: context, definition: definition)
+        case let definition as ChromaticAberrationEffectDefinition:
+            return MetalChromaticAberrationProcessor(context: context, definition: definition)
+        case let definition as ShadowEffectDefinition:
+            return MetalShadowProcessor(context: context, definition: definition)
+        case let definition as FillBackgroundEffectDefinition:
+            return MetalFillBackgroundProcessor(context: context, definition: definition)
+        case let definition as FillForegroundEffectDefinition:
+            return MetalFillForegroundProcessor(context: context, definition: definition)
+        case let definition as FrameLineEffectDefinition:
+            return MetalFrameLineProcessor(context: context, definition: definition)
+        case let definition as MorphologyEffectDefinition:
+            return MetalMorphologyProcessor(context: context, definition: definition)
+        case let definition as DrawLazyEffectEffectDefinition:
+            return MetalDrawLazyProcessor(context: context, definition: definition)
+        case let definition as JumpEffectDefinition:
+            return MetalJumpProcessor(context: context, definition: definition)
+        case let definition as InOutBorderBlurEffectDefinition:
+            return MetalInOutBorderBlurProcessor(context: context, definition: definition)
+        case let definition as InOutGaussianBlurEffectDefinition:
+            return MetalInOutGaussianBlurProcessor(context: context, definition: definition)
+        case let definition as InOutMosaicEffectDefinition:
+            return MetalInOutMosaicProcessor(context: context, definition: definition)
+        case let definition as InOutMoveFromOutsideImageEffectDefinition:
+            return MetalInOutMoveFromOutsideImageProcessor(context: context, definition: definition)
+        case let definition as InOutGetUpEffectDefinition:
+            return MetalInOutGetUpProcessor(context: context, definition: definition)
+        case let definition as InOutRotateEffectDefinition:
+            return MetalInOutRotateProcessor(context: context, definition: definition)
+        case let definition as InOutSkewEffectDefinition:
+            return MetalInOutSkewProcessor(context: context, definition: definition)
+        case let definition as InOutJumpEffectDefinition:
+            return MetalInOutJumpProcessor(context: context, definition: definition)
+        case let definition as RandomRotateEffectDefinition:
+            return MetalRandomRotateProcessor(context: context, definition: definition)
+        case let definition as RandomSkewEffectDefinition:
+            return MetalRandomSkewProcessor(context: context, definition: definition)
+        case let definition as RepeatRotateEffectDefinition:
+            return MetalRepeatRotateProcessor(context: context, definition: definition)
+        case let definition as RepeatSkewEffectDefinition:
+            return MetalRepeatSkewProcessor(context: context, definition: definition)
         default:
             return base.createProcessor()
         }
@@ -176,19 +278,30 @@ public class MetalEffectProcessor: VideoEffectProcessor {
                 texture: context.devices.transparentTexture,
                 bounds: RectF(left: 0, top: 0, right: 1, bottom: 1)
             ))
-            return description.drawDescription
+            return modifiedDrawDescription(description, input: nil)
         }
         guard input.transform == .identity, input.opacity == 1 else {
             register(input)
-            return description.drawDescription
+            return modifiedDrawDescription(description, input: input)
         }
         if let rendered = try render(input: input, description: description) {
             register(rendered)
         } else {
             register(input)
         }
-        // 本家の対象処理器はいずれも DrawDescription を無変換で返す。
-        return description.drawDescription
+        return modifiedDrawDescription(description, input: input)
+    }
+
+    /// 戻り DrawDescription を書き換える処理器（回転の 3D 分岐・中心点・
+    /// 自動ズーム・ジャンプ・描画遅延等、第2段）用のフック。既定は無変更
+    /// （第1段の対象処理器はいずれも DrawDescription を無変換で返す）。
+    /// 本家では DrawDescription の書き換えは画像変換とは独立に行われる
+    /// ため、入力がプレーンでない素通し経路でもフックは通す。`input` は
+    /// 登録表で解決した入力実体（入力が無い場合は nil）。
+    func modifiedDrawDescription(
+        _ description: EffectDescription, input: MetalImage?
+    ) -> DrawDescription {
+        description.drawDescription
     }
 
     /// 効果の適用。具象処理器が差し替える。返した実体が出力として
@@ -250,6 +363,18 @@ public class MetalEffectProcessor: VideoEffectProcessor {
         pipeline: MTLRenderPipelineState,
         configure: (MTLRenderCommandEncoder) -> Void
     ) throws {
+        try executePass(
+            output: output, pipeline: pipeline, vertices: fullscreenQuad, configure: configure
+        )
+    }
+
+    /// 頂点を指定できる版の1パス描画（第2段の変換系が使う）。
+    func executePass(
+        output: MTLTexture,
+        pipeline: MTLRenderPipelineState,
+        vertices: [QuadVertex],
+        configure: (MTLRenderCommandEncoder) -> Void
+    ) throws {
         guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
             throw MetalRenderError.commandBufferFailed(underlying: nil)
         }
@@ -264,7 +389,6 @@ public class MetalEffectProcessor: VideoEffectProcessor {
             throw MetalRenderError.commandBufferFailed(underlying: nil)
         }
         encoder.setRenderPipelineState(pipeline)
-        let vertices = fullscreenQuad
         encoder.setVertexBytes(
             vertices, length: MemoryLayout<QuadVertex>.stride * vertices.count, index: 0
         )
@@ -303,6 +427,517 @@ public class MetalEffectProcessor: VideoEffectProcessor {
             interpolation: input.interpolation
         )
     }
+
+    // MARK: - 第2段の共通描画ヘルパ
+
+    /// ぼかしパスのユニフォーム（MetalGraphics のシェーダ定義と一致）。
+    struct BlurUniforms {
+        var step: SIMD2<Float>
+        var mapScale: SIMD2<Float>
+        var mapOffset: SIMD2<Float>
+        var radius: Int32
+    }
+
+    /// ぼかしの1パス（準備パスは radius = 0 で写像だけを行う）。
+    func blurPass(
+        input: MTLTexture,
+        output: MTLTexture,
+        sampler: MTLSamplerState,
+        uniforms: BlurUniforms,
+        weights: [Float]
+    ) throws {
+        var uniforms = uniforms
+        var weights = weights
+        try executeRenderPass(
+            output: output, pipeline: context.devices.blurPipeline
+        ) { encoder in
+            encoder.setFragmentTexture(input, index: 0)
+            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.setFragmentBytes(
+                &uniforms, length: MemoryLayout<BlurUniforms>.size, index: 0
+            )
+            encoder.setFragmentBytes(
+                &weights, length: MemoryLayout<Float>.size * weights.count, index: 1
+            )
+        }
+    }
+
+    /// ガウスぼかしの重み（±3σ 打ち切り、正規化済み）と作業 σ。
+    func gaussianKernel(sigma: Double) -> (weights: [Float], radius: Int, workSigma: Double) {
+        let downsample = sigma > 6 ? Int(ceil(sigma / 6)) : 1
+        let workSigma = sigma / Double(downsample)
+        let radius = Int(ceil(3 * workSigma))
+        var weights = [Float](repeating: 0, count: radius + 1)
+        var total: Double = 0
+        for index in 0...radius {
+            let weight = exp(-Double(index * index) / (2 * workSigma * workSigma))
+            weights[index] = Float(weight)
+            total += index == 0 ? weight : 2 * weight
+        }
+        for index in 0...radius {
+            weights[index] = Float(Double(weights[index]) / total)
+        }
+        return (weights, radius, workSigma)
+    }
+
+    /// 入力を作業テクスチャへ写す準備パス（縮小と境界拡張を伴う）。
+    /// UV はテクスチャが張る平面範囲（texturePlaneRect）基準で求める
+    /// （MAC-0027 の画素対応の維持）。
+    func blurPreparationPass(
+        input: MetalImage,
+        output: MTLTexture,
+        outputBounds: RectF,
+        downsample: Int,
+        sampler: MTLSamplerState
+    ) throws {
+        let inputPlaneWidth = input.texturePlaneRect.right - input.texturePlaneRect.left
+        let inputPlaneHeight = input.texturePlaneRect.bottom - input.texturePlaneRect.top
+        try blurPass(
+            input: input.texture, output: output, sampler: sampler,
+            uniforms: BlurUniforms(
+                step: .zero,
+                mapScale: SIMD2<Float>(
+                    Float((outputBounds.right - outputBounds.left) / inputPlaneWidth),
+                    Float((outputBounds.bottom - outputBounds.top) / inputPlaneHeight)
+                ),
+                mapOffset: SIMD2<Float>(
+                    Float((outputBounds.left + input.planeOffset.x - input.texturePlaneRect.left) / inputPlaneWidth),
+                    Float((outputBounds.top + input.planeOffset.y - input.texturePlaneRect.top) / inputPlaneHeight)
+                ),
+                radius: 0
+            ),
+            weights: [1]
+        )
+        _ = downsample
+    }
+
+    /// ガウスぼかし本体（分離型2パス）。第1段の `MetalGaussianBlurProcessor`
+    /// と縁ぼかし・角丸・影・イン／アウトぼかしが共有する。
+    /// Soft 境界では出力境界が 3σ 広がり範囲外は透明、Hard 境界では
+    /// 出力境界は入力と同じで範囲外は鏡像として読む。
+    func renderGaussianBlurred(
+        input: MetalImage, sigma: Double, hardBorder: Bool
+    ) throws -> MetalImage? {
+        guard sigma > 0 else { return input }
+        let downsample = sigma > 6 ? Int(ceil(sigma / 6)) : 1
+        let (weights, radius, _) = gaussianKernel(sigma: sigma)
+        let expansion = hardBorder ? 0 : ceil(3 * sigma)
+        let outBounds = RectF(
+            left: input.bounds.left - expansion,
+            top: input.bounds.top - expansion,
+            right: input.bounds.right + expansion,
+            bottom: input.bounds.bottom + expansion
+        )
+        let workWidth = max(1, Int(ceil((outBounds.right - outBounds.left) / Double(downsample))))
+        let workHeight = max(1, Int(ceil((outBounds.bottom - outBounds.top) / Double(downsample))))
+        guard let workA = makeTexture(
+                width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead]),
+              let workB = makeTexture(
+                width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead])
+        else { return nil }
+        let sampler = hardBorder ? context.devices.mirrorSampler : context.devices.borderSampler
+        try blurPreparationPass(
+            input: input, output: workA, outputBounds: outBounds,
+            downsample: downsample, sampler: sampler
+        )
+        try blurPass(
+            input: workA, output: workB, sampler: sampler,
+            uniforms: BlurUniforms(
+                step: SIMD2<Float>(1 / Float(workWidth), 0),
+                mapScale: SIMD2<Float>(1, 1), mapOffset: .zero,
+                radius: Int32(radius)
+            ),
+            weights: weights
+        )
+        try blurPass(
+            input: workB, output: workA, sampler: sampler,
+            uniforms: BlurUniforms(
+                step: SIMD2<Float>(0, 1 / Float(workHeight)),
+                mapScale: SIMD2<Float>(1, 1), mapOffset: .zero,
+                radius: Int32(radius)
+            ),
+            weights: weights
+        )
+        return MetalImage(texture: workA, bounds: outBounds, interpolation: .linear)
+    }
+
+    /// 方向ぼかし本体。本家 D2D DirectionalBlur の分離不可能な1方向
+    /// ガウスを、指定角度方向の1パスで近似する（厳密な D2D 内部方式は
+    /// 非公開。台帳に記録）。`angleDegrees` は D2D の Angle 値そのもの
+    /// （画面座標系、y 下向きで時計回り正）。
+    func renderDirectionalBlurred(
+        input: MetalImage, sigma: Double, angleDegrees: Double, hardBorder: Bool
+    ) throws -> MetalImage? {
+        guard sigma > 0 else { return input }
+        // 縮小はしない。作業テクスチャを縮小すると、ぼかし方向と直交
+        // する境界まで双線形拡大で鈍ってしまう（本家は直交方向の
+        // 鮮明さを保つ。MAC-0028 検証で実測: 縦方向ぼかしで縦境界が
+        // 約4px鈍った）。カーネルは実解像度で組み立てる。
+        let downsample = 1
+        let radius = Int(ceil(3 * sigma))
+        var weights = [Float](repeating: 0, count: radius + 1)
+        var total = 0.0
+        for index in 0...radius {
+            let weight = exp(-Double(index * index) / (2 * sigma * sigma))
+            weights[index] = Float(weight)
+            total += index == 0 ? weight : 2 * weight
+        }
+        for index in 0...radius {
+            weights[index] = Float(Double(weights[index]) / total)
+        }
+        let radians = angleDegrees * Double.pi / 180
+        let dirX = cos(radians)
+        let dirY = sin(radians)
+        let expandX = hardBorder ? 0 : ceil(3 * sigma * abs(dirX))
+        let expandY = hardBorder ? 0 : ceil(3 * sigma * abs(dirY))
+        let outBounds = RectF(
+            left: input.bounds.left - expandX,
+            top: input.bounds.top - expandY,
+            right: input.bounds.right + expandX,
+            bottom: input.bounds.bottom + expandY
+        )
+        let workWidth = max(1, Int(ceil((outBounds.right - outBounds.left) / Double(downsample))))
+        let workHeight = max(1, Int(ceil((outBounds.bottom - outBounds.top) / Double(downsample))))
+        guard let workA = makeTexture(
+                width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead]),
+              let workB = makeTexture(
+                width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead])
+        else { return nil }
+        let sampler = hardBorder ? context.devices.mirrorSampler : context.devices.borderSampler
+        try blurPreparationPass(
+            input: input, output: workA, outputBounds: outBounds,
+            downsample: downsample, sampler: sampler
+        )
+        try blurPass(
+            input: workA, output: workB, sampler: sampler,
+            uniforms: BlurUniforms(
+                step: SIMD2<Float>(Float(dirX) / Float(workWidth), Float(dirY) / Float(workHeight)),
+                mapScale: SIMD2<Float>(1, 1), mapOffset: .zero,
+                radius: Int32(radius)
+            ),
+            weights: weights
+        )
+        return MetalImage(texture: workB, bounds: outBounds, interpolation: .linear)
+    }
+
+    /// 矩形モザイク本体（セル内テクセルの平均）。第1段の
+    /// `MetalMosaicProcessor` とイン／アウトモザイクが共有する。
+    func renderRectangleMosaic(input: MetalImage, cellSize: Double) throws -> MetalImage? {
+        guard let outputTexture = makeTexture(
+            width: input.texture.width, height: input.texture.height,
+            usage: [.shaderWrite, .shaderRead]
+        ) else { return nil }
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder()
+        else {
+            throw MetalRenderError.commandBufferFailed(underlying: nil)
+        }
+        var uniforms = RectangleMosaicUniforms(
+            size: Float(cellSize),
+            width: UInt32(input.texture.width),
+            height: UInt32(input.texture.height)
+        )
+        encoder.setComputePipelineState(context.devices.mosaicPipeline)
+        encoder.setTexture(input.texture, index: 0)
+        encoder.setTexture(outputTexture, index: 1)
+        encoder.setBytes(&uniforms, length: MemoryLayout<RectangleMosaicUniforms>.size, index: 0)
+        let cellsX = Int(ceil(Double(input.texture.width) / cellSize))
+        let cellsY = Int(ceil(Double(input.texture.height) / cellSize))
+        encoder.dispatchThreads(
+            MTLSize(width: cellsX, height: cellsY, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1)
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if commandBuffer.status == .error {
+            throw MetalRenderError.commandBufferFailed(underlying: commandBuffer.error)
+        }
+        return MetalImage(
+            texture: outputTexture, bounds: input.bounds,
+            texturePlaneRect: input.texturePlaneRect,
+            planeOffset: input.planeOffset,
+            interpolation: input.interpolation
+        )
+    }
+
+    /// 平面行列で入力を変換して新しいテクスチャへ焼く（本家の
+    /// AffineTransform2D / Transform3D の実体化に相当）。出力テクスチャは
+    /// `outputBounds` を張り、頂点は入力境界の四隅を行列で写したもの、
+    /// UV は変換前の平面座標から求める（透視補正つき。MetalRenderTarget
+    /// の描画頂点と同じ構成）。
+    func renderTransformed(
+        input: MetalImage,
+        matrix: Matrix4x4,
+        outputBounds: RectF,
+        interpolation: InterpolationMode
+    ) throws -> MetalImage? {
+        let outWidth = outputBounds.right - outputBounds.left
+        let outHeight = outputBounds.bottom - outputBounds.top
+        guard outWidth > 0, outHeight > 0 else {
+            // 空の境界は透明として返す（本家の空画像に相当）。
+            return MetalImage(texture: context.devices.transparentTexture, bounds: outputBounds)
+        }
+        guard let outputTexture = makeTexture(
+            width: Int(ceil(outWidth)), height: Int(ceil(outHeight)),
+            usage: [.renderTarget, .shaderRead]
+        ) else { return nil }
+        let corners: [(Double, Double)] = [
+            (input.bounds.left, input.bounds.top), (input.bounds.right, input.bounds.top),
+            (input.bounds.left, input.bounds.bottom), (input.bounds.right, input.bounds.bottom),
+        ]
+        let vertices: [QuadVertex] = corners.map { corner in
+            let v = matrix.transform(x: corner.0, y: corner.1, z: 0, w: 1)
+            let w = v.w == 0 ? 1 : v.w
+            let u = (v.x / w - outputBounds.left) / outWidth
+            let t = (v.y / w - outputBounds.top) / outHeight
+            return QuadVertex(
+                position: SIMD4<Float>(
+                    Float(2 * u - 1) * Float(w), Float(-(2 * t - 1)) * Float(w), 0, Float(w)
+                ),
+                uv: input.uv(forLocalX: corner.0, y: corner.1)
+            )
+        }
+        var opacity: Float = 1
+        try executePass(
+            output: outputTexture, pipeline: context.devices.texturedPipeline, vertices: vertices
+        ) { encoder in
+            encoder.setFragmentTexture(input.texture, index: 0)
+            encoder.setFragmentSamplerState(
+                interpolation == .nearestNeighbor
+                    ? context.devices.nearestSampler : context.devices.linearSampler,
+                index: 0
+            )
+            encoder.setFragmentBytes(&opacity, length: MemoryLayout<Float>.size, index: 0)
+        }
+        return MetalImage(
+            texture: outputTexture, bounds: outputBounds, interpolation: interpolation
+        )
+    }
+
+    /// ワープ系パス（MetalGraphics の ymm4WarpFragment）。
+    /// `mask` が nil の場合はマスクテクスチャへ入力自身を渡す。
+    /// `maskPlane` を指定するとマスク側の平面写像を差し替える
+    /// （複写反転のパラメータ受け渡しに使う）。
+    func renderWarp(
+        input: MetalImage,
+        mask: MetalImage?,
+        outputBounds: RectF,
+        mode: UInt32,
+        param0: SIMD4<Float> = .zero,
+        param1: SIMD4<Float> = .zero,
+        maskPlane: SIMD4<Float>? = nil
+    ) throws -> MetalImage? {
+        let outWidth = outputBounds.right - outputBounds.left
+        let outHeight = outputBounds.bottom - outputBounds.top
+        guard outWidth > 0, outHeight > 0 else {
+            return MetalImage(texture: context.devices.transparentTexture, bounds: outputBounds)
+        }
+        guard let outputTexture = makeTexture(
+            width: Int(ceil(outWidth)), height: Int(ceil(outHeight)),
+            usage: [.renderTarget, .shaderRead]
+        ) else { return nil }
+        let maskImage = mask ?? input
+        var uniforms = WarpPassUniforms(
+            inputPlane: planeVector(input),
+            maskPlane: maskPlane ?? planeVector(maskImage),
+            param0: param0,
+            param1: param1,
+            inputOffset: SIMD2<Float>(Float(input.planeOffset.x), Float(input.planeOffset.y)),
+            maskOffset: SIMD2<Float>(Float(maskImage.planeOffset.x), Float(maskImage.planeOffset.y)),
+            outputOrigin: SIMD2<Float>(Float(outputBounds.left), Float(outputBounds.top)),
+            outputSize: SIMD2<Float>(Float(outWidth), Float(outHeight)),
+            mode: mode,
+            pad0: 0, pad1: 0, pad2: 0
+        )
+        try executeRenderPass(
+            output: outputTexture, pipeline: context.devices.warpPipeline
+        ) { encoder in
+            encoder.setFragmentTexture(input.texture, index: 0)
+            encoder.setFragmentTexture(maskImage.texture, index: 1)
+            encoder.setFragmentSamplerState(context.devices.borderSampler, index: 0)
+            encoder.setFragmentBytes(
+                &uniforms, length: MemoryLayout<WarpPassUniforms>.size, index: 0
+            )
+        }
+        return MetalImage(
+            texture: outputTexture, bounds: outputBounds, interpolation: input.interpolation
+        )
+    }
+
+    /// 合成系パス（MetalGraphics の ymm4CompositeFragment）。
+    /// mode 0 = A over B（SourceOver）、mode 1 = B × (1 − A.α)。
+    func renderComposite(
+        top: MetalImage,
+        bottom: MetalImage,
+        outputBounds: RectF,
+        mode: UInt32,
+        opacityTop: Double = 1,
+        opacityBottom: Double = 1
+    ) throws -> MetalImage? {
+        let outWidth = outputBounds.right - outputBounds.left
+        let outHeight = outputBounds.bottom - outputBounds.top
+        guard outWidth > 0, outHeight > 0 else {
+            return MetalImage(texture: context.devices.transparentTexture, bounds: outputBounds)
+        }
+        guard let outputTexture = makeTexture(
+            width: Int(ceil(outWidth)), height: Int(ceil(outHeight)),
+            usage: [.renderTarget, .shaderRead]
+        ) else { return nil }
+        var uniforms = CompositePassUniforms(
+            planeA: planeVector(top),
+            planeB: planeVector(bottom),
+            offsetA: SIMD2<Float>(Float(top.planeOffset.x), Float(top.planeOffset.y)),
+            offsetB: SIMD2<Float>(Float(bottom.planeOffset.x), Float(bottom.planeOffset.y)),
+            outputOrigin: SIMD2<Float>(Float(outputBounds.left), Float(outputBounds.top)),
+            outputSize: SIMD2<Float>(Float(outWidth), Float(outHeight)),
+            opacityA: Float(opacityTop),
+            opacityB: Float(opacityBottom),
+            mode: mode,
+            pad0: 0
+        )
+        try executeRenderPass(
+            output: outputTexture, pipeline: context.devices.compositePipeline
+        ) { encoder in
+            encoder.setFragmentTexture(top.texture, index: 0)
+            encoder.setFragmentTexture(bottom.texture, index: 1)
+            // 範囲外は透明として読む必要がある（clampToEdge だと端の
+            // 色が画面外へ伸びて影・背景塗りを汚染する。MAC-0028 検証で
+            // 実測: 影の位置に原画の端色が出た）。
+            encoder.setFragmentSamplerState(context.devices.borderSampler, index: 0)
+            encoder.setFragmentBytes(
+                &uniforms, length: MemoryLayout<CompositePassUniforms>.size, index: 0
+            )
+        }
+        return MetalImage(
+            texture: outputTexture, bounds: outputBounds, interpolation: top.interpolation
+        )
+    }
+
+    /// モルフォロジー本体（横・縦の2パス。本家 D2D Morphology の
+    /// 矩形近傍の最大／最小。偶数寸法の中心は −(n−1)/2 始まりとする
+    /// （整数除算の切り捨て。本家未計測の仮定として台帳に記録）。
+    func renderMorphology(
+        input: MetalImage, width: Int, height: Int, dilate: Bool
+    ) throws -> MetalImage? {
+        guard width > 1 || height > 1 else { return input }
+        guard let textureA = makeTexture(
+                width: input.texture.width, height: input.texture.height,
+                usage: [.shaderWrite, .shaderRead]),
+              let textureB = makeTexture(
+                width: input.texture.width, height: input.texture.height,
+                usage: [.shaderWrite, .shaderRead])
+        else { return nil }
+        var current = input.texture
+        var target = textureA
+        if width > 1 {
+            try morphologyPass(
+                input: current, output: target,
+                start: -(width - 1) / 2, count: width, dilate: dilate, axis: 0
+            )
+            current = target
+            target = textureB
+        }
+        if height > 1 {
+            try morphologyPass(
+                input: current, output: target,
+                start: -(height - 1) / 2, count: height, dilate: dilate, axis: 1
+            )
+            current = target
+        }
+        return MetalImage(
+            texture: current, bounds: input.bounds,
+            texturePlaneRect: input.texturePlaneRect,
+            planeOffset: input.planeOffset,
+            interpolation: input.interpolation
+        )
+    }
+
+    private func morphologyPass(
+        input: MTLTexture,
+        output: MTLTexture,
+        start: Int,
+        count: Int,
+        dilate: Bool,
+        axis: UInt32
+    ) throws {
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder()
+        else {
+            throw MetalRenderError.commandBufferFailed(underlying: nil)
+        }
+        var uniforms = MorphologyPassUniforms(
+            start: Int32(start), count: UInt32(count), mode: dilate ? 1 : 0, axis: axis
+        )
+        encoder.setComputePipelineState(context.devices.morphologyPipeline)
+        encoder.setTexture(input, index: 0)
+        encoder.setTexture(output, index: 1)
+        encoder.setBytes(&uniforms, length: MemoryLayout<MorphologyPassUniforms>.size, index: 0)
+        encoder.dispatchThreads(
+            MTLSize(width: output.width, height: output.height, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1)
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if commandBuffer.status == .error {
+            throw MetalRenderError.commandBufferFailed(underlying: commandBuffer.error)
+        }
+    }
+
+    /// 画像のテクスチャ平面写像を (原点X, 原点Y, 幅, 高さ) で返す。
+    func planeVector(_ image: MetalImage) -> SIMD4<Float> {
+        SIMD4<Float>(
+            Float(image.texturePlaneRect.left), Float(image.texturePlaneRect.top),
+            Float(image.texturePlaneRect.right - image.texturePlaneRect.left),
+            Float(image.texturePlaneRect.bottom - image.texturePlaneRect.top)
+        )
+    }
+}
+
+/// ワープ系シェーダのユニフォーム（MetalGraphics のシェーダ定義と一致）。
+struct WarpPassUniforms {
+    var inputPlane: SIMD4<Float>
+    var maskPlane: SIMD4<Float>
+    var param0: SIMD4<Float>
+    var param1: SIMD4<Float>
+    var inputOffset: SIMD2<Float>
+    var maskOffset: SIMD2<Float>
+    var outputOrigin: SIMD2<Float>
+    var outputSize: SIMD2<Float>
+    var mode: UInt32
+    var pad0: Float
+    var pad1: Float
+    var pad2: Float
+}
+
+/// 合成系シェーダのユニフォーム（MetalGraphics のシェーダ定義と一致）。
+struct CompositePassUniforms {
+    var planeA: SIMD4<Float>
+    var planeB: SIMD4<Float>
+    var offsetA: SIMD2<Float>
+    var offsetB: SIMD2<Float>
+    var outputOrigin: SIMD2<Float>
+    var outputSize: SIMD2<Float>
+    var opacityA: Float
+    var opacityB: Float
+    var mode: UInt32
+    var pad0: Float
+}
+
+/// モルフォロジーのユニフォーム（MetalGraphics のシェーダ定義と一致）。
+struct MorphologyPassUniforms {
+    var start: Int32
+    var count: UInt32
+    var mode: UInt32
+    var axis: UInt32
+}
+
+/// 矩形モザイクのユニフォーム（MetalGraphics のシェーダ定義と一致）。
+struct RectangleMosaicUniforms {
+    var size: Float
+    var width: UInt32
+    var height: UInt32
 }
 
 /// 色変換シェーダのユニフォーム（MetalGraphics のシェーダ定義と一致）。
@@ -554,120 +1189,13 @@ public final class MetalGaussianBlurProcessor: MetalEffectProcessor {
         super.init(context: context)
     }
 
-    /// ぼかしのユニフォーム（MetalGraphics のシェーダ定義と一致）。
-    private struct BlurUniforms {
-        var step: SIMD2<Float>
-        var mapScale: SIMD2<Float>
-        var mapOffset: SIMD2<Float>
-        var radius: Int32
-    }
-
     override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
         let (frame, length, fps) = evaluationContext(description)
         let sigma = definition.blur.value(atFrame: frame, length: length, fps: fps)
-        guard sigma > 0 else { return input }
-        let hardBorder = definition.isHardBorderMode
-
-        // 作業解像度。σ が大きい場合は縮小して σ を 6 以下へ収める。
-        let downsample = sigma > 6 ? Int(ceil(sigma / 6)) : 1
-        let workSigma = sigma / Double(downsample)
-        let radius = Int(ceil(3 * workSigma))
-        var weights = [Float](repeating: 0, count: radius + 1)
-        var total: Double = 0
-        for index in 0...radius {
-            let weight = exp(-Double(index * index) / (2 * workSigma * workSigma))
-            weights[index] = Float(weight)
-            total += index == 0 ? weight : 2 * weight
-        }
-        for index in 0...radius {
-            weights[index] = Float(Double(weights[index]) / total)
-        }
-
-        // 出力境界。Soft では 3σ 広げ、Hard では入力と同じ。
-        let expansion = hardBorder ? 0 : ceil(3 * sigma)
-        let outBounds = RectF(
-            left: input.bounds.left - expansion,
-            top: input.bounds.top - expansion,
-            right: input.bounds.right + expansion,
-            bottom: input.bounds.bottom + expansion
+        // 本体は基底の共通ヘルパ（第2段の縁ぼかし・角丸・影と共有）。
+        return try renderGaussianBlurred(
+            input: input, sigma: sigma, hardBorder: definition.isHardBorderMode
         )
-        let workWidth = max(1, Int(ceil((outBounds.right - outBounds.left) / Double(downsample))))
-        let workHeight = max(1, Int(ceil((outBounds.bottom - outBounds.top) / Double(downsample))))
-        guard let workA = makeTexture(
-                width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead]),
-              let workB = makeTexture(
-                width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead])
-        else { return nil }
-        let sampler = hardBorder ? context.devices.mirrorSampler : context.devices.borderSampler
-
-        // 準備パス: 入力を作業テクスチャへ写す（縮小と境界拡張を伴う）。
-        // 入力テクスチャの UV は、内容境界ではなくテクスチャが張る平面
-        // 範囲（texturePlaneRect）基準で求める（内容境界だけが小さい
-        // 描画先画像でも画素対応が保たれる。MAC-0027）。
-        let inputPlaneWidth = input.texturePlaneRect.right - input.texturePlaneRect.left
-        let inputPlaneHeight = input.texturePlaneRect.bottom - input.texturePlaneRect.top
-        try blurPass(
-            input: input.texture, output: workA, sampler: sampler,
-            uniforms: BlurUniforms(
-                step: .zero,
-                mapScale: SIMD2<Float>(
-                    Float((outBounds.right - outBounds.left) / inputPlaneWidth),
-                    Float((outBounds.bottom - outBounds.top) / inputPlaneHeight)
-                ),
-                mapOffset: SIMD2<Float>(
-                    Float((outBounds.left + input.planeOffset.x - input.texturePlaneRect.left) / inputPlaneWidth),
-                    Float((outBounds.top + input.planeOffset.y - input.texturePlaneRect.top) / inputPlaneHeight)
-                ),
-                radius: 0
-            ),
-            weights: [1]
-        )
-        // 横パス。
-        try blurPass(
-            input: workA, output: workB, sampler: sampler,
-            uniforms: BlurUniforms(
-                step: SIMD2<Float>(1 / Float(workWidth), 0),
-                mapScale: SIMD2<Float>(1, 1), mapOffset: .zero,
-                radius: Int32(radius)
-            ),
-            weights: weights
-        )
-        // 縦パス。
-        try blurPass(
-            input: workB, output: workA, sampler: sampler,
-            uniforms: BlurUniforms(
-                step: SIMD2<Float>(0, 1 / Float(workHeight)),
-                mapScale: SIMD2<Float>(1, 1), mapOffset: .zero,
-                radius: Int32(radius)
-            ),
-            weights: weights
-        )
-        return MetalImage(
-            texture: workA, bounds: outBounds, interpolation: .linear
-        )
-    }
-
-    private func blurPass(
-        input: MTLTexture,
-        output: MTLTexture,
-        sampler: MTLSamplerState,
-        uniforms: BlurUniforms,
-        weights: [Float]
-    ) throws {
-        var uniforms = uniforms
-        var weights = weights
-        try executeRenderPass(
-            output: output, pipeline: context.devices.blurPipeline
-        ) { encoder in
-            encoder.setFragmentTexture(input, index: 0)
-            encoder.setFragmentSamplerState(sampler, index: 0)
-            encoder.setFragmentBytes(
-                &uniforms, length: MemoryLayout<BlurUniforms>.size, index: 0
-            )
-            encoder.setFragmentBytes(
-                &weights, length: MemoryLayout<Float>.size * weights.count, index: 1
-            )
-        }
     }
 }
 
@@ -689,54 +1217,13 @@ public final class MetalMosaicProcessor: MetalEffectProcessor {
         super.init(context: context)
     }
 
-    /// モザイクのユニフォーム（MetalGraphics のシェーダ定義と一致）。
-    private struct MosaicUniforms {
-        var size: Float
-        var width: UInt32
-        var height: UInt32
-    }
-
     override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
         guard let size = rectangleCellSize(description: description) else {
             // 矩形以外の形状は第1段では未対応（素通し）。
             return input
         }
-        guard let outputTexture = makeTexture(
-            width: input.texture.width, height: input.texture.height,
-            usage: [.shaderWrite, .shaderRead]
-        ) else { return nil }
-        guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder()
-        else {
-            throw MetalRenderError.commandBufferFailed(underlying: nil)
-        }
-        var uniforms = MosaicUniforms(
-            size: Float(size),
-            width: UInt32(input.texture.width),
-            height: UInt32(input.texture.height)
-        )
-        encoder.setComputePipelineState(context.devices.mosaicPipeline)
-        encoder.setTexture(input.texture, index: 0)
-        encoder.setTexture(outputTexture, index: 1)
-        encoder.setBytes(&uniforms, length: MemoryLayout<MosaicUniforms>.size, index: 0)
-        let cellsX = Int(ceil(Double(input.texture.width) / size))
-        let cellsY = Int(ceil(Double(input.texture.height) / size))
-        encoder.dispatchThreads(
-            MTLSize(width: cellsX, height: cellsY, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1)
-        )
-        encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        if commandBuffer.status == .error {
-            throw MetalRenderError.commandBufferFailed(underlying: commandBuffer.error)
-        }
-        return MetalImage(
-            texture: outputTexture, bounds: input.bounds,
-            texturePlaneRect: input.texturePlaneRect,
-            planeOffset: input.planeOffset,
-            interpolation: input.interpolation
-        )
+        // 本体は基底の共通ヘルパ（第2段のイン／アウトモザイクと共有）。
+        return try renderRectangleMosaic(input: input, cellSize: size)
     }
 
     /// 矩形モザイクのセル寸法を取り出す。パラメータが矩形でなければ nil。
