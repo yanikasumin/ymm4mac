@@ -48,8 +48,9 @@ public protocol ExportProcessRunning {
 
 /// ffmpeg の stderr 文言から、利用者に提示できる失敗種別へ寄せる分類器。
 /// 本家 `TryGetEncodeSettingsErrorMessage` の部分一致表を再現する
-/// （大文字小文字を区別しない）。一致した場合は警告級、
-/// 一致しなければ致命的として扱う。
+/// （大文字小文字を区別しない）。一致した場合は「原因が特定でき、
+/// 利用者の対処で解消しうる」エラーとして分類し、一致しなければ
+/// 原因不明として扱う。出力の成否とは別の軸である（EX17-08）。
 public enum FFmpegErrorClassifier {
     private static let table: [(patterns: [String], message: String)] = [
         (["no space left on device"], "ストレージの空き容量が不足しています"),
@@ -77,9 +78,9 @@ public enum FFmpegErrorClassifier {
     public static func classify(standardError: String, fallbackMessage: String) -> ExportError {
         let lowered = standardError.lowercased()
         for entry in table where entry.patterns.contains(where: { lowered.contains($0) }) {
-            return ExportError(severity: .warning, message: entry.message)
+            return ExportError(cause: .actionable, message: entry.message)
         }
-        return ExportError(severity: .fatal, message: fallbackMessage)
+        return ExportError(cause: .unresolvable, message: fallbackMessage)
     }
 }
 
@@ -168,6 +169,14 @@ public final class FFmpegProcessWriter: VideoFileWriting {
     /// 変えない（W6-C2）。
     public var supportedStreams: VideoWriterSupportedStreams { [.video, .audio] }
 
+    /// 成果物ファイルが生成されるかどうか。音声・映像の両方が
+    /// `-f null` の構成ではどちらのプロセスも最終ファイルへ書かず、
+    /// mux も行われないため false（EX17-07）。片方だけの無効化では
+    /// 残る側が最終ファイルへ直接書くため true。
+    public var producesOutputFile: Bool {
+        !(layout.skipsAudioProcess && layout.skipsVideo)
+    }
+
     /// この writer は CPU の BGRA バッファを受ける。GPU フレームの
     /// 直接受け取りは申告しない。
     public var isGPUFrameSupported: Bool { false }
@@ -200,7 +209,7 @@ public final class FFmpegProcessWriter: VideoFileWriting {
                 )
             } catch {
                 throw ExportError(
-                    severity: .fatal,
+                    cause: .unresolvable,
                     message: "音声エンコードプロセスの起動に失敗しました",
                     underlying: error
                 )
@@ -222,7 +231,7 @@ public final class FFmpegProcessWriter: VideoFileWriting {
             try audioProcess.writeToStandardInput(data)
         } catch {
             throw ExportError(
-                severity: .fatal,
+                cause: .unresolvable,
                 message: "音声の書き込みに失敗しました",
                 underlying: error
             )
@@ -261,7 +270,7 @@ public final class FFmpegProcessWriter: VideoFileWriting {
             // 本家は書き込み例外を保持し、プロセスを止めて、
             // 次回書き込みまたは finalize で再送出する。
             let wrapped = (error as? ExportError) ?? ExportError(
-                severity: .fatal,
+                cause: .unresolvable,
                 message: "映像の書き込みに失敗しました",
                 underlying: error
             )
@@ -323,7 +332,7 @@ public final class FFmpegProcessWriter: VideoFileWriting {
             )
         } catch {
             throw ExportError(
-                severity: .fatal,
+                cause: .unresolvable,
                 message: "mux プロセスの起動に失敗しました",
                 underlying: error
             )

@@ -17,33 +17,42 @@ import Foundation
 
 // MARK: - エラー
 
-/// 書き出しのエラー。重大度で「警告」と「致命的」を区別する
+/// 書き出しのエラー。原因が利用者の対処で解消できるかどうかを表す
 /// （第6章 W6-C2 / W6-C8: 本家は例外型で区別していたものを、
 /// Mac 版では値として保持する）。
+///
+/// この分類は「出力が成功したか」とは別の軸である。成否は
+/// `ExportOutcome` の completion / outputProduced が表し、ここでは
+/// 失敗の原因だけを表す。以前は「本体は確定したが付随処理に失敗」
+/// という成否側の意味まで同じ軸（警告級）に混ざっていたため、
+/// 一次的なエンコード失敗が「警告」と表示される矛盾があった
+/// （EX17-08 の是正）。副次的な失敗かどうかは、エラーが
+/// `ExportOutcome.warning` に入っているかどうかで表す。
 public struct ExportError: Error, Sendable {
-    public enum Severity: Sendable {
-        /// 本体は確定するが、付随処理や後処理に失敗した。
-        case warning
-        /// 書き出し自体が失敗した。
-        case fatal
+    public enum Cause: Sendable {
+        /// 原因が特定されており、利用者の対処で解消しうる
+        /// （空き容量不足、権限不足、未対応の組み合わせなど）。
+        case actionable
+        /// 原因が特定できない、または利用者には対処できない。
+        case unresolvable
     }
 
-    public var severity: Severity
+    public var cause: Cause
     public var message: String
     /// 原因となった下位エラーの説明（本家の InnerException の連鎖保持に相当）。
     public var underlyingDescription: String?
 
-    public init(severity: Severity, message: String, underlying: Error? = nil) {
-        self.severity = severity
+    public init(cause: Cause, message: String, underlying: Error? = nil) {
+        self.cause = cause
         self.message = message
         self.underlyingDescription = underlying.map { String(describing: $0) }
     }
 
-    /// 任意のエラーを致命的エラーとして包む。既に ExportError ならそのまま。
+    /// 任意のエラーを対処不能なエラーとして包む。既に ExportError ならそのまま。
     static func wrapping(_ error: Error) -> ExportError {
         if let exportError = error as? ExportError { return exportError }
         return ExportError(
-            severity: .fatal,
+            cause: .unresolvable,
             message: String(describing: error),
             underlying: error
         )
@@ -83,6 +92,16 @@ public protocol VideoFileWriting: AnyObject {
     /// 終了手続き（本家の Dispose に集約された確定処理）。
     /// セッションから正確に1回だけ呼ばれる。
     func finalize() throws
+    /// finalize が成功したときに成果物ファイルが生成されるかどうか。
+    /// 両ストリームとも内部的に無効化された writer（例: FFmpeg の
+    /// 音声・映像とも `-f null`）では、finalize が成功しても物理
+    /// ファイルは生じないため false を返す（EX17-07）。既定は true。
+    var producesOutputFile: Bool { get }
+}
+
+/// 既定では finalize の成功がそのまま成果物の生成を意味する。
+public extension VideoFileWriting {
+    var producesOutputFile: Bool { true }
 }
 
 // MARK: - バッファとプロバイダ
@@ -148,13 +167,20 @@ public struct ExportOutcome: Sendable {
     public var framesWritten: Int
     /// finalize が呼ばれたかどうか（成功したかとは別）。
     public var finalizeInvoked: Bool
-    /// finalize が成功し出力が確定したかどうか（W6-C3）。
+    /// finalize が例外なく完了したかどうか。
+    public var finalizeSucceeded: Bool
+    /// 成果物ファイルが生成されたかどうか（W6-C3）。
+    /// finalize の成功と writer の `producesOutputFile` 申告の両方が
+    /// 必要なため、両ストリーム無効の writer では finalize が成功
+    /// しても false になる（EX17-07）。ファイルシステムの実在確認
+    /// ではなく writer の申告に基づく。
     public var outputProduced: Bool
     /// 付随ファイル生成が行われ成功したかどうか。
     public var accompanyingFilesProduced: Bool
-    /// 主たる失敗（致命的エラー）。
+    /// 主たる失敗。
     public var error: ExportError?
-    /// 本体は確定したが付随処理等で起きた警告。
+    /// 本体の成否には影響しなかった副次的な失敗
+    /// （付随ファイル生成の失敗など）。
     public var warning: ExportError?
 }
 
@@ -212,10 +238,11 @@ public final class ExportSession {
                 completion: .failed,
                 framesWritten: 0,
                 finalizeInvoked: false,
+                finalizeSucceeded: false,
                 outputProduced: false,
                 accompanyingFilesProduced: false,
                 error: ExportError(
-                    severity: .fatal,
+                    cause: .unresolvable,
                     message: "ExportSession は1回だけ実行できます"
                 ),
                 warning: nil
@@ -264,31 +291,29 @@ public final class ExportSession {
 
         // 付随ファイル生成は正常終了とキャンセルのときだけ走り、
         // 失敗しても本体の確定は妨げない（W6-3.10 / W6-7.2 / W6-7.3）。
+        // 副次的な失敗であることは warning の置き場所で表し、
+        // エラー自体の原因分類（cause）は書き換えない（EX17-08）。
         if completion != .failed, let accompanying = configuration.accompanyingFiles {
             do {
                 try accompanying(configuration.outputPath)
                 accompanyingProduced = true
             } catch {
-                var wrapped = ExportError.wrapping(error)
-                wrapped.severity = .warning
-                warning = wrapped
+                warning = ExportError.wrapping(error)
             }
         }
 
         // finalize は結果によらず必ず1回走る（本家の finally 節の Dispose）。
-        var outputProduced = false
+        var finalizeSucceeded = false
         do {
             try writer.finalize()
-            outputProduced = true
+            finalizeSucceeded = true
         } catch {
             let wrapped = ExportError.wrapping(error)
             if primaryError == nil {
                 primaryError = wrapped
                 completion = .failed
             } else if warning == nil {
-                var asWarning = wrapped
-                asWarning.severity = .warning
-                warning = asWarning
+                warning = wrapped
             }
         }
 
@@ -296,7 +321,9 @@ public final class ExportSession {
             completion: completion,
             framesWritten: framesWritten,
             finalizeInvoked: true,
-            outputProduced: outputProduced,
+            finalizeSucceeded: finalizeSucceeded,
+            // 確定処理の成功と成果物の有無は別の軸（EX17-07）。
+            outputProduced: finalizeSucceeded && writer.producesOutputFile,
             accompanyingFilesProduced: accompanyingProduced,
             error: primaryError,
             warning: warning

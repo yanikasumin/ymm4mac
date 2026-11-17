@@ -175,7 +175,7 @@
                                （映像・音声供給と ExportSession の組み立て）
       Apps/DebugApp/           検証用デバッグアプリ（読み込み診断・往復チェック・
                                合成プレビュー。製品 UI ではない）
-      Tests/YMM4CoreTests/     上記のユニットテスト（382件）
+      Tests/YMM4CoreTests/     上記のユニットテスト（410件）
       docs/ARCHITECTURE.md     本文書
       docs/IMPLEMENTATION_LOG.md
       docs/STATUS.md
