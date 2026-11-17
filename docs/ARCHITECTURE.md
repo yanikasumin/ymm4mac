@@ -71,11 +71,14 @@
           Source.swift         Source / SourceOutput / DrawingEffectProcessor /
                                FrameBufferSource の各プロトコル、StandardSourceOutput
           ItemPickers.swift    アイテム選択（全体／グループ／トランジション）、FaceItem
-          DrawOrdering.swift   描画順序（3キー）、ZIndex、四隅算出、セグメント構築
-                               （BSP は PlaneSplitOrdering の差し替え点）
-          EffectedItemSource.swift 合成の実行部（アイテム単位）: エフェクト連鎖の
-                               処理器・定義・組と供給元、描画先の抽象
-                               （RenderTarget / Factory）、アルファマスクの境界、
+          DrawOrdering.swift   描画順序（3キー）、ZIndex、セグメント構築
+          PlaneSplit.swift     平面分割（BSP）の判定規則と差し替え点
+                               （PlaneSplitOrdering / NullPlaneSplitOrdering、
+                               四隅・断片の値型）
+          EffectContracts.swift エフェクト連鎖の契約群: 処理器・定義・組と供給元、
+                               描画先の抽象（RenderTarget / Factory）、
+                               アルファマスクの境界、PlaneSplitGeometryProviding
+          EffectedItemSource.swift 合成の実行部（アイテム単位）:
                                EffectedOutput / EffectedItemSource
           TimelineSource.swift 合成の実行部（タイムライン単位）: TimelineScene、
                                TimelineGroupResolver（グループ階層の解決）、
