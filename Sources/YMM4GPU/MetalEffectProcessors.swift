@@ -36,6 +36,14 @@ public final class MetalEffectPairProvider: EffectPairProvider {
         wrap(inner.faceEffectPairs(for: faceItem))
     }
 
+    /// トランジション前後の全体エフェクト（MAC-0036）。内包供給元の
+    /// 型付き定義を、通常の連鎖と同じく Metal 処理器へ差し替える。
+    public func transitionEffectPairs(
+        for item: TransitionItem, isBefore: Bool
+    ) -> [EffectPair] {
+        wrap(inner.transitionEffectPairs(for: item, isBefore: isBefore))
+    }
+
     /// 内包供給元のキャッシュを破棄する（プロジェクト再読み込み時など）。
     public func invalidateCache() {
         inner.invalidateCache()
@@ -732,6 +740,10 @@ public class MetalEffectProcessor: VideoEffectProcessor {
     /// `mask` が nil の場合はマスクテクスチャへ入力自身を渡す。
     /// `maskPlane` を指定するとマスク側の平面写像を差し替える
     /// （複写反転のパラメータ受け渡しに使う）。
+    /// サンプラは範囲外を透明として読む borderSampler 固定: マスク画像は
+    /// 有限の境界を持つ平面画像であり、その外側は透明という本家の
+    /// 意味論に対応する（MAC-0035 で clampToEdge を試したが、図形マスク
+    /// の縁テクセルが外側へ複写されて漏れるため不採用）。
     func renderWarp(
         input: MetalImage,
         mask: MetalImage?,
