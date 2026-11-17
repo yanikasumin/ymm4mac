@@ -2,18 +2,20 @@ import SwiftUI
 import UniformTypeIdentifiers
 import YMM4Core
 
-/// YMM4Core のデバッグ画面。製品 UI ではなく検証用の殻。
-/// - VideoInfo の既定値表示
-/// - Animation 評価のスクラブ確認（サンプル）
-/// - .ymmp を開いて ProjectView で中身・診断・往復チェックを確認
+/// ワークスペースのルート画面。
+/// - 起動直後から新規の空プロジェクト（1920×1080 / 60 FPS / 48,000 Hz）
+///   を開いた状態でワークスペース全体を表示する（本家は起動した時点で
+///   新規プロジェクトの作業画面が揃っている）。ファイルを開く操作は
+///   メニュー／上部バーの一機能として残す
+/// - プロジェクトの保持・読み込み・保存は WorkspaceState が担い、
+///   メニューコマンド（App の .commands）からも操作できる
+/// - VideoInfo の既定値表示と Animation 評価のスクラブ確認（サンプル）は
+///   下部の折りたたみ領域に残す（検証用）
 struct ContentView: View {
+    @EnvironmentObject private var workspace: WorkspaceState
     @State private var selectedType: AnimationType = .linear
     @State private var frame: Double = 0
-    @State private var isImporterPresented = false
-    @State private var loadedProject: Project?
-    @State private var loadedDiagnostics: YmmpLoadDiagnostics?
-    @State private var loadedURL: URL?
-    @State private var loadError: String?
+    @State private var isSampleExpanded = false
 
     private let totalFrames = 90
     private let videoInfo = VideoInfo()
@@ -35,12 +37,99 @@ struct ContentView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("YMM4 for Mac — デバッグ")
-                    .font(.title2)
-                    .bold()
+        VStack(spacing: 0) {
+            headerBar
 
+            Divider()
+
+            // 識別子を付けないと、別ファイルを開いても ProjectView の
+            // @State（プレビューの合成セッション等）が前のファイルの
+            // まま残り、表示が切り替わらない。
+            ProjectView(
+                project: workspace.project,
+                diagnostics: workspace.diagnostics,
+                sourceURL: workspace.sourceURL
+            )
+            .id(workspace.loadSequence)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider()
+
+            samplePanel
+        }
+        // 既定サイズはシーン側（YMM4MacDebugApp の .defaultSize）が持つ。
+        // ここで ideal サイズを指定するとウィンドウのリサイズ可否判定と
+        // 競合するため、最小サイズだけを残す。
+        .frame(
+            minWidth: 1100, maxWidth: .infinity,
+            minHeight: 700, maxHeight: .infinity
+        )
+        .fileImporter(
+            isPresented: Binding(
+                get: { workspace.isImporterPresented },
+                set: { workspace.isImporterPresented = $0 }
+            ),
+            allowedContentTypes: [UTType(filenameExtension: "ymmp") ?? .data]
+        ) { result in
+            switch result {
+            case .success(let url):
+                workspace.load(url: url)
+            case .failure(let error):
+                workspace.loadError = "ファイル選択に失敗: \(error)"
+            }
+        }
+        .alert(
+            "YMM4 for Mac",
+            isPresented: Binding(
+                get: { workspace.isAboutPresented },
+                set: { workspace.isAboutPresented = $0 }
+            )
+        ) {
+            Button("OK") {}
+        } message: {
+            Text("YMM4 for Mac（デバッグ版）\n本家 YMM4 v4.55.1.1 のフロントエンド再現シェル")
+        }
+    }
+
+    // MARK: - 上部バー
+
+    private var headerBar: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                Text("YMM4 for Mac — デバッグ")
+                    .font(.title3)
+                    .bold()
+                Spacer()
+                Button("新規プロジェクト") {
+                    workspace.newProject()
+                }
+                Button("ファイルを開く…") {
+                    workspace.isImporterPresented = true
+                }
+            }
+            if let loadError = workspace.loadError {
+                Text(loadError)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            } else if let statusMessage = workspace.statusMessage {
+                Text(statusMessage)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - 検証サンプル（折りたたみ）
+
+    private var samplePanel: some View {
+        DisclosureGroup(
+            "検証サンプル（VideoInfo 既定値 / Animation 評価）",
+            isExpanded: $isSampleExpanded
+        ) {
+            HStack(alignment: .top, spacing: 16) {
                 GroupBox("VideoInfo（既定値）") {
                     HStack(spacing: 24) {
                         Text("\(videoInfo.width)×\(videoInfo.height)")
@@ -74,54 +163,12 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-
-                GroupBox(".ymmp") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button("ファイルを開く…") {
-                            isImporterPresented = true
-                        }
-                        if let loadError {
-                            Text(loadError)
-                                .font(.callout)
-                                .foregroundStyle(.red)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                if let loadedProject, let loadedDiagnostics, let loadedURL {
-                    ProjectView(project: loadedProject, diagnostics: loadedDiagnostics, sourceURL: loadedURL)
-                }
+                .frame(minWidth: 420, maxWidth: .infinity)
             }
-            .padding()
+            .padding(.top, 6)
         }
-        .frame(minWidth: 900, minHeight: 560)
-        .fileImporter(
-            isPresented: $isImporterPresented,
-            allowedContentTypes: [UTType(filenameExtension: "ymmp") ?? .data]
-        ) { result in
-            switch result {
-            case .success(let url):
-                load(url)
-            case .failure(let error):
-                loadError = "ファイル選択に失敗: \(error)"
-            }
-        }
-    }
-
-    private func load(_ url: URL) {
-        let needsAccess = url.startAccessingSecurityScopedResource()
-        defer {
-            if needsAccess { url.stopAccessingSecurityScopedResource() }
-        }
-        do {
-            let (project, diagnostics) = try YmmpCodec.load(fromFile: url.path)
-            loadedProject = project
-            loadedDiagnostics = diagnostics
-            loadedURL = url
-            loadError = nil
-        } catch {
-            loadError = "読み込みに失敗: \(error)"
-        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
