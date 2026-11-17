@@ -1,9 +1,107 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import YMM4Core
+import YMM4GPU
+
+/// 書き出しの進捗状態（バックグラウンド実行から MainActor 経由で更新する）。
+@MainActor
+final class ExportUIState: ObservableObject {
+    @Published var isRunning = false
+    @Published var framesDone = 0
+    @Published var framesTotal = 0
+    @Published var status: String?
+    var cancellation: TimelineExportCancellation?
+}
+
+/// 書き出しジョブ。モデルオブジェクト（Timeline 等）は Sendable では
+/// ないが、ジョブは生成後に単一のバックグラウンドスレッドからのみ
+/// 触れ、UI 状態へは MainActor 経由でのみ書き込むため unchecked とする。
+final class ExportJob: @unchecked Sendable {
+    private let timeline: Timeline
+    private let timelines: [Timeline]
+    private let baseDirectory: URL
+    private let outputURL: URL
+    private let cancellation: TimelineExportCancellation
+    private let state: ExportUIState
+
+    init(
+        timeline: Timeline, timelines: [Timeline], baseDirectory: URL,
+        outputURL: URL, cancellation: TimelineExportCancellation,
+        state: ExportUIState
+    ) {
+        self.timeline = timeline
+        self.timelines = timelines
+        self.baseDirectory = baseDirectory
+        self.outputURL = outputURL
+        self.cancellation = cancellation
+        self.state = state
+    }
+
+    func run() {
+        guard let exporter = TimelineExporter(
+            timeline: timeline, timelines: timelines, baseDirectory: baseDirectory
+        ) else {
+            finish { $0.status = "Metal デバイスを初期化できませんでした" }
+            return
+        }
+        defer { exporter.dispose() }
+        do {
+            let outcome = try exporter.run(
+                outputPath: outputURL.path, cancellation: cancellation
+            ) { [state] done, total in
+                Task { @MainActor in
+                    state.framesDone = done
+                    state.framesTotal = total
+                }
+            }
+            let summary = exportSummaryText(
+                outcome: outcome, analysis: exporter.analysisResult, outputURL: outputURL
+            )
+            finish { $0.status = summary }
+        } catch {
+            finish { $0.status = "書き出しを開始できませんでした: \(error)" }
+        }
+    }
+
+    private func finish(_ update: @escaping @MainActor (ExportUIState) -> Void) {
+        Task { @MainActor in
+            state.isRunning = false
+            update(state)
+        }
+    }
+}
+
+/// 書き出し結果の要約文（UI 表示用）。
+func exportSummaryText(
+    outcome: ExportOutcome, analysis: LoudnessAnalysisResult, outputURL: URL
+) -> String {
+    var lines: [String] = []
+    switch outcome.completion {
+    case .completed:
+        lines.append("完了: \(outputURL.path)")
+    case .cancelled:
+        lines.append("キャンセルされました（出力は finalize 済み）")
+    case .failed:
+        lines.append("失敗: \(outcome.error?.message ?? "不明なエラー")")
+    }
+    lines.append("書き出しフレーム数: \(outcome.framesWritten)")
+    lines.append(
+        "音声解析: ピーク \(String(format: "%.2f", analysis.peakDb)) dB / "
+            + "ラウドネス \(String(format: "%.2f", analysis.averageLoudness)) LKFS / "
+            + "音量倍率 \(String(format: "%.4f", analysis.volumeRate)) / "
+            + "コンプレッサ倍率 \(String(format: "%.4f", analysis.compressorRate))"
+    )
+    if let warning = outcome.warning {
+        lines.append("警告: \(warning.message)")
+    }
+    return lines.joined(separator: "\n")
+}
 
 /// 読み込んだ .ymmp の中身を表示するデバッグ画面。
-/// タイムラインとアイテムの一覧、VisualItem のアニメーション評価、
-/// 読み込み診断（読み飛ばし・型移行）、往復保存の固定点チェックを行う。
+/// タイムラインとアイテムの一覧、メタデータ駆動のプロパティ
+/// インスペクタ（MAC-0029）、読み込み診断（読み飛ばし・型移行）、
+/// 往復保存の固定点チェックを行う。
 struct ProjectView: View {
     let project: Project
     let diagnostics: YmmpLoadDiagnostics
@@ -11,13 +109,13 @@ struct ProjectView: View {
 
     @State private var timelineIndex: Int
     @State private var selectedItemIndex: Int?
-    @State private var scrubFrame: Double = 0
     @State private var roundTripResult: String?
     @State private var saveResult: String?
     @State private var previewFrame: Double = 0
     @State private var previewBox: PreviewBox?
     @State private var previewImage: CGImage?
     @State private var previewError: String?
+    @StateObject private var exportState = ExportUIState()
 
     init(project: Project, diagnostics: YmmpLoadDiagnostics, sourceURL: URL) {
         self.project = project
@@ -62,7 +160,6 @@ struct ProjectView: View {
                 .pickerStyle(.menu)
                 .onChange(of: timelineIndex) { _, _ in
                     selectedItemIndex = nil
-                    scrubFrame = 0
                     resetPreview()
                 }
 
@@ -105,6 +202,10 @@ struct ProjectView: View {
 
             if let timeline {
                 previewView(timeline: timeline)
+            }
+
+            if let timeline {
+                exportView(timeline: timeline)
             }
 
             diagnosticsView
@@ -153,7 +254,7 @@ struct ProjectView: View {
         previewFrame = Double(timeline.currentFrame)
         let key = PreviewBox.SessionKey(url: sourceURL, timelineIndex: timelineIndex)
         guard let box = PreviewBox(
-            key: key, timeline: timeline,
+            key: key, timeline: timeline, timelines: project.timelines,
             baseDirectory: sourceURL.deletingLastPathComponent()
         ) else {
             previewError = "Metal デバイスを初期化できませんでした"
@@ -174,6 +275,74 @@ struct ProjectView: View {
         }
     }
 
+    // MARK: - 書き出し
+
+    @ViewBuilder
+    private func exportView(timeline: Timeline) -> some View {
+        GroupBox("書き出し（mp4 / FFmpeg）") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button("現在のタイムラインを mp4 へ書き出す") {
+                        startExport(timeline: timeline)
+                    }
+                    .disabled(exportState.isRunning)
+                    if exportState.isRunning {
+                        Button("キャンセル") {
+                            exportState.cancellation?.cancel()
+                        }
+                    }
+                }
+                if exportState.isRunning {
+                    ProgressView(
+                        value: Double(exportState.framesDone),
+                        total: Double(max(exportState.framesTotal, 1))
+                    )
+                    Text("書き出し中 \(exportState.framesDone) / \(exportState.framesTotal) フレーム")
+                        .font(.callout)
+                        .monospacedDigit()
+                }
+                if let status = exportState.status {
+                    Text(status)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// 保存先を聞いてから、バックグラウンドで書き出しを実行する。
+    /// 供給側（Metal 合成・音声ミックス）はスレッド安全性を持たないため、
+    /// TimelineExporter の構築から実行までを detached タスク内に閉じる。
+    private func startExport(timeline: Timeline) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType.mpeg4Movie]
+        panel.nameFieldStringValue =
+            sourceURL.deletingPathExtension().lastPathComponent + ".mp4"
+        guard panel.runModal() == .OK, let outputURL = panel.url else { return }
+
+        let cancellation = TimelineExportCancellation()
+        exportState.cancellation = cancellation
+        exportState.isRunning = true
+        exportState.framesDone = 0
+        exportState.framesTotal = timeline.length
+        exportState.status = "書き出し中（音声解析を含む）…"
+
+        let job = ExportJob(
+            timeline: timeline,
+            timelines: project.timelines,
+            baseDirectory: sourceURL.deletingLastPathComponent(),
+            outputURL: outputURL,
+            cancellation: cancellation,
+            state: exportState
+        )
+        Task.detached { job.run() }
+    }
+
+    /// アイテム詳細。プロパティの編集はメタデータ駆動のインスペクタ
+    /// （`PropertyInspectorView`）に委ね、編集が確定するたびに
+    /// プレビューを再合成する。アニメーションの評価文脈はプレビューの
+    /// 現在フレームに合わせる。
     @ViewBuilder
     private func itemDetail(timeline: Timeline) -> some View {
         GroupBox("アイテム詳細") {
@@ -181,37 +350,37 @@ struct ProjectView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(String(describing: type(of: item)))
                         .bold()
-                    Text("Frame \(item.frame) / Length \(item.length) / Layer \(item.layer) / Group \(item.group)")
-                        .font(.caption)
-                    if !item.remark.isEmpty {
-                        Text("備考: \(item.remark)")
-                            .font(.caption)
-                    }
-                    if let visual = item as? VisualItem {
-                        Divider()
-                        Slider(value: $scrubFrame, in: 0...Double(max(item.length, 1)), step: 1)
-                        Text("アイテム内フレーム \(Int(scrubFrame))")
-                            .font(.caption)
-                        let fps = timeline.videoInfo.fps
-                        let frame = Int(scrubFrame)
-                        Text("X \(visual.x.value(atFrame: frame, length: item.length, fps: fps), specifier: "%.3f")")
-                            .monospacedDigit()
-                        Text("Y \(visual.y.value(atFrame: frame, length: item.length, fps: fps), specifier: "%.3f")")
-                            .monospacedDigit()
-                        Text("Z \(visual.z.value(atFrame: frame, length: item.length, fps: fps), specifier: "%.3f")")
-                            .monospacedDigit()
-                    } else {
-                        Text("VisualItem ではないため座標アニメーションはありません")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    let context = animationContext(for: item, timeline: timeline)
+                    PropertyInspectorView(
+                        descriptors: ItemPropertyMetadata.descriptors(for: item),
+                        animationContext: context,
+                        onEdited: { renderPreview() }
+                    )
+                    EffectInspectorView(
+                        item: item,
+                        animationContext: context,
+                        onEdited: { renderPreview() }
+                    )
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // 選択が変わったら各行の入力途中の状態を破棄する。
+                .id(selectedItemIndex)
             } else {
                 Text("アイテムを選択してください")
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// プレビューの現在フレームから、アイテム内相対の評価文脈を作る。
+    private func animationContext(for item: BaseItem, timeline: Timeline) -> AnimationEvaluationContext {
+        let relative = min(
+            max(Int(previewFrame) - item.frame, 0),
+            max(item.length - 1, 0)
+        )
+        return AnimationEvaluationContext(
+            frame: relative, length: item.length, fps: timeline.videoInfo.fps
+        )
     }
 
     private var diagnosticsView: some View {
