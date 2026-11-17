@@ -41,13 +41,21 @@
                                （アニメーション文脈の伝播、分割。本家 IVideoItem の
                                映像プロパティ一式で、適合は VisualItem 系譜 +
                                VoiceItem + TransitionItem）
-          MediaItems.swift     AudioItem / VideoItem / ImageItem
-          TextItems.swift      TextItem / VoiceItem / TextDecoration / TextAppearance
+          AudioItem.swift      AudioItem
+          VideoItem.swift      VideoItem
+          ImageItem.swift      ImageItem
+          TextItem.swift       TextItem / TextDecoration / TextAppearance
+          VoiceItem.swift      VoiceItem
           VoiceItemJimaku.swift VoiceItem の実効値解決（JimakuVisibility と Character
                                設定による表示可否・外観・変形・VideoEffects）と、
                                VideoItemProperties の実効値アクセサ（effectiveX 等）
-          CompositeItems.swift Shape / Effect / Group / Scene / FrameBuffer /
-                               Tachie / TachieFace / Transition の各アイテム
+          ShapeItem.swift      ShapeItem
+          EffectItem.swift     EffectItem
+          GroupItem.swift      GroupItem
+          SceneItem.swift      SceneItem
+          FrameBufferItem.swift FrameBufferItem
+          TachieItems.swift    TachieItem / TachieFaceItem
+          TransitionItem.swift TransitionItem
         Rendering/             描画層の土台（Foundation のみ。GPU 実行は含まない）
           Geometry.swift       Vector2 / Vector3 / Matrix4x4 / RectF
                                （System.Numerics 互換の行優先・行ベクトル規約）
