@@ -18,15 +18,21 @@
 - GPU・音声・デコーダー・キャッシュ・外部プロセスについて所有者・解放タイミング・非同期キャンセルを明確化する。
 - 実装コードを本家解析済みコードと混同しない。新規実装を記録・検証しやすい構成にする。
 
-## コード変更と文書更新は一組
+## 文書の更新規則（イベント別）
 
-機能追加、重要なバグ修正、最適化、ライブラリ導入を行ったら、**同じ作業単位で**以下を更新する。
+文書は変更の種類に応じて更新する。**重要なのは、すべての変更がすべての文書を更新することではなく、変更された事実の正本が確実に更新されることである。**
 
-- [docs/IMPLEMENTATION_LOG.md](docs/IMPLEMENTATION_LOG.md): 何を、どのrepo/commit/ファイル/クラス/関数に、どう実装したか。入力から出力まで自然言語で説明し、本家との差分・採用理由・メモリ所有権・テストと未確認事項を記す。
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): 実際のクラス構成とデータフロー。構想図を実装済みと称さない。
-- [docs/STATUS.md](docs/STATUS.md): 完了・未完了・ブロッカー・次の検証。
-- [docs/HANDOFF.md](docs/HANDOFF.md): 次回担当がすぐ続きから始められる具体的な変更点、SHA、実行コマンド、エラー。
-- 解析側の[Mac As-built](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/03-MAC-AS-BUILT.md)と[互換マトリクス](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/07-COMPATIBILITY-MATRIX.md)も、対応する実装確定時に同期する。
+| イベント | 必須更新 | 条件付き更新 |
+|---|---|---|
+| 純粋なファイル移動・改名 | PR、必要な参照パス | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 機能追加・重要な修正 | PR（検証記録）、該当する課題の状態 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/IMPLEMENTATION_LOG.md](docs/IMPLEMENTATION_LOG.md) |
+| 処理経路・所有権の変更 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、PR | — |
+| 本家との互換性変更 | 解析側の[互換マトリクス](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/07-COMPATIBILITY-MATRIX.md)、PR | [docs/STATUS.md](docs/STATUS.md) |
+| 未解決問題の発見・解消 | 課題台帳（未解決事項の正本。当面は [docs/STATUS.md](docs/STATUS.md) の課題節が担う） | [docs/STATUS.md](docs/STATUS.md) の重要ブロッカー |
+| 要件変更・例外 | 解析側の[変更承認台帳](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/08-DECISIONS-CHANGES.md)、[要件定義](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/REQUIREMENTS.md) | — |
+| 作業中断・担当交代 | [docs/HANDOFF.md](docs/HANDOFF.md) | — |
+
+各文書の正本としての役割: [docs/STATUS.md](docs/STATUS.md) は現行状態、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) は実際のクラス構成とデータフロー（構想図を実装済みと称さない）、[docs/IMPLEMENTATION_LOG.md](docs/IMPLEMENTATION_LOG.md) は実装判断の経緯（何を、どのrepo/commit/ファイル/クラス/関数に、どう実装したか。本家との差分・採用理由・メモリ所有権・テストと未確認事項を含む）、[docs/HANDOFF.md](docs/HANDOFF.md) は次の作業。解析側の[Mac As-built](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/03-MAC-AS-BUILT.md)と互換マトリクスは、対応する実装確定時に同期する。
 
 本家との差は「内部実装の違い」と「ユーザーから見える違い」を分ける。比較試験がないものはVERIFIEDとしない。
 
