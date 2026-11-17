@@ -99,35 +99,43 @@
                                （Foundation のみ。MAC-0018。合成チェーンへの接続は
                                MAC-0019、VoiceItem の字幕エフェクト解決の接続は MAC-0020、
                                GPU 処理系の定義層は MAC-0022）
-          VideoEffectDefinitionBase.swift 定義の共通基盤（$type 対応、Animation 型
-                               パラメータ、追加フィールド保持、IsEnabled）
-          VideoEffectRegistry.swift $type 名→定義型のレジストリ（登録95種）と
-                               TypedEffectPairProvider（保持列から型付き定義を復元して
-                               EffectedItemSource へ供給する消費側の接続。キーフレーム
-                               文脈の伝播と、VoiceItem の字幕エフェクト解決列の
-                               切り替えを含む）
-          DrawDescriptionEffectProcessor.swift 変換型処理器の基盤
-          BasicDrawEffects.swift Zoom / Opacity / DrawPosition / Billboard 等
-          InOutEffects.swift   InOutFade / InOutMove / InOutZoom 等の出入り系
-          RandomRepeatEffects.swift Random 系・Repeat 系（共有計算は Animation の
-                               randomMoveRate / repeatMoveRate を再利用）
-          CameraEffects.swift  CameraFov / CameraPosition / CameraLookAt /
-                               CameraWraparound / Polar 系 / XYToPolarTransform
-          PreviewAndGroupEffects.swift ShowOnlyPreview、GroupedDrawingEffect
-                               （グループ合成用。$type を持たない）
-          MotionTrackingEffect.swift MotionTracking
-          GPUEffectSupport.swift GPU 処理系定義の基底（GPUEffectDefinitionBase）、
-                               暫定処理器 GPUEffectPassthroughProcessor（入力をそのまま
-                               返す素通し。実処理器は次段）、新規列挙型19種（MAC-0022）
-          GPUTransformEffects.swift 変形系14種の定義
-          GPUBlurEffects.swift ぼかし系12種の定義
-          GPUColorEffects.swift 色調系11種の定義
-          GPUShadowFillEffects.swift 影・塗り系9種の定義
-          GPUWarpEffects.swift 歪み系8種の定義
-          GPUMaskKeyEffects.swift マスク・キー系3種の定義
-          GPUInOutEffects.swift 出入り系10種の定義
-          GPURandomRepeatEffects.swift ランダム・反復系4種の定義
-          GPUCustomEffects.swift カスタム系2種の定義
+          Base/                定義層の共通基盤と登録、変換型処理器の基盤
+            VideoEffectDefinitionBase.swift 定義の共通基盤（$type 対応、Animation 型
+                                 パラメータ、追加フィールド保持、IsEnabled）
+            VideoEffectRegistry.swift $type 名→定義型のレジストリ（登録95種）と
+                                 TypedEffectPairProvider（保持列から型付き定義を復元して
+                                 EffectedItemSource へ供給する消費側の接続。キーフレーム
+                                 文脈の伝播と、VoiceItem の字幕エフェクト解決列の
+                                 切り替えを含む）
+            DrawDescriptionEffectProcessor.swift 変換型処理器の基盤
+            GPUEffectBase.swift  GPU 処理系定義の基底（GPUEffectDefinitionBase）、
+                                 暫定処理器 GPUEffectPassthroughProcessor（入力をそのまま
+                                 返す素通し。実処理器は次段）（MAC-0022）
+          DrawDescription/     DrawDescription 変換型の定義＋処理器の対
+            BasicDrawEffects.swift Zoom / Opacity / DrawPosition / Billboard 等
+            InOutEffects.swift   InOutFade / InOutMove / InOutZoom 等の出入り系
+            RandomRepeatEffects.swift Random 系・Repeat 系（共有計算は Animation の
+                                 randomMoveRate / repeatMoveRate を再利用）
+            CameraEffects.swift  CameraFov / CameraPosition / CameraLookAt /
+                                 CameraWraparound / Polar 系 / XYToPolarTransform
+            PreviewAndGroupEffects.swift ShowOnlyPreview、GroupedDrawingEffect
+                                 （グループ合成用。$type を持たない）
+            MotionTrackingEffect.swift MotionTracking
+          GPU/                 GPU 処理系の定義層（MAC-0022）
+            GPUEffectEnums.swift GPU 系エフェクトで共有する列挙型群
+            TransformEffects.swift 変形系14種の定義
+            BlurEffects.swift ぼかし系12種の定義
+            ColorEffects.swift 色調系11種の定義
+            ShadowFillEffects.swift 影・塗り系9種の定義
+            WarpEffects.swift 歪み系8種の定義
+            MaskKeyEffects.swift マスク・キー系3種の定義
+            GPUInOutEffects.swift 出入り系10種の定義（DrawDescription 側と同名を
+                                 避けるため接頭辞を維持。§4.2 の余地に基づく）
+            GPURandomRepeatEffects.swift ランダム・反復系4種の定義（同上）
+            CustomEffects.swift カスタム系2種の定義
+          Transition/          画面遷移のパラメータ
+            TransitionParameters.swift TransitionTarget／TransitionKind／
+                                 TransitionParameter（パラメータの型付き復号）
         Export/                書き出しの芯（Foundation のみ。MAC-0017）と音声供給
                                （MAC-0026。映像供給とファサードは YMM4GPU 側）
           ExportSession.swift  書き出しセッションの状態機械（全経路で finalize 1回、
