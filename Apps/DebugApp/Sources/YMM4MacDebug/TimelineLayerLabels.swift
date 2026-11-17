@@ -25,7 +25,7 @@ extension TimelineStripView {
                     .fill(swiftUIColor(setting.color))
                     .frame(width: 4, height: rowHeight - 8)
             }
-            Text(setting.label ?? String(format: "レイヤー %02d", layer))
+            Text(setting.label ?? UIStrings.Timeline.defaultLayerLabel(layer))
                 .font(.system(size: 11))
                 .lineLimit(1)
             Spacer(minLength: 0)
@@ -39,12 +39,12 @@ extension TimelineStripView {
             }
             .buttonStyle(.borderless)
             .foregroundStyle(setting.isHidden ? .primary : .secondary)
-            .help(setting.isHidden ? "レイヤーを表示" : "レイヤーを非表示")
+            .help(setting.isHidden ? UIStrings.Timeline.showLayer : UIStrings.Timeline.hideLayer)
             // レイヤー操作メニュー（名前・背景色・音量・追加/削除）。
             Menu {
-                Button("名前を変更…") { openLayerPopover(layer: layer) }
-                Menu("背景色") {
-                    Button("なし") {
+                Button(UIStrings.Timeline.renameLayer) { openLayerPopover(layer: layer) }
+                Menu(UIStrings.Timeline.layerBackgroundColor) {
+                    Button(UIStrings.Common.none) {
                         mutateLayerSetting(layer) {
                             $0.color = YMM4Core.Color(alpha: 0, red: 0, green: 0, blue: 0)
                         }
@@ -55,9 +55,13 @@ extension TimelineStripView {
                         }
                     }
                 }
-                Button("レイヤー全体の音量…") { openLayerPopover(layer: layer) }
+                Button(UIStrings.Timeline.layerVolume) { openLayerPopover(layer: layer) }
                 Divider()
-                Button(setting.isHidden ? "レイヤーを表示" : "レイヤーを非表示") {
+                Button(UIStrings.Timeline.addLayerAbove) { insertLayer(at: layer) }
+                Button(UIStrings.Timeline.addLayerBelow) { insertLayer(at: layer + 1) }
+                Button(UIStrings.Timeline.deleteLayer) { deleteLayer(at: layer) }
+                Divider()
+                Button(setting.isHidden ? UIStrings.Timeline.showLayer : UIStrings.Timeline.hideLayer) {
                     mutateLayerSetting(layer) { $0.isHidden.toggle() }
                 }
             } label: {
@@ -66,7 +70,7 @@ extension TimelineStripView {
             }
             .menuStyle(.borderlessButton)
             .frame(width: 14)
-            .help("レイヤー操作")
+            .help(UIStrings.Timeline.layerOperations)
         }
         .padding(.horizontal, 4)
         .frame(width: labelWidth, height: rowHeight, alignment: .leading)
@@ -80,14 +84,50 @@ extension TimelineStripView {
                 .fill(Color.primary.opacity(0.12))
                 .frame(height: 1)
         }
+        // レイヤーラベルのコンテキストメニュー（本家 layerContextMenu
+        // 13葉 — UI-FACTS-MENUS-CONTEXT.md §2.3。切り取り／コピー／
+        // 貼り付けはレイヤー用クリップボードが無いため未収録）。
         .contextMenu {
-            Button(setting.isHidden ? "レイヤーを表示" : "レイヤーを非表示") {
-                mutateLayerSetting(layer) { $0.isHidden.toggle() }
+            Button(UIStrings.Timeline.selectLayerItems) {
+                selectItems { $0.layer == layer }
             }
             Divider()
-            // レイヤーの追加/削除はアイテムの付け替えを伴うため未接続。
-            Button("レイヤーを追加") {}
-            Button("レイヤーを削除") {}
+            Button(UIStrings.Timeline.addLayerAbove) { insertLayer(at: layer) }
+            Button(UIStrings.Timeline.addLayerBelow) { insertLayer(at: layer + 1) }
+            Button(UIStrings.Timeline.deleteLayer) { deleteLayer(at: layer) }
+            Divider()
+            Button(UIStrings.Timeline.moveLayerUp) { swapLayers(layer, layer - 1) }
+                .disabled(layer <= 0)
+            Button(UIStrings.Timeline.moveLayerDown) { swapLayers(layer, layer + 1) }
+            Divider()
+            Button(setting.isHidden ? UIStrings.Timeline.showLayer : UIStrings.Timeline.hideLayer) {
+                mutateLayerSetting(layer) { $0.isHidden.toggle() }
+            }
+            Button(UIStrings.Timeline.enableAllLayers) {
+                for index in timeline.layerSettings.items.indices {
+                    timeline.layerSettings.items[index].isHidden = false
+                }
+                layerRevision += 1
+            }
+            Button(UIStrings.Timeline.disableOtherLayers) {
+                // 対象レイヤー以外を全て非表示にする。設定が無い
+                // レイヤーは既定で表示のため、表示中レイヤー分は
+                // 設定を作ってから非表示にする。
+                let visibleLayers = Set(
+                    timeline.items.map { $0.layer }
+                ).union(timeline.layerSettings.items.map { $0.layer })
+                for other in visibleLayers where other != layer {
+                    mutateLayerSetting(other) { $0.isHidden = true }
+                }
+                mutateLayerSetting(layer) { $0.isHidden = false }
+            }
+            Divider()
+            Button(UIStrings.Timeline.resetLayerSettings) {
+                timeline.layerSettings.items.removeAll()
+                layerRevision += 1
+            }
+            Divider()
+            Button(UIStrings.Timeline.renameLayer) { openLayerPopover(layer: layer) }
         }
         .popover(isPresented: layerPopoverBinding(for: layer)) {
             layerPopover(layer: layer)
@@ -126,17 +166,17 @@ extension TimelineStripView {
     /// 形のみ（ローカル状態）。
     func layerPopover(layer: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("レイヤー \(layer) の設定")
+            Text(UIStrings.Timeline.layerSettingsTitle(layer))
                 .font(.headline)
             HStack {
-                Text("名前")
+                Text(UIStrings.Timeline.layerName)
                     .frame(width: 44, alignment: .leading)
-                TextField("レイヤー名", text: $layerRenameText)
+                TextField(UIStrings.Timeline.layerNamePlaceholder, text: $layerRenameText)
                     .onSubmit { commitLayerRename(layer: layer) }
-                Button("設定") { commitLayerRename(layer: layer) }
+                Button(UIStrings.Timeline.apply) { commitLayerRename(layer: layer) }
             }
             HStack {
-                Text("音量")
+                Text(UIStrings.Timeline.volume)
                     .frame(width: 44, alignment: .leading)
                 Slider(value: layerVolumeBinding(for: layer), in: 0...200)
                 Text("\(Int(layerVolumes[layer] ?? 100))%")
@@ -145,7 +185,7 @@ extension TimelineStripView {
             }
             HStack {
                 Spacer()
-                Button("閉じる") { layerPopoverLayer = nil }
+                Button(UIStrings.Common.close) { layerPopoverLayer = nil }
                     .keyboardShortcut(.defaultAction)
             }
         }

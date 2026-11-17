@@ -29,6 +29,13 @@ public enum VideoEffectRegistry {
         return definition
     }
 
+    /// $type 名から空の定義（既定値）を生成する。型移行を適用したうえで
+    /// 判定し、未登録なら nil。エフェクト追加 UI が新規エフェクトの
+    /// 初期値を得るための公開口（本家 VideoEffectFactory の生成相当）。
+    public static func makeEmptyDefinition(typeName: String) -> VideoEffectDefinitionBase? {
+        makeDefinition(typeName: RenamedTypeResolver.resolveTypeName(typeName))
+    }
+
     /// $type 名から空の定義を生成する。未登録なら nil。
     private static func makeDefinition(typeName: String) -> VideoEffectDefinitionBase? {
         switch typeName {
