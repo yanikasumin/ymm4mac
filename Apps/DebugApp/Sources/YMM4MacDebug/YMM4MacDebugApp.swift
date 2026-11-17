@@ -102,7 +102,7 @@ struct YMM4MacDebugApp: App {
                     Button("プレビュー") {}
                 }
                 Divider()
-                Button("シーインタブを常に表示") {}
+                Button("シーンタブを常に表示") {}
             }
 
             // ツールメニュー（本家同梱ツールの並び）。
