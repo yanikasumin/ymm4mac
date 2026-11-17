@@ -1,6 +1,6 @@
 # ymm4mac の実装済みアーキテクチャ
 
-更新: 2026-11-17。状態: **モデル層と .ymmp 互換層に加え、描画層の土台と合成の実行部、GPU 実行器（Metal）と Source 群（画像・図形・テキスト・字幕・動画・シーン・フレームバッファ・立ち絵・合成グループ）、音声パイプラインの芯と QA、音声リサンプラの高品質化、書き出しの芯とその実接続（実エンコード検証済み）、映像エフェクト定義層と変換型処理器、その合成チェーンへの接続（消費側の型付き復元）と VoiceItem の字幕エフェクト解決の接続、GPU 失敗の検出・通知契約、GPU 処理系エフェクトの定義層と Metal 処理器 第1段まで実装済み。製品 UI は未実装（音声のユーザー音声エフェクト・再生接続は未実装。エフェクトの GPU 処理系の処理器は、第1段10種が Mac 検証済みで統合済み、残り63種は未実装。動画デコードは AVFoundation の範囲で実装済みで、非対応コンテナは未対応）。**
+更新: 2026-11-18。反映境界: PR #78（構造整理 W10）まで。状態: モデル層・.ymmp 互換層・描画層（Core 契約＋Metal 実行層）・音声パイプライン・書き出し・エフェクト定義層と Metal 処理器・製品 UI の土台まで実装済み。現行状態の概要は [STATUS.md](STATUS.md)、変更の履歴は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) を参照（この文書は構造の As-built に専念し、進捗や件数は置かない）。
 
 この文書は **実装されている構造のみ記載するAs-built**。計画・仮説は[解析側のMac設計案](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/02-MAC-DESIGN-PROPOSAL.md)に記載。
 
@@ -11,28 +11,39 @@
       AGENTS.md                作業者向けの規則
       Package.swift            Swift パッケージ定義（YMM4Core / YMM4GPU ライブラリ + テスト）
       Sources/YMM4Core/        モデル層（Foundation のみ）
-        Color.swift            ARGB 8bit の色値
-        FrameTime.swift        フレーム⇔時間換算
-        VideoInfo.swift        解像度・FPS・サンプリングレート
-        AnimationType.swift    補間・イージング種別の数値テーブルと分類規則
-        KeyFrames.swift        アイテム単位で共有されるキーフレーム位置（分割用の一括削除を含む）
-        Animation.swift        数値プロパティの時間変化と値評価（本家 GetValue の全分岐、分割連動を含む）
-        Easing.swift           イージング全科（In 素関数＋端点ラッパー＋モード合成）
-        Cubic.swift            スプライン補間の重みカーネル（本家 Cubic）
-        StatelessRandom.swift  キー列からの決定的乱数生成（本家 StatelessRandom）
-        BezierAnimation.swift  ベジェ補間の定義と Newton 法による評価
-        JSONValue.swift        順序・数値リテラルを保持する JSON 値と自前パーサ／シリアライザ
-        HonkeFormat.swift      TimeSpanValue（tick 保持、"c" 形式）、色の文字列形式、
-                               RenamedTypeResolver、PreservedObject、AnimationType のメンバ名対応
-        Enums.swift            Blend / WordWrap / Style / BasePoint 等の列挙（未知の名前は保持）
-        PlaybackRateMap.swift  再生速度の積分テーブル（分割時の素材時刻計算）
-        CodecSupport.swift     互換層の内部共通処理（Animation 等の JSON 形状変換）
-        Character.swift        キャラクター（全プロパティ型付き。KeyGesture / VoiceDescription を含む）
-        ShapeParameter.swift   図形パラメータ（RectangleShapeParameter と Brush を型付き、
+        Model/                 ドメインモデルの値型とプロジェクト構造
+          VideoInfo.swift      解像度・FPS・サンプリングレート
+          FrameTime.swift      フレーム⇔時間換算
+          Project.swift        プロジェクト（Timelines / Characters / ToolStates 等）
+          Timeline.swift       タイムライン（Length / MaxLayer はキャッシュ済み派生値）
+          TimelineSupport.swift LayerSetting(s)、TimelineVerticalLine、SerializableToolState
+          Character.swift      キャラクター（全プロパティ型付き。KeyGesture / VoiceDescription を含む）
+          ShapeParameter.swift 図形パラメータ（RectangleShapeParameter と Brush を型付き、
                                それ以外の $type は生保持。旧 ShapeType の変換表を含む）
-        Project.swift          プロジェクト（Timelines / Characters / ToolStates 等）
-        Timeline.swift         タイムライン（Length / MaxLayer はキャッシュ済み派生値）
-        TimelineSupport.swift  LayerSetting(s)、TimelineVerticalLine、SerializableToolState
+          Brush.swift          Brush の型付き部（ShapeParameter から分離）
+        Animation/             時間変化と補間の評価
+          Animation.swift      数値プロパティの時間変化と値評価（本家 GetValue の全分岐、分割連動を含む）
+          AnimationType.swift  補間・イージング種別の数値テーブルと分類規則
+          KeyFrames.swift      アイテム単位で共有されるキーフレーム位置（分割用の一括削除を含む）
+          Easing.swift         イージング全科（In 素関数＋端点ラッパー＋モード合成）
+          Cubic.swift          スプライン補間の重みカーネル（本家 Cubic）
+          BezierAnimation.swift ベジェ補間の定義と Newton 法による評価
+          StatelessRandom.swift キー列からの決定的乱数生成（本家 StatelessRandom）
+          PlaybackRateMap.swift 再生速度の積分テーブル（分割時の素材時刻計算）
+        Format/                .ymmp 互換層と形式の基盤
+          YmmpCodec.swift      .ymmp の読み込み・保存（$type 解決、型移行、診断記録）
+          JSONValue.swift      順序・数値リテラルを保持する JSON 値と自前パーサ／シリアライザ
+          Color.swift          ARGB 8bit の色値
+          HonkeFormat.swift    色の文字列形式、AnimationType のメンバ名対応等の残部
+          TimeSpanValue.swift  TimeSpanValue（tick 保持、"c" 形式）
+          RenamedTypeResolver.swift 型名移行の解決（本家 RenamedTypeResolver 相当）
+          PreservedObject.swift 未知・未モデル化オブジェクトの順序保持つき生保持
+          HonkeEnum.swift      本家列挙の基底（未知の名前は保持）
+          TextEnums.swift      テキスト系の列挙
+          VideoEnums.swift     映像系の列挙
+          EditingEnums.swift   編集・表示系の列挙
+          CodecSupport.swift   互換層の内部共通処理
+          AnimationCodecSupport.swift Animation 等の JSON 形状変換
         Editing/
           TimelineEditing.swift  編集操作の基本（追加・移動・削除・移動可能性・スナップ）
           TimelineEditingCollision.swift 衝突解決
@@ -40,7 +51,6 @@
           TimelineEditingSplit.swift 分割・ChangeFrameRate
           TimelineEditingDeleteAndMove.swift DeleteAndMove・長さ変更
           TimelineEditingSpace.swift 空間を詰める削除の一族
-        YmmpCodec.swift        .ymmp の読み込み・保存（$type 解決、型移行、診断記録）
         Items/
           BaseItem.swift       BaseItem / VisualItem / VideoItemProperties
                                （アニメーション文脈の伝播、分割。本家 IVideoItem の
@@ -260,10 +270,38 @@
                                供給元を MetalSourceProvider へ渡す。MAC-0028）
           TimelineExporter.swift TimelineExporter（映像・音声供給と
                                ExportSession の組み立て。MAC-0026）
-      Apps/DebugApp/           検証用デバッグアプリ（読み込み診断・往復チェック・
-                               合成プレビュー・応答性能の全自動テスト
-                               （MAC-0038）。製品 UI ではない）
-      Tests/YMM4CoreTests/     上記のユニットテスト（432件）
+      Apps/DebugApp/           検証用デバッグアプリ（製品 UI の土台を含む）
+        Package.swift          個別パッケージ定義（ルートへパス依存）
+        Info.plist             バンドル情報（MAC-0039）
+        package-app.sh         .app バンドルの組み立て（MAC-0039）
+        Sample/sample.ymmp     検証用サンプルプロジェクト
+        Sources/YMM4MacDebug/
+          YMM4MacDebugApp.swift アプリ入口
+          ContentView.swift    ルート画面（プロジェクト読み込みと検証サンプル）
+          WorkspaceState.swift 新規プロジェクト等の作業状態
+          ProjectView.swift    製品 UI の土台（プレビュー・運送系・タイムライン・
+                               ステータスバー・メニュー）
+          PreviewBox.swift     プレビュー合成の表示
+          TimelineStripView.swift タイムライン本体
+          TimelineLayerLabels.swift レイヤーラベル列
+          TimelineScale.swift  目盛り
+          SerifInputView.swift セリフ入力行
+          PropertyInspectorView.swift アイテムのプロパティ編集
+          PropertyEditorRows.swift 編集行の部品
+          EffectInspectorView.swift エフェクト編集
+          VideoSettingsView.swift 動画の設定ダイアログ
+          ExportDialogView.swift 動画出力ダイアログ
+          ExportJob.swift      書き出しジョブ（開始時にプロジェクトの
+                               スナップショットを所有。MAC-0034）
+          AutoTestRunner.swift 全自動テストの実行（MAC-0038）
+          AutoTestReport.swift 全自動テストのレポート型（MAC-0038）
+      Tests/YMM4CoreTests/     ユニットテスト（Sources のドメイン構成を鏡写し。
+                               件数等の最新結果は実行記録が正本で、ここには置かない）
+        Model/ Animation/ Format/ Editing/ Rendering/ Audio/ Effects/ Export/
+                               各ドメインのテスト
+        Support/               共有の偽実装・ヘルパ（Fake* 群、TestPCMProviders）
+      Harnesses/               Mac 実機ハーネス（画素検証等。mac0023〜mac0035 の
+                               9種と README。W1 で git 管理化）
       docs/ARCHITECTURE.md     本文書
       docs/IMPLEMENTATION_LOG.md
       docs/STATUS.md
@@ -284,7 +322,7 @@
 - 映像エフェクト定義層: `Effects/` の定義型が $type 名と Animation 型パラメータを保持し、変換型の処理器が MAC-0010 の連鎖契約で DrawDescription を書き換える。登録は95種（変換群22種＋GPU 処理系73種、MAC-0022）で本家内蔵分は定義層が揃った。GPU 処理系の処理器は、第1段10種（色変換系8種＋GaussianBlur＋Mosaic、MAC-0023、`Sources/YMM4GPU/Effects/` の MetalColorEffectProcessors.swift / MetalBlurMosaicProcessors.swift）と第2段31種（幾何変換・ぼかし／マスク・影／塗り・ワープ・イン／アウト・ランダム／反復、MAC-0028、同 Effects/ の家族別7ファイル）の計41種が Metal 実処理器を持ち、Mac 実機で画素検証済み（解析値との照合）で統合済みである。残り32種は暫定の素通し（GPUEffectPassthroughProcessor）のため描画にはまだ反映されない。MetalEffectPairProvider が TypedEffectPairProvider を内包し、対象41種だけを Metal 処理器つきの定義へ差し替えて供給する。全 Metal 処理器共通の前提として、入力画像が恒等変換でなく不透明度≠1 の場合は素通しになる（DrawDescription を書き換える処理器のフックは素通し経路でも通る）。保持形式は生保持のまま（モデル層は全箇所 `PreservedObject`、保存経路は無変更）で、接続は消費側で行う: `TimelineComposer` の既定の EffectPairProvider である `TypedEffectPairProvider` が、合成時に保持列から型付き定義を一時的なビューとして復元し、`EffectedItemSource` へ供給する（対象は VisualItem 系 VideoEffects／VoiceItem の JimakuVideoEffects／GroupItem の VideoEffects／TachieFaceItem・VoiceItem の TachieFaceEffects。SceneItem の Before・AfterVideoEffects は対象外。TransitionItem の Before・AfterVideoEffects は MAC-0036 で `transitionEffectPairs` として別経路から供給される）。キーフレーム文脈は定義生成時と所有アイテムの KeyFrames 変更時にだけ再伝播され、定義インスタンスは作り直されない。VoiceItem の字幕エフェクトは、キャラクターが解決済みの場合に限り、保持列ではなく MAC-0014 の `resolvedVideoEffects`（JimakuVisibility とキャラクター設定による解決列）が供給列になる。
 - 書き出し: `ExportSession`（状態機械）が書き出しの開始から終了手続き（finalize）までを管理し、`FFmpegProcessWriter` が音声（WAV 一時ファイル）と映像を別プロセスで書いて終了時に mux する本家方式を取る。映像は NV12（BT.709 リミテッド）へ変換し、色宣言は NV12 経路のみに付ける。供給の接続は MAC-0026 で実装済みである: ファサード `TimelineExporter`（YMM4GPU）が組み立て、映像は `MetalExportVideoProvider` が PreviewBox と同一構成の合成経路でフレームを合成し `readBGRA` で借用バッファへ読み戻して供給する。音声は `TimelineExportAudioProvider`（Core）が2パスで供給する: 解析パスでミックスを `LoudnessAnalysis`（`BS1770LoudnessAnalyzer` の二段ゲーティング）に通して音量係数とコンプレッサ倍率を求め、書き出しパスでは別のミキサーへ `DynamicsProcessorStream`（volume = 音量係数、ratio = コンプレッサ倍率）を被せてフレームごとのサンプルを返す。DebugApp の書き出し UI から実行でき、実 ffmpeg でのエンコードまで検証済みである（台帳 MAC-0026）。DebugApp の書き出しは開始時にプロジェクト全体のスナップショット（YmmpCodec 往復で作るジョブ専有のインスタンス群）を対象とし、書き出し中の編集は出力へ混入しない（MAC-0034）。
 
-**製品 UI は未実装。動画デコードは AVFoundation の範囲で実装済み（非対応コンテナは未対応で、FFmpeg 併用は未判断）。音声はパイプラインの芯と QA、リサンプラの高品質化（MAC-0024）、デコード実体と書き出し接続（MAC-0026）までで、ユーザー音声エフェクト・再生接続が未実装。書き出しは芯に加えて実接続と実エンコード検証まで完了。映像エフェクトは定義層と変換型処理器に加え、合成チェーンへの接続（消費側の型付き復元）と VoiceItem の字幕エフェクト解決の接続まで済み、GPU 処理系は定義層（73種）に加え、処理器は第1段10種＋第2段31種＝41種が Mac 検証済みで統合済み、残り32種は素通し（未実装）。内部合成（シーン・合成グループ）へのエフェクト供給元伝播と書き出しへのタイムライン受け渡しも MAC-0028 で接続済み。** 詳細は実装台帳 MAC-0001〜MAC-0037。
+**製品 UI は土台まで実装済みで、形の完成（本家レイアウトへの一致、スタブの解消）は未完。動画デコードは AVFoundation の範囲で実装済み（非対応コンテナは未対応で、FFmpeg 併用は未判断）。音声はパイプラインの芯と QA、リサンプラの高品質化（MAC-0024）、デコード実体と書き出し接続（MAC-0026）までで、ユーザー音声エフェクト・再生接続が未実装。書き出しは芯に加えて実接続と実エンコード検証まで完了。映像エフェクトは定義層と変換型処理器に加え、合成チェーンへの接続（消費側の型付き復元）と VoiceItem の字幕エフェクト解決の接続まで済み、GPU 処理系は定義層（73種）に加え、処理器は第1段10種＋第2段31種＝41種が Mac 検証済みで統合済み、残り32種は素通し（未実装）。内部合成（シーン・合成グループ）へのエフェクト供給元伝播と書き出しへのタイムライン受け渡しも MAC-0028 で接続済み。** 詳細は実装台帳 MAC-0001〜MAC-0037。
 
 ## 実装後の書き方
 
