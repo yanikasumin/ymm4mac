@@ -759,6 +759,21 @@
 
 **未解決事項。** Dock 表示の実機確認（上記）。配布用の Developer ID 署名・公証は対象外（アドホック署名はローカルビルド用の暫定形）。
 
+#### W1 — 構造整理 第1単位: テスト基盤の整備とハーネスの git 管理化（IMPLEMENTED、Mac 検証済み）
+
+構造整理（全ファイル計画の作業単位 W1。計画書は解析側 FULL-RESTRUCTURE-PLAN-2026-11-17 §4.4・§3.10・§5.1）。製品コードは無変更で、移動と重複排除のみを行った。
+
+- **Tests のドメイン別フォルダ化**: `Tests/YMM4CoreTests/` 直下の25ファイルを、本体構造と鏡像のフォルダ（Animation / Audio / Effects / Export / Rendering / Format / Model / Editing）へ移動した。ファイルの分割は本単位に含めない（後続単位の担当）。
+- **Support/ の新設と重複ダブルの集約**: 各テストファイルに私用定義されていた同一・同型の偽実装を `Tests/YMM4CoreTests/Support/` へ集約した。
+  - `TestPCMProviders.swift`: PCMProviderFactory の同一実装4件（旧 MapProviderFactory / DriftProviderFactory / AccuracyProviderFactory / ExportAudioProviderTests 内の同名実装）を `MapPCMProviderFactory` へ一本化。あわせて音声テスト共通の構築ヘルパ（constantProvider / rampProvider / constantAnimation / makeAudioItem）を集約した（rampProvider は offset 引数つき、makeAudioItem は volume 引数つきの形に統一し、既存の呼び出しは既定値で互換）。makeTimeline はファイルごとにシグネチャが異なるため集約していない。
+  - `FakeSources.swift`: 同名で仕様の異なる StubSource 2件を、最小形 `StubSource` と記録形 `RecordingStubSource` の2型として集約した。
+  - `FakeRenderTargets.swift`: StubTarget / StubTargetFactory を記録機能を持つ形に一本化した（EffectWiringTests 側は記録を使わないため代替可能）。
+  - `FakeProcessors.swift`: 同一の素通し実装2件（旧 StubDrawingEffect / PassThroughDrawingEffect）を `PassThroughDrawingEffect` へ一本化し、StubProcessor / StubDefinition を集約した。
+  - `FakeProviders.swift`: StubEffectProvider を集約した。
+  - 計画からの変更点: RenderingTests と CompositionTests の FakeDrawingEffect は同名だが仕様が全く異なる（入力・破棄の記録 vs 名前＋イベントログ＋エラー注入）ため、集約するとテストの振る舞いが変わる。集約せず各ファイルに残した。
+- **ハーネスの git 管理化**: Mac 側の作業領域に散らばっていた画素検証ハーネス9件（mac0023 / mac0025 / mac0026 / mac0027 / mac0028 / mac0031 / mac0033 / mac0034 / mac0035）を `Harnesses/` へ取り込んだ。各 Package.swift の依存パスは検証用コピーの絶対パスからリポジトリルートへの相対パス（`../..`）へ変更し、`Harnesses/README.md` に目的・実行方法・期待値を文書化した。ffmpeg スタブ（mac0026）には実行権限を付けた。旧世代の metalfx ハーネスと性能監査用ベンチ（perfbench / resamplebench）は現役の検証資産ではないため取り込み対象外とした。
+- **検証**: Linux で影響範囲のテスト（AudioPipeline / AudioDrift / AudioSampleAccuracy / ExportAudioProvider / EffectWiring / CompositeGroup の66件と AudioResamplerQuality）を実行し全合格。Mac 実機でルート＋DebugApp のビルド成功・警告0、取り込んだハーネス9件をリポジトリ内配置から実行し従来値どおり全合格（mac0023 = 25、mac0025 = 18、mac0026 = 19、mac0027 = 15、mac0028 = 90、mac0031 = IoU 1.000、mac0033 = 通常ケース2件・失敗ケースは既定 SKIP、mac0034 = 25、mac0035 = 27）。全自動テストの release レポート比較では、整理前（MAC-0039 時点のレポート）と整理後で合成 p95 が 5.19 ms → 4.89 ms、リサンプラ実時間比が 2.90 / 2.95 → 3.12 / 3.12 と同等であることを確認した（測定の正本はレポートファイル）。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
