@@ -84,6 +84,8 @@ public enum EffectPropertyMetadata {
 /// （`TypedEffectPairProvider`）はキャッシュを作り直し、プレビュー
 /// にも編集が反映される。未知の型（コミュニティ・プラグイン）は
 /// 型付き編集の対象外として nil を返し、生保持はそのまま残る。
+/// 書き戻しは元の生保持を土台に重ねる形で行い、型付きコーデックが
+/// 読み落とす入れ子の未知キーも保存で失われない（UI29-01 / MAC-0032）。
 public enum EffectPropertyEditing {
     /// アイテムが保持する映像エフェクト列。対象は `VisualItem` 系譜・
     /// `VoiceItem`・`TransitionItem`（いずれも保持列は字幕側／映像側の
@@ -110,24 +112,30 @@ public enum EffectPropertyEditing {
     }
 
     /// 編集済みの型付き定義を保持列の同じ位置へ書き戻す。
-    /// 対象外のアイテム・範囲外は false。
+    /// 元の要素を土台に重ねて書き戻すため、型付きで読み落とした
+    /// 入れ子の未知キーも保持される。対象外のアイテム・範囲外は false。
     @discardableResult
     public static func writeBack(
         _ definition: VideoEffectDefinitionBase, for item: BaseItem, at index: Int
     ) -> Bool {
-        let encoded = VideoEffectRegistry.encode(definition)
         switch item {
         case let visual as VisualItem:
             guard visual.videoEffects.indices.contains(index) else { return false }
-            visual.videoEffects[index] = encoded
+            visual.videoEffects[index] = VideoEffectRegistry.encode(
+                definition, preservingUnknownFieldsOf: visual.videoEffects[index]
+            )
             return true
         case let voice as VoiceItem:
             guard voice.videoEffects.indices.contains(index) else { return false }
-            voice.videoEffects[index] = encoded
+            voice.videoEffects[index] = VideoEffectRegistry.encode(
+                definition, preservingUnknownFieldsOf: voice.videoEffects[index]
+            )
             return true
         case let transition as TransitionItem:
             guard transition.videoEffects.indices.contains(index) else { return false }
-            transition.videoEffects[index] = encoded
+            transition.videoEffects[index] = VideoEffectRegistry.encode(
+                definition, preservingUnknownFieldsOf: transition.videoEffects[index]
+            )
             return true
         default:
             return false
