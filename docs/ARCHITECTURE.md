@@ -1,6 +1,6 @@
 # ymm4mac の実装済みアーキテクチャ
 
-更新: 2026-11-17。状態: **モデル層と .ymmp 互換層に加え、描画層の土台と合成の実行部、GPU 実行器（Metal）と基本 Source（画像・図形）、音声パイプラインの芯まで実装済み。テキスト描画・個別エフェクト・動画デコード・製品 UI は未実装（音声のデコード実体・ユーザー音声エフェクト・再生／書き出し接続も未実装）。**
+更新: 2026-11-17。状態: **モデル層と .ymmp 互換層に加え、描画層の土台と合成の実行部、GPU 実行器（Metal）と Source 群（画像・図形・テキスト・字幕・動画・シーン・フレームバッファ・立ち絵・合成グループ）、音声パイプラインの芯と QA、音声リサンプラの高品質化、書き出しの芯とその実接続（実エンコード検証済み）、映像エフェクト定義層と変換型処理器、その合成チェーンへの接続（消費側の型付き復元）と VoiceItem の字幕エフェクト解決の接続、GPU 失敗の検出・通知契約、GPU 処理系エフェクトの定義層と Metal 処理器 第1段まで実装済み。製品 UI は未実装（音声のユーザー音声エフェクト・再生接続は未実装。エフェクトの GPU 処理系の処理器は、第1段10種が Mac 検証済みで統合済み、残り63種は未実装。動画デコードは AVFoundation の範囲で実装済みで、非対応コンテナは未対応）。**
 
 この文書は **実装されている構造のみ記載するAs-built**。計画・仮説は[解析側のMac設計案](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/02-MAC-DESIGN-PROPOSAL.md)に記載。
 
@@ -43,6 +43,9 @@
                                VoiceItem + TransitionItem）
           MediaItems.swift     AudioItem / VideoItem / ImageItem
           TextItems.swift      TextItem / VoiceItem / TextDecoration / TextAppearance
+          VoiceItemJimaku.swift VoiceItem の実効値解決（JimakuVisibility と Character
+                               設定による表示可否・外観・変形・VideoEffects）と、
+                               VideoItemProperties の実効値アクセサ（effectiveX 等）
           CompositeItems.swift Shape / Effect / Group / Scene / FrameBuffer /
                                Tachie / TachieFace / Transition の各アイテム
         Rendering/             描画層の土台（Foundation のみ。GPU 実行は含まない）
@@ -75,27 +78,104 @@
                                音声エフェクトの差し替え点）、AudioSourceFactory
           AudioEffectProcessors.swift NegativeSeekable / ContentOffset / Loop /
                                Reverse / Echo の各処理器と基底
-          AudioResampling.swift Resampler / PlaybackRate / VariablePlaybackRate /
+          AudioResampling.swift Resampler（生成芯は BandLimitedResamplingCore =
+                               窓関数 sinc の帯域制限補間。MAC-0024）/
+                               PlaybackRate / VariablePlaybackRate /
                                Upsampler（補間カーネルは Linear / Cubic）
           VolumePanStream.swift VolumePan（サンプル対ごとの Animation 評価）
           AudioGroups.swift    AudioGroupResolver（グループ境界の区間分割と
                                DirectGroups / Owner の算出）、GroupAudioBusSource
           TimelineAudioMixer.swift タイムライン全体のミックス（レイヤー音量適用、
                                float 加算、リミッターなし）
+        Effects/               映像エフェクト定義層＋DrawDescription 変換型処理器
+                               （Foundation のみ。MAC-0018。合成チェーンへの接続は
+                               MAC-0019、VoiceItem の字幕エフェクト解決の接続は MAC-0020、
+                               GPU 処理系の定義層は MAC-0022）
+          VideoEffectDefinitionBase.swift 定義の共通基盤（$type 対応、Animation 型
+                               パラメータ、追加フィールド保持、IsEnabled）
+          VideoEffectRegistry.swift $type 名→定義型のレジストリ（登録95種）と
+                               TypedEffectPairProvider（保持列から型付き定義を復元して
+                               EffectedItemSource へ供給する消費側の接続。キーフレーム
+                               文脈の伝播と、VoiceItem の字幕エフェクト解決列の
+                               切り替えを含む）
+          DrawDescriptionEffectProcessor.swift 変換型処理器の基盤
+          BasicDrawEffects.swift Zoom / Opacity / DrawPosition / Billboard 等
+          InOutEffects.swift   InOutFade / InOutMove / InOutZoom 等の出入り系
+          RandomRepeatEffects.swift Random 系・Repeat 系（共有計算は Animation の
+                               randomMoveRate / repeatMoveRate を再利用）
+          CameraEffects.swift  CameraFov / CameraPosition / CameraLookAt /
+                               CameraWraparound / Polar 系 / XYToPolarTransform
+          PreviewAndGroupEffects.swift ShowOnlyPreview、GroupedDrawingEffect
+                               （グループ合成用。$type を持たない）
+          MotionTrackingEffect.swift MotionTracking
+          GPUEffectSupport.swift GPU 処理系定義の基底（GPUEffectDefinitionBase）、
+                               暫定処理器 GPUEffectPassthroughProcessor（入力をそのまま
+                               返す素通し。実処理器は次段）、新規列挙型19種（MAC-0022）
+          GPUTransformEffects.swift 変形系14種の定義
+          GPUBlurEffects.swift ぼかし系12種の定義
+          GPUColorEffects.swift 色調系11種の定義
+          GPUShadowFillEffects.swift 影・塗り系9種の定義
+          GPUWarpEffects.swift 歪み系8種の定義
+          GPUMaskKeyEffects.swift マスク・キー系3種の定義
+          GPUInOutEffects.swift 出入り系10種の定義
+          GPURandomRepeatEffects.swift ランダム・反復系4種の定義
+          GPUCustomEffects.swift カスタム系2種の定義
+        Export/                書き出しの芯（Foundation のみ。MAC-0017）と音声供給
+                               （MAC-0026。映像供給とファサードは YMM4GPU 側）
+          ExportSession.swift  書き出しセッションの状態機械（全経路で finalize 1回、
+                               結果状態を型で区別）
+          ExportAudioProvider.swift TimelineExportAudioProvider（音声供給。解析パスで
+                               ラウドネス解析を行い、書き出しパスでは
+                               DynamicsProcessorStream で包んだミキサーを供給）
+          ExportSettings.swift 書き出し設定の明示受け渡し
+          FFmpegArguments.swift FFmpeg 引数生成（純粋関数）と NV12 変換
+                               （BT.709 リミテッド）
+          FFmpegProcessWriter.swift 音声・映像の別プロセス＋終了時 mux の本家方式
+                               （プロセス起動は差し替え点）
+          LoudnessAnalysis.swift BS1770LoudnessAnalyzer（二段ゲーティング）
+          DynamicsProcessorStream.swift DynamicsProcessor（Ratio=1 高速経路）と
+                               EnvelopeFollower
       Sources/YMM4GPU/         GPU 実行層（Metal。全ソース #if os(macOS)、Linux では空）
-        MetalGraphics.swift    MetalGraphicsDevices（デバイス共有・登録表・共有資源）、
-                               MetalImage（ImageReference の実体）、
+        MetalGraphics.swift    MetalGraphicsDevices（デバイス共有・登録表・共有資源、
+                               readBGRA によるバイト列読み戻しを含む）、
+                               MetalImage（ImageReference の実体。境界とテクスチャ
+                               平面範囲 texturePlaneRect / planeOffset を分けて持つ。
+                               MAC-0027）、
                                MetalGraphicsContext（消費者ごとの文脈・描画先工場）、
                                シェーダ一式、CGImage 読み戻し
         MetalRenderTarget.swift RenderTarget の Metal 実装（画面サイズのテクスチャ、
-                               記録の畳み込みと close() での同期実行）
+                               記録の畳み込みと close() での同期実行。失敗は
+                               MetalRenderError として close() が投げる。MAC-0021。
+                               描画内容の境界を追跡し、close() 成功時に bounds =
+                               内容境界として再登録する。MAC-0027）
         MetalDrawingEffect.swift DrawingEffect の Metal 実装（変換の遅延記録、
                                PlaneSplitGeometryProviding を兼ねる）
         MetalSources.swift     MetalImageSource（画像）、MetalShapeSource（図形）、
                                MetalEmptySource（未対応種別の透明）、MetalSourceProvider
+                               （種別ごとの分岐と共有ヘルパー、シーン解決子の注入）
+        MetalTextSources.swift MetalTextSource（テキスト）、MetalJimakuSource（字幕）、
+                               MetalTextRasterizer（CoreText によるレイアウトと
+                               背景／前景の分離描画）、MetalFontResolver（フォント解決）
+        MetalEffectProcessors.swift MetalEffectPairProvider（TypedEffectPairProvider
+                               を内包し対象種を Metal 処理器へ差し替える）と色変換系
+                               8種・GaussianBlur・Mosaic の Metal 処理器（MAC-0023）
+        MetalMediaSources.swift MetalVideoSource（動画、AVAssetImageGenerator）、
+                               MetalSceneSource（シーン入れ子）、
+                               MetalFrameBufferSource（フレームバッファ）、
+                               MetalTachieSource（立ち絵。描画は境界型
+                               MetalTachieRenderer へ委譲）（MAC-0025）、
+                               MetalCompositeSource（合成グループ。自前文脈と
+                               内部 TimelineComposer で子を中間画像へ合成。
+                               MAC-0027）
+        MetalExport.swift      書き出しの GPU 側接続（MAC-0026）:
+                               AVFoundationPCMProviderFactory（AVAssetReader で
+                               素材全体を float32 / 2ch 化するデコード実体）、
+                               MetalExportVideoProvider（PreviewBox と同一構成の
+                               合成経路でフレームを供給）、TimelineExporter
+                               （映像・音声供給と ExportSession の組み立て）
       Apps/DebugApp/           検証用デバッグアプリ（読み込み診断・往復チェック・
                                合成プレビュー。製品 UI ではない）
-      Tests/YMM4CoreTests/     上記のユニットテスト（214件）
+      Tests/YMM4CoreTests/     上記のユニットテスト（382件）
       docs/ARCHITECTURE.md     本文書
       docs/IMPLEMENTATION_LOG.md
       docs/STATUS.md
@@ -105,15 +185,18 @@
 
 ## データフロー（実装済みの範囲）
 
-- 読み込み: .ymmp テキスト → `JSONParser`（順序・数値リテラル保持）→ `YmmpCodec.decode` が $type を解決して `Project` / `Timeline` / アイテム13クラスを構築。未知の $type のアイテムは読み飛ばして診断情報へ記録し、未知のプロパティは各モデルの `additionalFields` に保持する。プラグイン型の値（エフェクト等）は `PreservedObject` として生 JSON のまま保持する。
+- 読み込み: .ymmp テキスト → `JSONParser`（順序・数値リテラル保持）→ `YmmpCodec.decode` が $type を解決して `Project` / `Timeline` / アイテム13クラスを構築。未知の $type のアイテムは読み飛ばして診断情報へ記録し、未知のプロパティは各モデルの `additionalFields` に保持する。プラグイン型の値（エフェクト等）は `PreservedObject` として生 JSON のまま保持する。デコードの最後に、VoiceItem / TachieItem / TachieFaceItem の実行時参照 `character` を `Project.Characters` から `characterName` で引いて解決する（本家の `Character` は [JsonIgnore] で、保存されるのは名前だけであるため）。
 - 編集: `Timeline` の編集操作（TimelineEditing.swift）がアイテム（参照型）を直接書き換える。本家の意味論どおり、前処理は入力を書き換え、原子的保証はコミット段階のみ。`Timeline.Length` / `MaxLayer` はキャッシュとして保守される。
 - 保存: `YmmpCodec.encode` がモデルを追加フィールドごと JSON 化（1行）→ 一時ファイルへ書き出し → 再読込で検証 → 本ファイルへコピー。
 - アイテムの複製は JSON 往復（本家 GetClone と同じ経路）で、`BaseItem.cloned()` が担う。分割はこの複製を左右に作ってから行う。
 - 描画（実行部まで）: `TimelineComposer.update` が `ItemPicker.pickItems` でフレーム時点の対象アイテムを選定し、資源管理（範囲外の破棄・不足分の生成）と親エフェクトの再構築（顔・声解決→グループ解決）を行う → FrameBuffer 以外の各 `EffectedItemSource` が Source を更新し、`EffectedOutput` の連鎖（処理器の位置基準の再利用・差し替え）＋アイテム変換で DrawDescription を確定 → `DrawOrdering.ordered` が3キーで順序付け → `DrawSegmentBuilder` のセグメント列に従い、抽象描画先（RenderTarget）へ合成する。FrameBuffer アイテムでは描画先を閉じて Source へ渡し、新しい描画先で合成を続ける。
-- 描画（GPU 実行）: 描画先・DrawingEffect・基本 Source の実物は `Sources/YMM4GPU/`（Metal）。`MetalGraphicsDevices` がデバイスと ImageReference の登録表を所有し、`MetalGraphicsContext`（消費者ごとに生成）が描画先を供給する。DrawingEffect は中間テクスチャを作らず、入力実体へ変換（ズーム×ワールド×透視）と不透明度を記録した実体を出力として登録する（遅延評価）。描画先は画面サイズのテクスチャを実体とし、記録した描画を close() で同期実行する。Source の実物は画像（ImageIO デコード）と図形（SDF 描画）のみで、未対応種別は透明な空 Source になる。デバッグアプリのプレビュー欄はこの経路で合成し、最終テクスチャを CGImage として読み戻して表示する。
-- 音声: `TimelineAudioMixer`（AudioStream）が読み取り範囲と交差するアイテムのリソースだけを開き、各アイテムの `EffectedAudioItemSource`（素材ストリーム → 本家のチェーン順序の処理器連鎖 → VolumePan）が供給するサンプルへレイヤー音量を適用して float 加算する。音声グループに完全に所有される子は `AudioGroupResolver` の算出に基づきトップレベルへ直接加算せず、`GroupAudioBusSource`（バスミックス → グループエフェクト → Resampler）経由でのみ加算される。素材のデコードは `PCMProvider` の差し替え点の先にあり実体は未実装で、ミックス結果の再生・書き出しへの接続もまだ無い。
+- 描画（GPU 実行）: 描画先・DrawingEffect・基本 Source の実物は `Sources/YMM4GPU/`（Metal）。`MetalGraphicsDevices` がデバイスと ImageReference の登録表を所有し、`MetalGraphicsContext`（消費者ごとに生成）が描画先を供給する。DrawingEffect は中間テクスチャを作らず、入力実体へ変換（ズーム×ワールド×透視）と不透明度を記録した実体を出力として登録する（遅延評価）。描画先は画面サイズのテクスチャを実体とし、記録した描画を close() で同期実行する。RenderTarget の close() は throws であり（MAC-0021）、テクスチャ生成失敗やコマンドバッファの実行エラーは MetalRenderError として呼び出し側へ伝播し、失敗した描画先は出力として公開されない（最終合成の失敗時は旧出力が保持される）。Source の実物は画像（ImageIO デコード）、図形（SDF 描画）、テキストと字幕（CoreText でラスタライズ）、動画（AVAssetImageGenerator による時刻指定デコード）、シーン（内側 TimelineComposer の入れ子合成）、フレームバッファ（蓄積の実体化）、立ち絵（境界型 MetalTachieRenderer への委譲）、合成グループ（MetalCompositeSource が自前文脈と内部 TimelineComposer で子をタイムライン絶対時刻で中間画像へ合成。中心は CompositeCenter が ImageCenter のとき内容境界の中心、それ以外は (0,0)。グループの GroupEffects は子へ流れず、グループ自身の VideoEffects が合成結果全体へ一度だけ適用される。MAC-0027）で、未対応種別は透明な空 Source になる。描画先は描画内容の境界を追跡し、MetalImage は境界とテクスチャ平面範囲（texturePlaneRect / planeOffset）を分けて持つ。動画の素材時刻は PlaybackRateMap で求め、素材を開いた時点で実 Duration が item.contentLength へ反映される。シーン解決は PreviewBox / ProjectView がプロジェクト全タイムラインを解決子として渡す。AVFoundation が開けないコンテナ（MKV / WebM / TS 等）は透明フォールバックのままで、FFmpeg 併用は未判断。合成グループ内部・シーン内部の子には GPU 色エフェクトが効かない（内部合成器のエフェクト供給元が既定のまま）。デバッグアプリのプレビュー欄はこの経路で合成し、最終テクスチャを CGImage として読み戻して表示する。
+- VoiceItem の実効値: 本家の IVideoItem プロパティは読み取りのたびに JimakuVisibility と Character 設定で解決される動的 getter であるため、描画パイプラインはアイテムの保持プロパティを直接読まず、`VideoItemProperties` の実効値アクセサ（`effectiveX` 等、VoiceItem のときだけ解決し他は保持値を返す）を通る。EffectedItemSource（変形・フェード・クリッピング）、TimelineSource（RenderScale・合成時の読み取り）、DrawOrdering（IsAlwaysOnTop・IsZOrderEnabled）が対象。字幕の表示可否と外観は `VoiceItem.jimakuIsVisible` / `jimakuAppearance` が担い、MetalJimakuSource はそれを使うだけにする。
+- 音声: `TimelineAudioMixer`（AudioStream）が読み取り範囲と交差するアイテムのリソースだけを開き、各アイテムの `EffectedAudioItemSource`（素材ストリーム → 本家のチェーン順序の処理器連鎖 → VolumePan）が供給するサンプルへレイヤー音量を適用して float 加算する。音声グループに完全に所有される子は `AudioGroupResolver` の算出に基づきトップレベルへ直接加算せず、`GroupAudioBusSource`（バスミックス → グループエフェクト → Resampler）経由でのみ加算される。素材のデコード実体は MAC-0026 の `AVFoundationPCMProviderFactory`（YMM4GPU 側、AVAssetReader で全体を float32 / 2ch 化、失敗時は無音）が担い、書き出しへの接続も MAC-0026 で実装済みである。ミックス結果の再生への接続はまだ無い。位置精度は MAC-0016 で QA 済み（位置カウンタの累積ドリフトは全チェーンで 0 サンプル。`InMemoryPCMProvider` の seek は二重量子化を避けるため最も近いフレーム境界へ丸める）。Resampler の生成芯は MAC-0024 で線形補間から帯域制限補間（窓関数 sinc、Blackman 窓・片側48零点・97タップ）へ差し替えた。長さ・シーク・位置の変換式は無変更で位置写像は不変、DC は厳密に保存される。品質実測（通過利得の平坦さ ±0.00032 dB 以内、イメージ抑制 −88.7 dB、折り返し抑制 −113.4 dB）は台帳 MAC-0024 を参照（閾値は暫定回帰ガード）。
+- 映像エフェクト定義層: `Effects/` の定義型が $type 名と Animation 型パラメータを保持し、変換型の処理器が MAC-0010 の連鎖契約で DrawDescription を書き換える。登録は95種（変換群22種＋GPU 処理系73種、MAC-0022）で本家内蔵分は定義層が揃ったが、GPU 処理系の処理器は MAC-0023 の対象10種を除き暫定の素通し（GPUEffectPassthroughProcessor）のため描画にはまだ反映されない。Metal 処理器の第1段（色変換系8種＋GaussianBlur＋Mosaic、MAC-0023）は `Sources/YMM4GPU/MetalEffectProcessors.swift` に実装され、Mac 実機で画素検証済み（解析値と完全一致を含む全件合格）で統合済みである。プレビューでは MetalEffectPairProvider が TypedEffectPairProvider を内包し、対象10種だけを Metal 処理器つきの定義へ差し替えて供給する。残り63種は引き続き素通しである。保持形式は生保持のまま（モデル層は全箇所 `PreservedObject`、保存経路は無変更）で、接続は消費側で行う: `TimelineComposer` の既定の EffectPairProvider である `TypedEffectPairProvider` が、合成時に保持列から型付き定義を一時的なビューとして復元し、`EffectedItemSource` へ供給する（対象は VisualItem 系 VideoEffects／VoiceItem の JimakuVideoEffects／GroupItem の VideoEffects／TachieFaceItem・VoiceItem の TachieFaceEffects。SceneItem／TransitionItem の Before・AfterVideoEffects は対象外）。キーフレーム文脈は定義生成時と所有アイテムの KeyFrames 変更時にだけ再伝播され、定義インスタンスは作り直されない。VoiceItem の字幕エフェクトは、キャラクターが解決済みの場合に限り、保持列ではなく MAC-0014 の `resolvedVideoEffects`（JimakuVisibility とキャラクター設定による解決列）が供給列になる。
+- 書き出し: `ExportSession`（状態機械）が書き出しの開始から終了手続き（finalize）までを管理し、`FFmpegProcessWriter` が音声（WAV 一時ファイル）と映像を別プロセスで書いて終了時に mux する本家方式を取る。映像は NV12（BT.709 リミテッド）へ変換し、色宣言は NV12 経路のみに付ける。供給の接続は MAC-0026 で実装済みである: ファサード `TimelineExporter`（YMM4GPU）が組み立て、映像は `MetalExportVideoProvider` が PreviewBox と同一構成の合成経路でフレームを合成し `readBGRA` で借用バッファへ読み戻して供給する。音声は `TimelineExportAudioProvider`（Core）が2パスで供給する: 解析パスでミックスを `LoudnessAnalysis`（`BS1770LoudnessAnalyzer` の二段ゲーティング）に通して音量係数とコンプレッサ倍率を求め、書き出しパスでは別のミキサーへ `DynamicsProcessorStream`（volume = 音量係数、ratio = コンプレッサ倍率）を被せてフレームごとのサンプルを返す。DebugApp の書き出し UI から実行でき、実 ffmpeg でのエンコードまで検証済みである（台帳 MAC-0026）。
 
-**テキスト描画・個別エフェクト・動画デコード・書き出し・製品 UI は未実装。音声はパイプラインの芯のみで、デコード実体・ユーザー音声エフェクト・再生／書き出し接続が未実装。** 詳細は実装台帳 MAC-0001〜MAC-0013。
+**製品 UI は未実装。動画デコードは AVFoundation の範囲で実装済み（非対応コンテナは未対応で、FFmpeg 併用は未判断）。音声はパイプラインの芯と QA、リサンプラの高品質化（MAC-0024）、デコード実体と書き出し接続（MAC-0026）までで、ユーザー音声エフェクト・再生接続が未実装。書き出しは芯に加えて実接続と実エンコード検証まで完了。映像エフェクトは定義層と変換型処理器に加え、合成チェーンへの接続（消費側の型付き復元）と VoiceItem の字幕エフェクト解決の接続まで済み、GPU 処理系は定義層（73種）に加え、処理器は第1段10種が Mac 検証済みで統合済み、残り63種は未実装。** 詳細は実装台帳 MAC-0001〜MAC-0027。
 
 ## 実装後の書き方
 

@@ -30,9 +30,10 @@ public protocol VideoEffectProcessor: AnyObject {
 ///
 /// 連鎖の再利用判定はこの定義の**同一性**（インスタンス）で行う（第4章:
 /// 位置 index 基準の再利用、差し替え条件は IVideoEffect 参照の不一致）。
-/// モデル層の映像エフェクトは現在 PreservedObject（生 JSON）で保持されており、
-/// 定義への橋渡しは個別エフェクト実装の段で行う。ここでは同一性・有効状態・
-/// 処理器の生成だけを契約とする。
+/// モデル層の映像エフェクトは PreservedObject（生 JSON）で保持され、
+/// 定義への橋渡しは `TypedEffectPairProvider` が消費側で行う（MAC-0018 /
+/// MAC-0019。保持形式は生保持のままで、型付き定義は一時的なビュー）。
+/// ここでは同一性・有効状態・処理器の生成だけを契約とする。
 public protocol VideoEffectDefinition: AnyObject {
     /// 有効か。無効な定義は連鎖から除外される（本家 IsEnabled）。
     var isEnabled: Bool { get }
@@ -76,8 +77,10 @@ public struct EffectPair {
 }
 
 /// エフェクト定義の供給元。モデル層のエフェクト列（PreservedObject の生 JSON）
-/// から定義インスタンスへの橋渡しを担う境界であり、個別エフェクト実装の段で
-/// 実物に差し替える。この層の既定実装は何も供給しない（連鎖は素通しになる）。
+/// から定義インスタンスへの橋渡しを担う境界。実物は
+/// `TypedEffectPairProvider`（レジストリで型付けし、所有アイテム単位で
+/// キャッシュする）であり、`TimelineComposer` と `EffectedItemSource` の
+/// 既定はそちらを使う（MAC-0019）。
 public protocol EffectPairProvider {
     /// アイテム自身のエフェクト（本家 Item.VideoEffects）。
     func ownEffectPairs(for item: BaseItem & VideoItemProperties) -> [EffectPair]
@@ -88,7 +91,7 @@ public protocol EffectPairProvider {
     func faceEffectPairs(for faceItem: BaseItem) -> [EffectPair]
 }
 
-/// エフェクトを何も供給しない供給元（この層の既定）。
+/// エフェクトを何も供給しない供給元（連鎖を素通しにしたい場合に明示して使う）。
 public struct EmptyEffectPairProvider: EffectPairProvider {
     public init() {}
 
@@ -126,7 +129,10 @@ public protocol RenderTarget: AnyObject {
     /// 描画を終える。
     func endDraw()
     /// コマンド列を閉じる。以後の描画はできない。
-    func close()
+    /// GPU 実行層がコマンド実行の失敗を検出した場合はエラーを投げる。
+    /// 不完全な画像を正常な出力として公開しないための契約（MAC-0021）。
+    /// 抽象層（記録用実装など）は失敗しないため投げなくてよい。
+    func close() throws
     /// 実体を解放する。
     func dispose()
 }
@@ -421,26 +427,29 @@ public final class EffectedOutput {
         let fps = adjusted.fps
         let positionSeconds = adjusted.itemPosition.time
         let durationSeconds = adjusted.itemDuration.time
-        let fadeInFactor = item.fadeIn == 0 ? 1 : min(1, positionSeconds / item.fadeIn)
-        let fadeOutFactor = item.fadeOut == 0 ? 1 : min(1, (durationSeconds - positionSeconds) / item.fadeOut)
+        // 変形の読み取りは解決済みの値（effective*）経由にする。本家では
+        // IVideoItem 経由の読み取りで VoiceItem の JimakuVisibility 解決が
+        // 効くため、それに合わせる（MAC-0014）。
+        let fadeInFactor = item.effectiveFadeIn == 0 ? 1 : min(1, positionSeconds / item.effectiveFadeIn)
+        let fadeOutFactor = item.effectiveFadeOut == 0 ? 1 : min(1, (durationSeconds - positionSeconds) / item.effectiveFadeOut)
         let fadeFactor = min(fadeInFactor, fadeOutFactor)
-        let zoomValue = item.zoom.value(atFrame: frame, length: duration, fps: fps) / 100
+        let zoomValue = item.effectiveZoom.value(atFrame: frame, length: duration, fps: fps) / 100
         return DrawDescription(
             draw: Vector3(
-                x: item.x.value(atFrame: frame, length: duration, fps: fps) + input.drawingOffset.x,
-                y: item.y.value(atFrame: frame, length: duration, fps: fps) + input.drawingOffset.y,
-                z: item.z.value(atFrame: frame, length: duration, fps: fps)
+                x: item.effectiveX.value(atFrame: frame, length: duration, fps: fps) + input.drawingOffset.x,
+                y: item.effectiveY.value(atFrame: frame, length: duration, fps: fps) + input.drawingOffset.y,
+                z: item.effectiveZ.value(atFrame: frame, length: duration, fps: fps)
             ),
             centerPoint: input.center,
             zoom: Vector2(x: zoomValue, y: zoomValue),
             rotation: Vector3(
                 x: 0, y: 0,
-                z: item.rotation.value(atFrame: frame, length: duration, fps: fps)
+                z: item.effectiveRotation.value(atFrame: frame, length: duration, fps: fps)
             ),
             camera: .identity,
             zoomInterpolationMode: zoomInterpolationMode,
-            opacity: item.opacity.value(atFrame: frame, length: duration, fps: fps) / 100 * fadeFactor,
-            invert: item.isInverted,
+            opacity: item.effectiveOpacity.value(atFrame: frame, length: duration, fps: fps) / 100 * fadeFactor,
+            invert: item.effectiveIsInverted,
             controllers: []
         )
     }
@@ -548,7 +557,7 @@ public final class EffectedItemSource {
         item: BaseItem & VideoItemProperties,
         source: any Source,
         targetFactory: any RenderTargetFactory,
-        effectProvider: any EffectPairProvider = EmptyEffectPairProvider(),
+        effectProvider: any EffectPairProvider = TypedEffectPairProvider(),
         applyItemTransform: Bool = true,
         cameraFinalizer: @escaping (DrawDescription) -> DrawDescription = { $0 },
         zoomInterpolationMode: InterpolationMode = .linear,
@@ -673,10 +682,17 @@ public final class EffectedItemSource {
         // 本家の終了順序は EndDraw → Close → ターゲット解除（FrameBuffer 境界の
         // EndDraw → ターゲット解除 → Close とは異なる）。この層ではターゲット
         // 解除が観測できないため endDraw → close に畳まれる。
-        target.close()
+        do {
+            try target.close()
+        } catch {
+            // 閉じることに失敗した描画先は出力として公開せず、その場で解放
+            // して失敗を呼び出し側へ伝える（MAC-0021）。
+            target.dispose()
+            throw error
+        }
         outputTarget = target
 
-        if applyItemTransform && item.isClippingWithObjectAbove {
+        if applyItemTransform && item.effectiveIsClippingWithObjectAbove {
             if alphaMask == nil {
                 alphaMask = alphaMaskFactory?.makeAlphaMaskEffect()
             }

@@ -48,8 +48,8 @@ public struct OrderedDrawResource {
     ) {
         self.init(
             item: videoItem,
-            alwaysOnTop: videoItem.isAlwaysOnTop,
-            zOrderEnabled: videoItem.isZOrderEnabled,
+            alwaysOnTop: videoItem.effectiveIsAlwaysOnTop,
+            zOrderEnabled: videoItem.effectiveIsZOrderEnabled,
             layer: videoItem.layer,
             isFrameBufferSource: isFrameBufferSource,
             drawDescriptions: drawDescriptions,
