@@ -44,7 +44,8 @@ final class PreviewBox {
             scene: TimelineScene(timeline: timeline),
             targetFactory: context,
             sourceProvider: provider.source(for:),
-            effectProvider: effectProvider
+            effectProvider: effectProvider,
+            alphaMaskFactory: MetalAlphaMaskEffectFactory(context: context)
         )
     }
 

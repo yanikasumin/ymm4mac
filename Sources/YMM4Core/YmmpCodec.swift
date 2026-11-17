@@ -42,6 +42,8 @@ public enum YmmpError: Error, Sendable, Equatable {
     case legacyXMLFormat
     /// 保存時の再読込検証に失敗した。
     case verificationFailed(String)
+    /// 書き出し用スナップショットの対象タイムラインがプロジェクトに属さない。
+    case timelineNotInProject
 }
 
 /// .ymmp の読み込み・保存。本家 `YukkuriMovieMaker.Json.Json` に対応する。
@@ -408,5 +410,43 @@ public extension BaseItem {
         }
         copy.setFPS(videoFPS)
         return copy
+    }
+}
+
+public extension Project {
+    /// 書き出しジョブ専用のスナップショットを JSON 往復で作る（AUD-07）。
+    ///
+    /// 書き出しは開始時に長さと動画設定を読み、全フレームを通じて同じ
+    /// モデルを読み続ける。編集中のプロジェクトをそのまま渡すと、UI
+    /// スレッド側の変更（アイテム配列の追加・削除、レイヤー設定の
+    /// 下付き代入・追加、デスクリプタ経由のアイテム値、動画設定の
+    /// 差し替え）と競合し、配列の並行変更ではクラッシュしうる。
+    /// そのため書き出し開始時にプロジェクト全体をエンコード→デコード
+    /// して、ジョブ専有のインスタンス群を作る。手書きの深い複製では
+    /// なく固定点が検証済みのコーデック往復を使うことで、フィールドの
+    /// 写し漏れと未知フィールド（生保持）の取りこぼしを構造的に避ける。
+    ///
+    /// 対象は `timelines` 全体である。SceneItem の解決が他タイムラインを
+    /// 引くため、対象タイムラインだけの複製では競合が残る。キャラクター
+    /// 参照はデコード時にスナップショット内のキャラクターへ張り直され、
+    /// アイテム側の参照がスナップショット内のインスタンスを保持する。
+    ///
+    /// - Parameter timeline: 書き出し対象。`timelines` の要素でなければならない。
+    /// - Returns: スナップショット側のタイムライン群と、その中にある
+    ///   対象タイムラインに対応するインスタンス（同一オブジェクト）。
+    /// - Throws: 対象がプロジェクトに属さない場合に
+    ///   `YmmpError.timelineNotInProject`、往復の復号に失敗した場合は
+    ///   その復号エラー。
+    func makeExportSnapshot(
+        of timeline: Timeline
+    ) throws -> (timelines: [Timeline], timeline: Timeline) {
+        guard let index = timelines.firstIndex(where: { $0 === timeline }) else {
+            throw YmmpError.timelineNotInProject
+        }
+        let snapshot = try YmmpCodec.decode(YmmpCodec.encode(self)).project
+        guard snapshot.timelines.indices.contains(index) else {
+            throw YmmpError.timelineNotInProject
+        }
+        return (timelines: snapshot.timelines, timeline: snapshot.timelines[index])
     }
 }
