@@ -142,6 +142,77 @@ public enum VideoEffectRegistry {
     public static func encode(_ definition: VideoEffectDefinitionBase) -> PreservedObject {
         PreservedObject(definition.encode())
     }
+
+    /// 型付き定義を生保持オブジェクトの形へ戻す（編集の書き戻し用）。
+    ///
+    /// 型付きコーデックは入れ子オブジェクト内部の未知キーを保持しない
+    /// （例: `Animation` の保存形式は既知4項目だけで再構成される）ため、
+    /// `encode(_:)` の結果をそのまま保持列へ戻すと、編集したエフェクトの
+    /// 内部にあった未知キーが保存時に消える（UI29-01）。ここでは元の
+    /// 生保持を土台に型付きエンコードを重ね、未知キーを原文から回収する。
+    ///
+    /// 重ね方の規則:
+    /// - トップレベルは型付きエンコードの並びとキーが正。未知キーは
+    ///   定義の `additionalFields` 経由で既に型付き側へ含まれており、
+    ///   定義が消費したキー（空にした `Remark`、旧キーからの移行など）は
+    ///   定義側の判断どおり出す・出さないが決まる。
+    /// - それより内側は元の並びを土台に再帰マージし、元だけにあるキー
+    ///   （＝型付きコーデックが読み落とした未知キー）を全階層で保持する。
+    /// - 配列とスカラは型付き側で置換する（配列要素の内部はマージしない）。
+    ///
+    /// 前提: `definition` は `original` から `decode` で開かれたもの。
+    /// 元の `$type`（型移行の適用後）が定義の型と異なる場合は重ねず、
+    /// 通常の `encode(_:)` の結果を返す。
+    public static func encode(
+        _ definition: VideoEffectDefinitionBase,
+        preservingUnknownFieldsOf original: PreservedObject
+    ) -> PreservedObject {
+        let encoded = encode(definition)
+        let migrated = original.applyingTypeMigration()
+        guard migrated.typeName == type(of: definition).typeName else {
+            return encoded
+        }
+        return PreservedObject(
+            overlayTypedEncoding(encoded.value, onto: migrated.value)
+        )
+    }
+
+    /// トップレベルの重ね合わせ。型付きエンコードのフィールドを正とし、
+    /// 両側にオブジェクトとして存在するフィールドだけ入れ子マージで
+    /// 元の未知キーを回収する。
+    private static func overlayTypedEncoding(_ overlay: JSONValue, onto base: JSONValue) -> JSONValue {
+        guard case .object(let overlayFields) = overlay,
+              case .object(let baseFields) = base else {
+            return overlay
+        }
+        return .object(overlayFields.map { field in
+            guard let baseValue = baseFields.first(where: { $0.key == field.key })?.value,
+                  case .object = field.value, case .object = baseValue else {
+                return field
+            }
+            return (key: field.key, value: mergeNestedFields(base: baseValue, overlay: field.value))
+        })
+    }
+
+    /// 入れ子オブジェクトの再帰マージ。元の並びを土台にし、共有キーは
+    /// （両側ともオブジェクトなら再帰、それ以外は型付き側で）置換、
+    /// 元だけのキーは保持、型付き側だけのキーは末尾へ追加する。
+    private static func mergeNestedFields(base: JSONValue, overlay: JSONValue) -> JSONValue {
+        guard case .object(let baseFields) = base,
+              case .object(let overlayFields) = overlay else {
+            return overlay
+        }
+        var result: [(key: String, value: JSONValue)] = baseFields.map { field in
+            guard let overlayValue = overlayFields.first(where: { $0.key == field.key })?.value else {
+                return field
+            }
+            return (key: field.key, value: mergeNestedFields(base: field.value, overlay: overlayValue))
+        }
+        result += overlayFields.filter { field in
+            !baseFields.contains(where: { $0.key == field.key })
+        }
+        return .object(result)
+    }
 }
 
 /// 型付き定義を MAC-0010 のエフェクト連鎖へ供給する `EffectPairProvider`。
