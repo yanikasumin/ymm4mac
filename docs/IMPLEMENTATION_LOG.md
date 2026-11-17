@@ -42,6 +42,7 @@
 - MAC-0037 — 音声リサンプラの正式形
 - MAC-0038 — デモ版内蔵のデバッグ用全自動テスト
 - MAC-0039 — DebugApp の .app バンドル化
+- MAC-0040 — VoiceItem の音声供給（Issue #51）
 - PR32 — DebugApp フロントエンドの形
 - UI32-01 — レベルメーターの本家構成化と誤記修正
 - W1 — 構造整理 第1単位: テスト基盤の整備とハーネスの git 管理化
@@ -821,6 +822,22 @@
 - **ハーネスの git 管理化**: Mac 側の作業領域に散らばっていた画素検証ハーネス9件（mac0023 / mac0025 / mac0026 / mac0027 / mac0028 / mac0031 / mac0033 / mac0034 / mac0035）を `Harnesses/` へ取り込んだ。各 Package.swift の依存パスは検証用コピーの絶対パスからリポジトリルートへの相対パス（`../..`）へ変更し、`Harnesses/README.md` に目的・実行方法・期待値を文書化した。ffmpeg スタブ（mac0026）には実行権限を付けた。旧世代の metalfx ハーネスと性能監査用ベンチ（perfbench / resamplebench）は現役の検証資産ではないため取り込み対象外とした。
 - **検証**: Linux で影響範囲のテストを実行し全合格（対象6クラス計55件・0失敗。内訳: AudioPipeline 20件、AudioDrift 7件、AudioSampleAccuracy 11件、CompositeGroup 5件、EffectWiring 4件、ExportAudioProvider 8件。これに AudioResamplerQualityTests 9件・0失敗を加え、合計64件・全合格）。Mac 実機でルート＋DebugApp のビルド成功・警告0、取り込んだハーネス9件をリポジトリ内配置から実行し従来値どおり全合格（mac0023 = 25、mac0025 = 18、mac0026 = 19、mac0027 = 15、mac0028 = 90、mac0031 = IoU 1.000、mac0033 = 通常ケース2件・失敗ケースは既定 SKIP、mac0034 = 25、mac0035 = 27）。全自動テストの release レポート比較では、整理前（MAC-0039 時点のレポート）と整理後で合成 p95 が 5.19 ms → 4.89 ms、リサンプラ実時間比が 2.90 / 2.95 → 3.12 / 3.12 と同等であることを確認した（測定の正本はレポートファイル）。
 - **件数訂正（2026-11-18）**: 本項の当初記載（66件）と PR #69 本文の当初記載（計86件とその内訳）は、実測の裏付けのない誤記であったため、上記の実測値（対象6クラス計55件＋AudioResamplerQualityTests 9件＝合計64件・全合格）に訂正した。結論（全合格・Mac ビルド警告0・ハーネス値・全自動テスト比較）に変更はない。
+
+#### MAC-0040 — VoiceItem の音声供給（Issue #51）（IMPLEMENTED、Mac 検証済み。ただし .NET 実キャッシュでの検証は未実施）
+
+**何を実装したか。** VoiceItem は字幕が出ても音声が無音だった（MAC-0026 で残した未解決）。プロジェクトに既に存在する音声 — .ymmp 内の `VoiceCache` と、カスタム音声ファイル — を書き出しと音声ミックスの両経路へ供給する接続を実装した。音声合成エンジンそのものは Mac 版に無いため、エンジン生成は対象外（下記「本家との差分」）。
+
+**本家根拠（実コード照合）。** `VoiceItem.cs`（解析側デコンパイル）: `CreateAudioSource(Scene)` は `AudioSource(FilePath, 0)` を返し通常のファイルデコード経路で開く（L1812–1815）。`FilePath` は保存対象外の計算プロパティで `voiceFile?.FullName ?? customVoiceFilePath`（L298）。`voiceFile` はエンジン生成の一時ファイル、または `VoiceCache` から復元した一時ファイルであり、`VoiceCache` は音声ファイル全体を Brotli 圧縮して保持したもの（`CreateVoiceCacheAsync` L1665–1683 が圧縮、`CreateVoiceFileFromCacheAsync` L1644–1663 が解凍して `TemporaryFile` へ書き出す）。`customVoiceFilePath` は発音記号列がカスタム音声の場合にそのパス自体が入る（`IsCustomVoice` L1590–1598: 絶対ファイル URI として解釈でき、拡張子が音声分類に含まれること。`CreateVoiceFileAsync` L1702–1709 が設定）。解決順はカスタム音声 → キャッシュ → エンジン生成。
+
+**どこを変更したか。** 新規: `Sources/YMM4GPU/Export/VoiceAudioProvider.swift`（`VoicePCMProviderResolver` と `BrotliDecompression`）、`Tests/YMM4GPUTests/VoiceAudioProviderTests.swift`。変更: `Sources/YMM4GPU/Export/TimelineExporter.swift` と `Apps/DebugApp/Sources/YMM4MacDebug/AutoTestRunner.swift`（`AudioSourceFactory` 生成時に resolver を接続）、`Package.swift`（テストターゲット `YMM4GPUTests` を新設。GPU 層には従来テストターゲットが無かった）。YMM4Core は無変更（差し替え点 `voiceProviderResolver` は MAC-0013 で用意済み）。
+
+**どう実装したか。** `VoicePCMProviderResolver.provider(for:)` が本家の分岐順で解決する: (1) `hatsuon` がカスタム音声パスなら `PCMProviderFactory.createProvider(filePath: hatsuon, audioTrackIndex: 0)`。(2) `voiceCache` があれば Brotli 解凍し、一時ファイルへ書いて同じ factory で開く。(3) どちらも無ければ nil（`FileAudioStream` が無音へ倒す＝本家で生成前に相当）。カスタム音声の判定は本家 `IsCustomVoice` の再現で、拡張子リストは本家 `FileExtensions.GetDefaultExtentions` の音声分類（動画コンテナ全種＋音声11種。解析側 MEDIA-IO-FACTS §8.2 が根拠）。Brotli 解凍は Compression フレームワークの `COMPRESSION_BROTLI`（raw Brotli、RFC 7932）。
+
+**なぜその実装なのか／本家との差分。** 本家は復元先の一時ファイルに拡張子を付けない（`TemporaryFile` の既定は "tmp"）が、AVFoundation は拡張子から形式を推定するため中身が WAV の .tmp ファイルを開けない（実測で "Cannot Open" を確認）。Mac 版の適応として、解凍データの先頭バイト（RIFF/WAVE、ID3・MPEG 同期、OggS、fLaC、ftyp、FORM）から形式を推定して拡張子を付ける。一時ファイルの所有権も異なる: 本家はアイテムが保持し破棄時に削除するが、Mac 版の素材デコードは全体をメモリへ展開する方式（MAC-0026）のため、resolver がデコード完了直後に削除して完結させる（現行の唯一の factory 実装が全デコード方式であることに依存する）。エンジン生成（`Speaker.CreateVoiceAsync`）は Mac 版に音声合成エンジンが無いため未実装であり、キャッシュもカスタム音声も無い VoiceItem は無音のままになる。本家では編集時に自動生成される点がユーザーから見える差分であり、エンジン供給は将来の差し替え点（この resolver の前段）として残る。
+
+**検証。** （Mac フルスイートの結果を記録予定）新規テスト `VoiceAudioProviderTests` 9件は Mac 実機で全合格（2026-11-18）: Brotli 解凍が Google 公式実装で圧縮したフィクスチャ（48kHz/16bit/ステレオ WAV 9644 バイト）とバイト完全一致すること（SHA-256 で照合）、VoiceCache から PCM が供給されサンプル値が元の PCM16 と一致すること、カスタム音声ファイルからの供給、壊れたキャッシュでの無音化、供給なしでの無音、判定・形式推定の単体、ミキサー経由で VoiceItem の音が現れること。**未実施**: .NET の `BrotliStream` が書いた実キャッシュでの検証（本家生成の VoiceCache を持つ実ファイルが手元に無いため。形式は同じ RFC 7932 であり、Google 公式実装の圧縮データで相互運用は実証済み）。実時間再生への供給は Issue #52（再生基盤そのものが未実装）で、同じ `AudioSourceFactory` 経路を使う。
+
+**次の担当へ。** 音声合成エンジンを導入する際は、この resolver の解決順の末尾（エンジン生成）に相当する供給を前段へ追加する形になる。`providerFromTemporaryFile` は factory が全デコード方式である前提で一時ファイルを即削除しているため、ストリーミング方式の factory を導入する場合は所有権の見直しが必要。
 
 ## 以降の記載テンプレート
 
