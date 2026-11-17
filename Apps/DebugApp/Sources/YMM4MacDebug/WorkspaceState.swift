@@ -28,6 +28,15 @@ final class WorkspaceState: ObservableObject {
     @Published var isExportPresented = false
     /// メニュー経由の保存結果などの一時メッセージ。
     @Published var statusMessage: String?
+    /// メニュー／ツールバーから ProjectView へ渡す編集アクションの要求。
+    /// App の .commands はプロジェクトの編集状態を持たないため、
+    /// 要求だけをここに積み、ProjectView が観測して実行する。
+    @Published var pendingAction: (action: WorkspaceAction, sequence: Int)?
+
+    /// 編集アクションを ProjectView へ要求する。
+    func request(_ action: WorkspaceAction) {
+        pendingAction = (action, (pendingAction?.sequence ?? 0) + 1)
+    }
 
     init() {
         project = Self.makeNewProject()
@@ -85,6 +94,97 @@ final class WorkspaceState: ObservableObject {
             loadError = nil
         } catch {
             loadError = "保存に失敗: \(error)"
+        }
+    }
+}
+
+/// メニューから ProjectView へ渡す編集アクション。
+/// ProjectView が現在のタイムライン・選択・再生ヘッドで実行する。
+/// 接続先（Core の編集操作等）が無いアクションはここに含めない
+/// （メニュー側で無効表示にし、理由は台帳に残す）。
+enum WorkspaceAction: Equatable {
+    case addItem(AddItemKind)
+    case splitAtCurrentPosition
+    case deleteSelection
+    case deleteAndMoveAll
+    case groupSelection
+    case ungroupSelection
+    case toggleLock
+    case toggleClipping
+    case toggleWaveform
+    case selectAll
+    case selectLeftItems
+    case selectRightItems
+    case seekToStart
+    case seekToEnd
+    case layerHeightUp
+    case layerHeightDown
+    case zoomInTimeline
+    case zoomOutTimeline
+    case saveThumbnail(ThumbnailFormat)
+    case resetLayout
+}
+
+/// サムネイル保存の形式（本家プロジェクトツールバーの SplitButton
+/// ドロップダウン: PNG／透過PNG／JPEG）。
+enum ThumbnailFormat: Equatable {
+    case png
+    case pngAlpha
+    case jpeg
+}
+
+/// 追加できるアイテム種別（本家の追加13種）。
+enum AddItemKind: String, CaseIterable {
+    case voice
+    case text
+    case video
+    case audio
+    case image
+    case shape
+    case tachie
+    case face
+    case effect
+    case transition
+    case scene
+    case frameBuffer
+    case group
+
+    /// 表示名（文字列テーブル経由）。
+    var displayName: String {
+        switch self {
+        case .voice: return UIStrings.ItemKind.voice
+        case .text: return UIStrings.ItemKind.text
+        case .video: return UIStrings.ItemKind.video
+        case .audio: return UIStrings.ItemKind.audio
+        case .image: return UIStrings.ItemKind.image
+        case .shape: return UIStrings.ItemKind.shape
+        case .tachie: return UIStrings.ItemKind.tachie
+        case .face: return UIStrings.ItemKind.face
+        case .effect: return UIStrings.ItemKind.effect
+        case .transition: return UIStrings.ItemKind.transition
+        case .scene: return UIStrings.ItemKind.scene
+        case .frameBuffer: return UIStrings.ItemKind.frameBuffer
+        case .group: return UIStrings.ItemKind.group
+        }
+    }
+
+    /// ツールバー用の SF Symbol（本家は MaterialDesign アイコン。
+    /// 対応する近似シンボルを使う）。
+    var systemImage: String {
+        switch self {
+        case .voice: return "text.bubble"
+        case .text: return "textformat"
+        case .video: return "video"
+        case .audio: return "music.note"
+        case .image: return "photo"
+        case .shape: return "square.on.circle"
+        case .tachie: return "person"
+        case .face: return "face.smiling"
+        case .effect: return "wand.and.stars"
+        case .transition: return "arrow.left.and.right.square"
+        case .scene: return "chart.bar.xaxis"
+        case .frameBuffer: return "photo.on.rectangle.angled"
+        case .group: return "square.stack.3d.up"
         }
     }
 }
