@@ -305,7 +305,10 @@ public class MetalEffectProcessor: VideoEffectProcessor {
     }
 
     /// 効果の適用。具象処理器が差し替える。返した実体が出力として
-    /// 登録される。入力自身を返せば素通しになる。
+    /// 登録される。入力自身を返せば素通しになる。nil を返してよいのは
+    /// 「効果なし」が正当な場合だけであり、テクスチャ確保などの資源
+    /// 失敗は `MetalRenderError` を投げる（GPU28-03 / MAC-0033:
+    /// 確保失敗を無言の素通しとして公開しない）。
     func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
         input
     }
@@ -336,14 +339,22 @@ public class MetalEffectProcessor: VideoEffectProcessor {
     // MARK: - 描画ヘルパ
 
     /// エフェクト用テクスチャを生成する（読み戻し可能な共有ストレージ）。
-    func makeTexture(width: Int, height: Int, usage: MTLTextureUsage) -> MTLTexture? {
+    /// 確保失敗は nil でなく `MetalRenderError.textureCreationFailed` を
+    /// 投げる（GPU28-03 / MAC-0033: MAC-0021 の失敗通知契約へ統一し、
+    /// 確保失敗が「効果なしの素通し」と区別されずに公開されることを防ぐ）。
+    func makeTexture(width: Int, height: Int, usage: MTLTextureUsage) throws -> MTLTexture {
+        let width = max(1, width)
+        let height = max(1, height)
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,
-            width: max(1, width), height: max(1, height), mipmapped: false
+            width: width, height: height, mipmapped: false
         )
         descriptor.usage = usage
         descriptor.storageMode = .shared
-        return context.devices.device.makeTexture(descriptor: descriptor)
+        guard let texture = context.devices.device.makeTexture(descriptor: descriptor) else {
+            throw MetalRenderError.textureCreationFailed(width: width, height: height)
+        }
+        return texture
     }
 
     /// 全面四角形の頂点（クリップ空間。uv はテクスチャ全体）。
@@ -406,11 +417,11 @@ public class MetalEffectProcessor: VideoEffectProcessor {
     func renderColorEffect(
         input: MetalImage,
         uniforms: ColorEffectUniforms
-    ) throws -> MetalImage? {
-        guard let outputTexture = makeTexture(
+    ) throws -> MetalImage {
+        let outputTexture = try makeTexture(
             width: input.texture.width, height: input.texture.height,
             usage: [.renderTarget, .shaderRead]
-        ) else { return nil }
+        )
         var uniforms = uniforms
         try executeRenderPass(
             output: outputTexture, pipeline: context.devices.effectPipeline
@@ -517,7 +528,7 @@ public class MetalEffectProcessor: VideoEffectProcessor {
     /// 出力境界は入力と同じで範囲外は鏡像として読む。
     func renderGaussianBlurred(
         input: MetalImage, sigma: Double, hardBorder: Bool
-    ) throws -> MetalImage? {
+    ) throws -> MetalImage {
         guard sigma > 0 else { return input }
         let downsample = sigma > 6 ? Int(ceil(sigma / 6)) : 1
         let (weights, radius, _) = gaussianKernel(sigma: sigma)
@@ -530,11 +541,12 @@ public class MetalEffectProcessor: VideoEffectProcessor {
         )
         let workWidth = max(1, Int(ceil((outBounds.right - outBounds.left) / Double(downsample))))
         let workHeight = max(1, Int(ceil((outBounds.bottom - outBounds.top) / Double(downsample))))
-        guard let workA = makeTexture(
-                width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead]),
-              let workB = makeTexture(
-                width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead])
-        else { return nil }
+        let workA = try makeTexture(
+            width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead]
+        )
+        let workB = try makeTexture(
+            width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead]
+        )
         let sampler = hardBorder ? context.devices.mirrorSampler : context.devices.borderSampler
         try blurPreparationPass(
             input: input, output: workA, outputBounds: outBounds,
@@ -567,7 +579,7 @@ public class MetalEffectProcessor: VideoEffectProcessor {
     /// （画面座標系、y 下向きで時計回り正）。
     func renderDirectionalBlurred(
         input: MetalImage, sigma: Double, angleDegrees: Double, hardBorder: Bool
-    ) throws -> MetalImage? {
+    ) throws -> MetalImage {
         guard sigma > 0 else { return input }
         // 縮小はしない。作業テクスチャを縮小すると、ぼかし方向と直交
         // する境界まで双線形拡大で鈍ってしまう（本家は直交方向の
@@ -598,11 +610,12 @@ public class MetalEffectProcessor: VideoEffectProcessor {
         )
         let workWidth = max(1, Int(ceil((outBounds.right - outBounds.left) / Double(downsample))))
         let workHeight = max(1, Int(ceil((outBounds.bottom - outBounds.top) / Double(downsample))))
-        guard let workA = makeTexture(
-                width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead]),
-              let workB = makeTexture(
-                width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead])
-        else { return nil }
+        let workA = try makeTexture(
+            width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead]
+        )
+        let workB = try makeTexture(
+            width: workWidth, height: workHeight, usage: [.renderTarget, .shaderRead]
+        )
         let sampler = hardBorder ? context.devices.mirrorSampler : context.devices.borderSampler
         try blurPreparationPass(
             input: input, output: workA, outputBounds: outBounds,
@@ -622,11 +635,11 @@ public class MetalEffectProcessor: VideoEffectProcessor {
 
     /// 矩形モザイク本体（セル内テクセルの平均）。第1段の
     /// `MetalMosaicProcessor` とイン／アウトモザイクが共有する。
-    func renderRectangleMosaic(input: MetalImage, cellSize: Double) throws -> MetalImage? {
-        guard let outputTexture = makeTexture(
+    func renderRectangleMosaic(input: MetalImage, cellSize: Double) throws -> MetalImage {
+        let outputTexture = try makeTexture(
             width: input.texture.width, height: input.texture.height,
             usage: [.shaderWrite, .shaderRead]
-        ) else { return nil }
+        )
         guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder()
         else {
@@ -671,17 +684,17 @@ public class MetalEffectProcessor: VideoEffectProcessor {
         matrix: Matrix4x4,
         outputBounds: RectF,
         interpolation: InterpolationMode
-    ) throws -> MetalImage? {
+    ) throws -> MetalImage {
         let outWidth = outputBounds.right - outputBounds.left
         let outHeight = outputBounds.bottom - outputBounds.top
         guard outWidth > 0, outHeight > 0 else {
             // 空の境界は透明として返す（本家の空画像に相当）。
             return MetalImage(texture: context.devices.transparentTexture, bounds: outputBounds)
         }
-        guard let outputTexture = makeTexture(
+        let outputTexture = try makeTexture(
             width: Int(ceil(outWidth)), height: Int(ceil(outHeight)),
             usage: [.renderTarget, .shaderRead]
-        ) else { return nil }
+        )
         let corners: [(Double, Double)] = [
             (input.bounds.left, input.bounds.top), (input.bounds.right, input.bounds.top),
             (input.bounds.left, input.bounds.bottom), (input.bounds.right, input.bounds.bottom),
@@ -727,16 +740,16 @@ public class MetalEffectProcessor: VideoEffectProcessor {
         param0: SIMD4<Float> = .zero,
         param1: SIMD4<Float> = .zero,
         maskPlane: SIMD4<Float>? = nil
-    ) throws -> MetalImage? {
+    ) throws -> MetalImage {
         let outWidth = outputBounds.right - outputBounds.left
         let outHeight = outputBounds.bottom - outputBounds.top
         guard outWidth > 0, outHeight > 0 else {
             return MetalImage(texture: context.devices.transparentTexture, bounds: outputBounds)
         }
-        guard let outputTexture = makeTexture(
+        let outputTexture = try makeTexture(
             width: Int(ceil(outWidth)), height: Int(ceil(outHeight)),
             usage: [.renderTarget, .shaderRead]
-        ) else { return nil }
+        )
         let maskImage = mask ?? input
         var uniforms = WarpPassUniforms(
             inputPlane: planeVector(input),
@@ -774,16 +787,16 @@ public class MetalEffectProcessor: VideoEffectProcessor {
         mode: UInt32,
         opacityTop: Double = 1,
         opacityBottom: Double = 1
-    ) throws -> MetalImage? {
+    ) throws -> MetalImage {
         let outWidth = outputBounds.right - outputBounds.left
         let outHeight = outputBounds.bottom - outputBounds.top
         guard outWidth > 0, outHeight > 0 else {
             return MetalImage(texture: context.devices.transparentTexture, bounds: outputBounds)
         }
-        guard let outputTexture = makeTexture(
+        let outputTexture = try makeTexture(
             width: Int(ceil(outWidth)), height: Int(ceil(outHeight)),
             usage: [.renderTarget, .shaderRead]
-        ) else { return nil }
+        )
         var uniforms = CompositePassUniforms(
             planeA: planeVector(top),
             planeB: planeVector(bottom),
@@ -819,15 +832,16 @@ public class MetalEffectProcessor: VideoEffectProcessor {
     /// （整数除算の切り捨て。本家未計測の仮定として台帳に記録）。
     func renderMorphology(
         input: MetalImage, width: Int, height: Int, dilate: Bool
-    ) throws -> MetalImage? {
+    ) throws -> MetalImage {
         guard width > 1 || height > 1 else { return input }
-        guard let textureA = makeTexture(
-                width: input.texture.width, height: input.texture.height,
-                usage: [.shaderWrite, .shaderRead]),
-              let textureB = makeTexture(
-                width: input.texture.width, height: input.texture.height,
-                usage: [.shaderWrite, .shaderRead])
-        else { return nil }
+        let textureA = try makeTexture(
+            width: input.texture.width, height: input.texture.height,
+            usage: [.shaderWrite, .shaderRead]
+        )
+        let textureB = try makeTexture(
+            width: input.texture.width, height: input.texture.height,
+            usage: [.shaderWrite, .shaderRead]
+        )
         var current = input.texture
         var target = textureA
         if width > 1 {
