@@ -711,8 +711,7 @@ public final class MetalRoundCornerProcessor: MetalEffectProcessor {
         let height = input.bounds.bottom - input.bounds.top
         let radius = evaluate(definition.radius, description)
         let sigma = min(radius, min(width, height)) * 2 / 3
-        let blurred = try renderGaussianBlurred(input: input, sigma: sigma, hardBorder: false)
-        guard let mask = blurred else { return nil }
+        let mask = try renderGaussianBlurred(input: input, sigma: sigma, hardBorder: false)
         let blurRate = evaluate(definition.blur, description) / 100
         let secondSlope = 255 / (254 * blurRate + 1)
         return try renderWarp(
@@ -741,8 +740,7 @@ public final class MetalBorderBlurProcessor: MetalEffectProcessor {
         let width = input.bounds.right - input.bounds.left
         let height = input.bounds.bottom - input.bounds.top
         let sigma = min(evaluate(definition.blur, description), min(width, height))
-        let blurred = try renderGaussianBlurred(input: input, sigma: sigma, hardBorder: false)
-        guard let mask = blurred else { return nil }
+        let mask = try renderGaussianBlurred(input: input, sigma: sigma, hardBorder: false)
         return try renderWarp(
             input: input, mask: mask, outputBounds: input.bounds, mode: 0,
             param0: SIMD4<Float>(1, 0, 0, 0)
@@ -814,6 +812,9 @@ public final class MetalChromaticAberrationProcessor: MetalEffectProcessor {
 /// 角丸矩形の塗りをテクスチャへ描く（FillBackground の下地用）。
 /// 図形シェーダ（SDF）の全面塗りを使い、`outputBounds` を張る
 /// テクスチャのうち `rect` の範囲だけを単色で塗る。
+/// nil を返すのは出力境界が空（描くものが無い正当な無処理）の場合
+/// だけで、テクスチャ確保・コマンドバッファの失敗は
+/// `MetalRenderError` を投げる（GPU28-03 / MAC-0033）。
 func renderRoundedRectFill(
     context: MetalGraphicsContext,
     rect: RectF,
@@ -831,9 +832,14 @@ func renderRoundedRectFill(
     )
     descriptor.usage = [.renderTarget, .shaderRead]
     descriptor.storageMode = .shared
-    guard let texture = context.devices.device.makeTexture(descriptor: descriptor),
-          let commandBuffer = context.commandQueue.makeCommandBuffer()
-    else { return nil }
+    guard let texture = context.devices.device.makeTexture(descriptor: descriptor) else {
+        throw MetalRenderError.textureCreationFailed(
+            width: max(1, Int(ceil(outWidth))), height: max(1, Int(ceil(outHeight)))
+        )
+    }
+    guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+        throw MetalRenderError.commandBufferFailed(underlying: nil)
+    }
     let passDescriptor = MTLRenderPassDescriptor()
     let attachment = passDescriptor.colorAttachments[0]
     attachment?.texture = texture
@@ -841,7 +847,9 @@ func renderRoundedRectFill(
     attachment?.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
     attachment?.storeAction = .store
     guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor)
-    else { return nil }
+    else {
+        throw MetalRenderError.commandBufferFailed(underlying: nil)
+    }
     let centerX = (rect.left + rect.right) / 2
     let centerY = (rect.top + rect.bottom) / 2
     let corners: [(Double, Double)] = [
@@ -910,14 +918,14 @@ public final class MetalShadowProcessor: MetalEffectProcessor {
             return input
         }
         // シルエット（ブラシ色 × 入力α）。
-        guard let silhouette = try renderWarp(
+        let silhouette = try renderWarp(
             input: input, mask: nil, outputBounds: input.bounds, mode: 5,
             param0: premultipliedVector(brushColor)
-        ) else { return nil }
+        )
         let blur = evaluate(definition.blur, description)
-        guard let blurred = try renderGaussianBlurred(
+        let blurred = try renderGaussianBlurred(
             input: silhouette, sigma: blur, hardBorder: false
-        ) else { return nil }
+        )
         // 変形: 回転・拡縮（中心は境界中心か原点）→ 平行移動。
         let center = definition.isRotateAtCenter
             ? Vector3(
@@ -937,10 +945,10 @@ public final class MetalShadowProcessor: MetalEffectProcessor {
         )
         let matrix = rotation * scale * translation
         let shadowBounds = MetalDrawingEffect.boundingRect(of: blurred.bounds, transformedBy: matrix)
-        guard let shadow = try renderTransformed(
+        let shadow = try renderTransformed(
             input: blurred, matrix: matrix, outputBounds: shadowBounds,
             interpolation: .linear
-        ) else { return nil }
+        )
         let outputBounds = input.bounds.union(shadow.bounds)
         let opacity = evaluate(definition.opacity, description) / 100
         return try renderComposite(
@@ -1023,9 +1031,9 @@ public final class MetalFillForegroundProcessor: MetalEffectProcessor {
             context: context, rect: input.bounds, radius: 0,
             color: brushColor, outputBounds: input.bounds
         ) else { return nil }
-        guard let masked = try renderWarp(
+        let masked = try renderWarp(
             input: fill, mask: input, outputBounds: input.bounds, mode: 3
-        ) else { return nil }
+        )
         let opacity = evaluate(definition.opacity, description) / 100
         if definition.isBrushOnly {
             return try renderColorEffect(
@@ -1140,13 +1148,14 @@ public final class MetalFrameLineProcessor: MetalEffectProcessor {
     ) throws -> MetalImage? {
         let outWidth = outputBounds.right - outputBounds.left
         let outHeight = outputBounds.bottom - outputBounds.top
-        guard outWidth > 0, outHeight > 0,
-              let texture = makeTexture(
-                width: Int(ceil(outWidth)), height: Int(ceil(outHeight)),
-                usage: [.renderTarget, .shaderRead]
-              ),
-              let commandBuffer = context.commandQueue.makeCommandBuffer()
-        else { return nil }
+        guard outWidth > 0, outHeight > 0 else { return nil }
+        let texture = try makeTexture(
+            width: Int(ceil(outWidth)), height: Int(ceil(outHeight)),
+            usage: [.renderTarget, .shaderRead]
+        )
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw MetalRenderError.commandBufferFailed(underlying: nil)
+        }
         let passDescriptor = MTLRenderPassDescriptor()
         let attachment = passDescriptor.colorAttachments[0]
         attachment?.texture = texture
@@ -1154,7 +1163,9 @@ public final class MetalFrameLineProcessor: MetalEffectProcessor {
         attachment?.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
         attachment?.storeAction = .store
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor)
-        else { return nil }
+        else {
+            throw MetalRenderError.commandBufferFailed(underlying: nil)
+        }
         encoder.setRenderPipelineState(context.devices.solidPipeline)
         var fillColor = premultipliedVector(color)
         encoder.setFragmentBytes(
@@ -1258,10 +1269,10 @@ public final class MetalDrawLazyProcessor: MetalEffectProcessor {
         var image = input
         if !isIdentity(matrix) {
             let outputBounds = MetalDrawingEffect.boundingRect(of: input.bounds, transformedBy: matrix)
-            guard let transformed = try renderTransformed(
+            let transformed = try renderTransformed(
                 input: input, matrix: matrix, outputBounds: outputBounds,
                 interpolation: dd.zoomInterpolationMode
-            ) else { return nil }
+            )
             image = transformed
         }
         if definition.isOpacity && dd.opacity != 1 {
@@ -1385,8 +1396,7 @@ public final class MetalInOutBorderBlurProcessor: MetalEffectProcessor {
 
     override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
         let sigma = inOutEasingValue(definition, description, from: definition.value, to: 0)
-        let blurred = try renderGaussianBlurred(input: input, sigma: sigma, hardBorder: false)
-        guard let mask = blurred else { return nil }
+        let mask = try renderGaussianBlurred(input: input, sigma: sigma, hardBorder: false)
         return try renderWarp(
             input: input, mask: mask, outputBounds: input.bounds, mode: 0,
             param0: SIMD4<Float>(1, 0, 0, 0)
