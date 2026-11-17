@@ -28,7 +28,7 @@
 | 機能追加・重要な修正 | PR（検証記録）、該当する課題の状態 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/IMPLEMENTATION_LOG.md](docs/IMPLEMENTATION_LOG.md) |
 | 処理経路・所有権の変更 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、PR | — |
 | 本家との互換性変更 | 解析側の[互換マトリクス](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/07-COMPATIBILITY-MATRIX.md)、PR | [docs/STATUS.md](docs/STATUS.md) |
-| 未解決問題の発見・解消 | 課題台帳（未解決事項の正本。当面は [docs/STATUS.md](docs/STATUS.md) の課題節が担う） | [docs/STATUS.md](docs/STATUS.md) の重要ブロッカー |
+| 未解決問題の発見・解消 | 課題台帳（未解決事項の正本。[GitHub Issues](https://github.com/yanikasumin/ymm4mac/issues) が担う。本文を文書側へ複製しない） | [docs/STATUS.md](docs/STATUS.md) の主要な未解決（概要のみ） |
 | 要件変更・例外 | 解析側の[変更承認台帳](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/08-DECISIONS-CHANGES.md)、[要件定義](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/REQUIREMENTS.md) | — |
 | 作業中断・担当交代 | [docs/HANDOFF.md](docs/HANDOFF.md) | — |
 
