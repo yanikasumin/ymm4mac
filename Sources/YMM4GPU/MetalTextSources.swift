@@ -466,15 +466,19 @@ final class MetalTextRasterizer {
             )
             guard textureWidth > 0, textureHeight > 0 else { continue }
             // テクスチャ中心がグリフの視覚中心に一致するよう描く。
+            // drawBitmap へ渡す座標は平面座標（境界の原点基準）であり、
+            // ビットマップ座標ではない。境界は中心原点なので、ペン位置は
+            // 進み量の半分だけ負側、ベースラインは視覚中心から
+            // centerAboveBaseline だけ下（平面は y 下向き）になる。
             let boundsLeft = -Double(textureWidth) / 2
             let boundsTop = -Double(textureHeight) / 2
             var singleLine = TextLine()
             var singleGlyph = glyph
-            singleGlyph.x = Double(textureWidth) / 2 - glyph.advance / 2
+            singleGlyph.x = -glyph.advance / 2
             singleLine.glyphs = [singleGlyph]
             singleLine.ascent = fontAscent
             singleLine.descent = fontDescent
-            singleLine.baselineFromTop = Double(textureHeight) / 2 + centerAboveBaseline
+            singleLine.baselineFromTop = centerAboveBaseline
             guard let texture = drawBitmap(
                 width: textureWidth, height: textureHeight,
                 boundsLeft: boundsLeft, boundsTop: boundsTop,

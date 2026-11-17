@@ -12,9 +12,12 @@ func resolveMediaURL(path: String, baseDirectory: URL?) -> URL? {
     if let url = URL(string: path), url.isFileURL {
         return url
     }
-    let fileURL = URL(fileURLWithPath: path)
-    if fileURL.path.hasPrefix("/") {
-        return fileURL
+    // 絶対パスかどうかは生の文字列で判定する。URL(fileURLWithPath:) は
+    // 相対パスをカレントディレクトリで絶対化してしまうため、変換後の
+    // パスで判定すると相対パスが全て絶対パス扱いになり、基準フォルダ
+    // 解決へ到達しない（MAC-0028 検証で発見した MAC-0025 の回帰）。
+    if path.hasPrefix("/") {
+        return URL(fileURLWithPath: path)
     }
     guard let baseDirectory else { return nil }
     return baseDirectory.appendingPathComponent(path)
@@ -44,9 +47,9 @@ func makePremultipliedTexture(
         bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
             | CGBitmapInfo.byteOrder32Little.rawValue
     ), let data = context.data else { return nil }
-    // CGImage は左下原点、テクスチャは左上原点。上下を反転して描く。
-    context.translateBy(x: 0, y: CGFloat(height))
-    context.scaleBy(x: 1, y: -1)
+    // ビットマップ文脈のメモリは先頭行が画像の上端になるため、反転は
+    // 不要（反転して描くとテクスチャが上下逆になる。MAC-0028 検証の
+    // プローブで実測: 四象限画像の左上が青＝左下の色になった）。
     context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
     let descriptor = MTLTextureDescriptor.texture2DDescriptor(
         pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
@@ -427,6 +430,11 @@ public struct MetalSourceProvider {
     /// 合成（同じタイムラインの再合成）に使う。本家では CreateVideoSource
     /// へシーンが渡ることが担う役割。未設定なら合成グループは空になる。
     public let timeline: Timeline?
+    /// 内部合成器（シーン・合成グループ）へ伝播させるエフェクト供給元。
+    /// 外側の合成器と同じインスタンスを渡すことで、内部の子にも GPU
+    /// エフェクト（Metal 処理器）が外側と同じく効く（MAC-0028）。
+    /// 未設定なら内部合成器は Core の型付き供給元を使う。
+    public let effectProvider: (any EffectPairProvider)?
 
     public init(
         devices: MetalGraphicsDevices,
@@ -434,7 +442,8 @@ public struct MetalSourceProvider {
         sceneResolver: ((UUID) -> Timeline?)? = nil,
         parentSceneChain: [UUID] = [],
         tachieRendererFactory: (any MetalTachieRendererFactory)? = nil,
-        timeline: Timeline? = nil
+        timeline: Timeline? = nil,
+        effectProvider: (any EffectPairProvider)? = nil
     ) {
         self.devices = devices
         self.baseDirectory = baseDirectory
@@ -442,6 +451,7 @@ public struct MetalSourceProvider {
         self.parentSceneChain = parentSceneChain
         self.tachieRendererFactory = tachieRendererFactory
         self.timeline = timeline
+        self.effectProvider = effectProvider
     }
 
     public func source(for item: BaseItem & VideoItemProperties) -> any Source {
@@ -498,6 +508,7 @@ public struct MetalSourceProvider {
         let sceneResolver = self.sceneResolver
         let parentSceneChain = self.parentSceneChain
         let tachieRendererFactory = self.tachieRendererFactory
+        let effectProvider = self.effectProvider
         return { context in
             context.targetSize = PixelSize(
                 width: timeline.videoInfo.width, height: timeline.videoInfo.height
@@ -508,14 +519,16 @@ public struct MetalSourceProvider {
                 sceneResolver: sceneResolver,
                 parentSceneChain: parentSceneChain,
                 tachieRendererFactory: tachieRendererFactory,
-                timeline: timeline
+                timeline: timeline,
+                effectProvider: effectProvider
             )
             let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
             return TimelineComposer(
                 scene: scene,
                 picker: CompositeItemPicker(groupItem: group),
                 targetFactory: context,
-                sourceProvider: { item in childProvider.source(for: item) }
+                sourceProvider: { item in childProvider.source(for: item) },
+                effectProvider: effectProvider ?? TypedEffectPairProvider()
             )
         }
     }
@@ -532,6 +545,7 @@ public struct MetalSourceProvider {
         let sceneResolver = self.sceneResolver
         let parentSceneChain = self.parentSceneChain
         let tachieRendererFactory = self.tachieRendererFactory
+        let effectProvider = self.effectProvider
         return { sceneID, context in
             guard let timeline = sceneResolver?(sceneID) else { return nil }
             if parentSceneChain.filter({ $0 == sceneID }).count >= 10 { return nil }
@@ -544,13 +558,15 @@ public struct MetalSourceProvider {
                 sceneResolver: sceneResolver,
                 parentSceneChain: parentSceneChain + [sceneID],
                 tachieRendererFactory: tachieRendererFactory,
-                timeline: timeline
+                timeline: timeline,
+                effectProvider: effectProvider
             )
             let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
             return TimelineComposer(
                 scene: scene,
                 targetFactory: context,
-                sourceProvider: { item in childProvider.source(for: item) }
+                sourceProvider: { item in childProvider.source(for: item) },
+                effectProvider: effectProvider ?? TypedEffectPairProvider()
             )
         }
     }
