@@ -397,8 +397,9 @@ public final class VoiceItem: BaseItem {
         var fields: [(key: String, value: JSONValue)] = super.encodeKnownFields()
         fields += [
             (key: "IsWaveformEnabled", value: .bool(isWaveformEnabled)),
-            (key: "Character", value: character?.encodeToJSONValue() ?? .null),
-            (key: "CharacterName", value: .string(characterName)),
+            // 本家は実行時参照 Character を [JsonIgnore] とし、保存は CharacterName のみ。
+            // CharacterName の getter は Character?.Name ?? characterName（MAC-0015）。
+            (key: "CharacterName", value: .string(character?.name ?? characterName)),
             (key: "Serif", value: .string(serif)),
             (key: "Decorations", value: .array(decorations.map { $0.encodeToJSONValue() })),
             (key: "Hatsuon", value: .string(hatsuon)),
