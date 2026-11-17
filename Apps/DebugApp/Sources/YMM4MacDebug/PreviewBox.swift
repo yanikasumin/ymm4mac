@@ -29,18 +29,22 @@ final class PreviewBox {
         )
         // シーン参照はプロジェクト全体のタイムライン列から解決する。
         let allTimelines = timelines ?? [timeline]
+        // GPU 処理系エフェクトは Metal 処理器で描画する。供給元は外側と
+        // 内部合成器（シーン・合成グループ）で同じインスタンスを共有し、
+        // 内部の子にも同じく効かせる（MAC-0028）。
+        let effectProvider = MetalEffectPairProvider(devices: devices)
         let provider = MetalSourceProvider(
             devices: devices, baseDirectory: baseDirectory,
             sceneResolver: { id in allTimelines.first { $0.id == id } },
             // 合成グループの内部合成は、このタイムラインを再合成する。
-            timeline: timeline
+            timeline: timeline,
+            effectProvider: effectProvider
         )
         self.composer = TimelineComposer(
             scene: TimelineScene(timeline: timeline),
             targetFactory: context,
             sourceProvider: provider.source(for:),
-            // GPU 処理系エフェクト（第1段の対象）は Metal 処理器で描画する。
-            effectProvider: MetalEffectPairProvider(devices: devices)
+            effectProvider: effectProvider
         )
     }
 
@@ -63,5 +67,10 @@ final class PreviewBox {
         guard !isDisposed else { return }
         isDisposed = true
         composer.dispose()
+    }
+
+    deinit {
+        // 表示側が破棄されたら、合成セッションも確定的に解放する。
+        dispose()
     }
 }
