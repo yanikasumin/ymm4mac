@@ -71,11 +71,14 @@
           Source.swift         Source / SourceOutput / DrawingEffectProcessor /
                                FrameBufferSource の各プロトコル、StandardSourceOutput
           ItemPickers.swift    アイテム選択（全体／グループ／トランジション）、FaceItem
-          DrawOrdering.swift   描画順序（3キー）、ZIndex、四隅算出、セグメント構築
-                               （BSP は PlaneSplitOrdering の差し替え点）
-          EffectedItemSource.swift 合成の実行部（アイテム単位）: エフェクト連鎖の
-                               処理器・定義・組と供給元、描画先の抽象
-                               （RenderTarget / Factory）、アルファマスクの境界、
+          DrawOrdering.swift   描画順序（3キー）、ZIndex、セグメント構築
+          PlaneSplit.swift     平面分割（BSP）の判定規則と差し替え点
+                               （PlaneSplitOrdering / NullPlaneSplitOrdering、
+                               四隅・断片の値型）
+          EffectContracts.swift エフェクト連鎖の契約群: 処理器・定義・組と供給元、
+                               描画先の抽象（RenderTarget / Factory）、
+                               アルファマスクの境界、PlaneSplitGeometryProviding
+          EffectedItemSource.swift 合成の実行部（アイテム単位）:
                                EffectedOutput / EffectedItemSource
           TimelineSource.swift 合成の実行部（タイムライン単位）: TimelineScene、
                                TimelineGroupResolver（グループ階層の解決）、
@@ -86,25 +89,18 @@
                                InputFrameWindow（範囲外は無音のランダムアクセス窓）
           PCMProvider.swift    PCMProvider / PCMProviderFactory（デコードの差し替え点）、
                                InMemoryPCMProvider、FileAudioStream
-          AudioEffectContracts.swift アイテム音声の契約群: AudioItemProperties、
-                               AudioEffectProvider（ユーザー音声エフェクトの
-                               差し替え点）、AudioChainOptions
           EffectedAudioItemSource.swift アイテム音声の処理器連鎖（本家のチェーン順序）、
-                               AudioSourceFactory
+                               AudioItemProperties、AudioEffectProvider（ユーザー
+                               音声エフェクトの差し替え点）、AudioSourceFactory
           AudioEffectProcessors.swift NegativeSeekable / ContentOffset / Loop /
                                Reverse / Echo の各処理器と基底
-          ResamplingCore.swift 補間カーネル（Linear / Cubic）と生成芯
-                               BandLimitedResamplingCore（窓関数 sinc の
-                               帯域制限補間。MAC-0024）
-          ResamplerStreams.swift Resampler / PlaybackRate / VariablePlaybackRate /
-                               Upsampler の各ストリーム
+          AudioResampling.swift Resampler（生成芯は BandLimitedResamplingCore =
+                               窓関数 sinc の帯域制限補間。MAC-0024）/
+                               PlaybackRate / VariablePlaybackRate /
+                               Upsampler（補間カーネルは Linear / Cubic）
           VolumePanStream.swift VolumePan（サンプル対ごとの Animation 評価）
           AudioGroups.swift    AudioGroupResolver（グループ境界の区間分割と
-                               DirectGroups / Owner の算出）、
-                               AudioGroupStreamBuilder（組み立て）
-          AudioGroupStreams.swift SegmentGate / GroupEffectChain の各ストリーム
-          GroupAudioBusSource.swift 音声合成グループのバス（バスミックス →
-                               グループエフェクト → Resampler）
+                               DirectGroups / Owner の算出）、GroupAudioBusSource
           TimelineAudioMixer.swift タイムライン全体のミックス（レイヤー音量適用、
                                float 加算、リミッターなし）
         Effects/               映像エフェクト定義層＋DrawDescription 変換型処理器
