@@ -14,6 +14,16 @@ import XCTest
 /// レビューとオーナー承認で決めるものであり、ここに置く閾値は
 /// 実測値に余裕を持たせた「回帰検出用の暫定ガード」である。
 /// 対照として旧方式（線形補間）も同じ測定系で測り、改善量を固定する。
+///
+/// エイリアス測定の是正（QA24-01、2026-11-17）: 旧試験は 48kHz
+/// 標本化の入力に 30k / 26k / 40kHz の正弦波を使っており、それらの
+/// 音は標本列の生成時点で 18k / 22k / 8kHz へ折り返し済みだった
+/// （入力ナイキスト 24kHz 超え）。実効入力は全て出力ナイキストの
+/// 内側にあり、折り返し防止フィルタの阻止帯域は一度も試されて
+/// いなかった。旧測定に基づく値（-113.4 dB 等）は無効として撤回
+/// 済み（経緯と新実測は AUDIO-FIDELITY-PLAN §3.1.1）。現行の
+/// エイリアス試験は、入力ナイキストの内側かつ出力ナイキストの
+/// 外側の妨害波を入れ、出力側の折り返し先の成分を測る。
 final class AudioResamplerQualityTests: XCTestCase {
 
     // MARK: - 測定系
@@ -117,14 +127,30 @@ final class AudioResamplerQualityTests: XCTestCase {
     // MARK: - エイリアス抑制（48k → 44.1k ダウンサンプル）
 
     func testDownsampleAliasSuppression() {
-        // -80 dB は暫定ガード。実測の最悪値は 26kHz 折り返しの
-        // -105.3 dB。
-        // 出力ナイキスト (22.05kHz) 超えの成分は |f - 44.1k| へ折り返す。
-        for (frequency, alias) in [(30_000.0, 14_100.0), (26_000.0, 18_100.0), (40_000.0, 4_100.0)] {
+        // QA24-01 是正後の測定系: 妨害波は入力ナイキスト (24kHz) の
+        // 内側かつ出力ナイキスト (22.05kHz) の外側に置き、出力の
+        // |f - 44.1k| への折り返し成分を測る。
+        // 遮断周波数 (22.05kHz) からの距離で帯域の性格が変わる。
+        // 窓長は片側 48 零点 × scale (48k/44.1k ≈ 1.088) ≈ 片側 52
+        // フレームしかなく、遷移帯は ±1.4kHz 級の幅を持つ:
+        // 22.5kHz は遷移帯の内側、23kHz は遷移帯の途中、23.5k /
+        // 23.9kHz は阻止帯域の点である。
+        // 実測（2026-11-17、是正後の測定系）: 22.5kHz → -16.7 dB、
+        // 23kHz → -41.6 dB、23.5kHz → -78.6 dB、23.9kHz →
+        // -75.3 dB。阻止帯域の床は -75 dB 級であり、23.5kHz の値は
+        // サイドローブのリプルの山に当たったもので床ではない。
+        // 暫定ガードは各実測に余裕を持たせた値であり、正式な
+        // 合格値は未決定（計画書 §3.1）。
+        for (frequency, alias, guardDB) in [
+            (22_500.0, 21_600.0, -10.0),
+            (23_000.0, 21_100.0, -35.0),
+            (23_500.0, 20_600.0, -70.0),
+            (23_900.0, 20_200.0, -65.0),
+        ] {
             let output = resampleSinc(frequency: frequency, inHz: 48_000, outHz: 44_100, seconds: 3)
             let level = levelDB(output, hz: 44_100, frequency: alias)
-            print("alias down f=\(Int(frequency)) spur@\(Int(alias)) = \(level) dB")
-            XCTAssertLessThanOrEqual(level, -80, "f=\(frequency) の折り返し抑制が不足: \(level) dB")
+            print("alias down 48k->44.1k f=\(Int(frequency)) spur@\(Int(alias)) = \(level) dB")
+            XCTAssertLessThanOrEqual(level, guardDB, "f=\(frequency) の折り返し抑制が不足: \(level) dB")
         }
         // 通過帯域側の利得も同時に確認する。
         for frequency in [1_000.0, 10_000.0, 20_000.0] {
@@ -132,6 +158,38 @@ final class AudioResamplerQualityTests: XCTestCase {
             let gain = levelDB(output, hz: 44_100, frequency: frequency)
             print("passband down f=\(Int(frequency)) gain=\(gain) dB")
             // 実測は全点で |gain| <= 0.002 dB。0.1 dB は回帰検出用の暫定ガード。
+            XCTAssertLessThanOrEqual(abs(gain), 0.1, "f=\(frequency) の通過利得が大きい: \(gain) dB")
+        }
+    }
+
+    // MARK: - エイリアス抑制（96k → 48k ダウンサンプル、2:1）
+
+    func testDownsampleAliasSuppression2to1() {
+        // 入力ナイキスト 48kHz、出力ナイキスト 24kHz。妨害波はその
+        // 中間（25k / 26k / 30k / 40kHz）に置き、出力の |f - 48k|
+        // への折り返し成分を測る。25kHz は遮断周波数 (24kHz) の
+        // 1kHz 上で遷移帯の点、他は阻止帯域の点。
+        // 実測（2026-11-17、是正後の測定系）: 25kHz → -39.4 dB、
+        // 26kHz → -75.3 dB、30kHz → -99.9 dB、40kHz → -124.1 dB。
+        // 暫定ガードは各実測に余裕を持たせた値であり、正式な
+        // 合格値は未決定（計画書 §3.1）。
+        for (frequency, alias, guardDB) in [
+            (25_000.0, 23_000.0, -30.0),
+            (26_000.0, 22_000.0, -65.0),
+            (30_000.0, 18_000.0, -90.0),
+            (40_000.0, 8_000.0, -110.0),
+        ] {
+            let output = resampleSinc(frequency: frequency, inHz: 96_000, outHz: 48_000, seconds: 3)
+            let level = levelDB(output, hz: 48_000, frequency: alias)
+            print("alias down 96k->48k f=\(Int(frequency)) spur@\(Int(alias)) = \(level) dB")
+            XCTAssertLessThanOrEqual(level, guardDB, "f=\(frequency) の折り返し抑制が不足: \(level) dB")
+        }
+        // 通過帯域側の利得も同時に確認する。
+        for frequency in [1_000.0, 10_000.0, 20_000.0] {
+            let output = resampleSinc(frequency: frequency, inHz: 96_000, outHz: 48_000, seconds: 3)
+            let gain = levelDB(output, hz: 48_000, frequency: frequency)
+            print("passband down 96k->48k f=\(Int(frequency)) gain=\(gain) dB")
+            // 0.1 dB は回帰検出用の暫定ガード。
             XCTAssertLessThanOrEqual(abs(gain), 0.1, "f=\(frequency) の通過利得が大きい: \(gain) dB")
         }
     }
@@ -153,18 +211,46 @@ final class AudioResamplerQualityTests: XCTestCase {
             "sinc のイメージ抑制が線形補間より 40dB 以上良くない: sinc=\(sincImage), linear=\(linearImage)"
         )
 
+        // エイリアス比較は QA24-01 是正後の測定系（入力ナイキスト内・
+        // 出力ナイキスト超えの妨害波で折り返し先を測る）で両方式を
+        // 測る。旧系（30kHz 入力→14.1kHz 測定）は入力時点で折り返し
+        // 済みの音を測っており、折り返し抑制の比較として無効。
         let sincAlias = levelDB(
-            resampleSinc(frequency: 30_000, inHz: 48_000, outHz: 44_100, seconds: 3),
-            hz: 44_100, frequency: 14_100
+            resampleSinc(frequency: 23_000, inHz: 48_000, outHz: 44_100, seconds: 3),
+            hz: 44_100, frequency: 21_100
         )
         let linearAlias = levelDB(
-            resampleLinear(frequency: 30_000, inHz: 48_000, outHz: 44_100, seconds: 3),
-            hz: 44_100, frequency: 14_100
+            resampleLinear(frequency: 23_000, inHz: 48_000, outHz: 44_100, seconds: 3),
+            hz: 44_100, frequency: 21_100
         )
-        print("alias comparison: sinc=\(sincAlias) dB, linear=\(linearAlias) dB")
+        print("alias comparison 48k->44.1k f=23000 spur@21100: sinc=\(sincAlias) dB, linear=\(linearAlias) dB")
+        // 実測の改善量は 34.5 dB（sinc -41.6 dB / 線形 -7.1 dB、
+        // 2026-11-17）。23kHz が sinc 側の遷移帯にかかるため、
+        // イメージ比較と同じ 40 dB の改善はこの点では成立しない。
+        // 30 dB は実測に余裕を持たせた暫定ガード（正式な合格値は
+        // 未決定）。
         XCTAssertLessThanOrEqual(
-            sincAlias, linearAlias - 40,
-            "sinc の折り返し抑制が線形補間より 40dB 以上良くない: sinc=\(sincAlias), linear=\(linearAlias)"
+            sincAlias, linearAlias - 30,
+            "sinc の折り返し抑制が線形補間より 30dB 以上良くない: sinc=\(sincAlias), linear=\(linearAlias)"
+        )
+
+        // 2:1 ダウンサンプルでも同じ比較を固定する。線形補間は
+        // 整数比では補間位置が常に入力標本と一致して恒等写像に
+        // なるため、折り返しは ≈0 dB（無濾波の間引きと等価）。
+        // 実測の改善量は 99.9 dB（sinc -99.9 dB / 線形 ≈0 dB、
+        // 2026-11-17）。
+        let sincAlias2to1 = levelDB(
+            resampleSinc(frequency: 30_000, inHz: 96_000, outHz: 48_000, seconds: 3),
+            hz: 48_000, frequency: 18_000
+        )
+        let linearAlias2to1 = levelDB(
+            resampleLinear(frequency: 30_000, inHz: 96_000, outHz: 48_000, seconds: 3),
+            hz: 48_000, frequency: 18_000
+        )
+        print("alias comparison 96k->48k f=30000 spur@18000: sinc=\(sincAlias2to1) dB, linear=\(linearAlias2to1) dB")
+        XCTAssertLessThanOrEqual(
+            sincAlias2to1, linearAlias2to1 - 40,
+            "sinc の折り返し抑制が線形補間より 40dB 以上良くない: sinc=\(sincAlias2to1), linear=\(linearAlias2to1)"
         )
     }
 
