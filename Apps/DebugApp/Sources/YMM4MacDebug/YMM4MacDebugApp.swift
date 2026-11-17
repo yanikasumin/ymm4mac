@@ -1,7 +1,20 @@
+import AppKit
 import SwiftUI
+
+/// バンドル化されていない実行ファイルとして起動された場合でも、
+/// 通常のアプリとして Dock にアイコンが表示されるようにする保険。
+/// （実行ファイルを直接起動する形では、macOS が Dock へ登録しない
+/// 場合がある。.app バンドルから起動した場合は最初から .regular
+/// なので、この指定は無害な再確認になる。）
+final class DebugAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+    }
+}
 
 @main
 struct YMM4MacDebugApp: App {
+    @NSApplicationDelegateAdaptor(DebugAppDelegate.self) private var appDelegate
     @StateObject private var workspace = WorkspaceState()
 
     var body: some Scene {
