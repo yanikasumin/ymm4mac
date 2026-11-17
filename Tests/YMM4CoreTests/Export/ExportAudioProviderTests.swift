@@ -7,43 +7,6 @@ import XCTest
 /// の接続と、フレーム単位のサンプル件数（累積式）を固定する。
 final class ExportAudioProviderTests: XCTestCase {
 
-    private final class MapProviderFactory: PCMProviderFactory {
-        var providers: [String: PCMProvider] = [:]
-
-        func createProvider(filePath: String?, audioTrackIndex: Int) -> PCMProvider? {
-            guard let filePath else { return nil }
-            return providers[filePath]
-        }
-    }
-
-    private func constantProvider(
-        _ value: Float, frames: Int, hz: Int = 48_000
-    ) -> InMemoryPCMProvider {
-        InMemoryPCMProvider(
-            samples: [Float](repeating: value, count: frames * 2), hz: hz
-        )
-    }
-
-    private func constantAnimation(_ value: Double) -> Animation {
-        Animation(
-            defaultValue: value, minValue: -100_000, maxValue: 100_000,
-            animationType: .none, values: [AnimationValue(value)]
-        )
-    }
-
-    private func makeAudioItem(
-        filePath: String, frame: Int = 0, length: Int = 30, layer: Int = 0
-    ) -> AudioItem {
-        let item = AudioItem()
-        item.frame = frame
-        item.length = length
-        item.layer = layer
-        item.filePath = filePath
-        item.volume = constantAnimation(100)
-        item.pan = constantAnimation(0)
-        return item
-    }
-
     private func makeTimeline(
         items: [BaseItem], fps: Int = 30, hz: Int = 48_000
     ) -> Timeline {
@@ -61,7 +24,7 @@ final class ExportAudioProviderTests: XCTestCase {
         value: Float, itemLength: Int = 30, hz: Int = 48_000, fps: Int = 30,
         providerFrames: Int
     ) -> TimelineExportAudioProvider {
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = constantProvider(
             value, frames: providerFrames, hz: hz
         )
@@ -177,7 +140,7 @@ final class ExportAudioProviderTests: XCTestCase {
         compressor: CompressorSettings
     ) -> (provider: TimelineExportAudioProvider, counting: CountingPCMProvider) {
         let counting = CountingPCMProvider(value: 0.5, frames: 48_000)
-        let factory = MapProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = counting
         let timeline = makeTimeline(items: [makeAudioItem(filePath: "a")])
         let provider = TimelineExportAudioProvider(

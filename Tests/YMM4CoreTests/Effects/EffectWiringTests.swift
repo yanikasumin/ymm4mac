@@ -11,41 +11,6 @@ import XCTest
 // - コーデック往復（固定点）が接続後も変わらないこと
 // を確認する。
 
-// MARK: - 最小の偽実装
-
-private final class PassThroughDrawingEffect: DrawingEffectProcessor {
-    var output: ImageReference? = ImageReference(label: "de-out")
-    func setInput(_ image: ImageReference?) {}
-    func clearInput() {}
-    func update(_ description: EffectDescription) throws -> DrawDescription {
-        description.drawDescription
-    }
-    func dispose() {}
-}
-
-private final class StubSource: Source {
-    var controllers: [VideoController] = []
-    var outputs: [any SourceOutput] = []
-    func update(_ description: TimelineItemSourceDescription) throws {}
-    func dispose() {}
-}
-
-private final class StubTarget: RenderTarget {
-    let image = ImageReference(label: "target")
-    func beginDraw() {}
-    func clear() {}
-    func fillRect(_ rect: RectF, color: Color) {}
-    func drawImage(_ image: ImageReference) {}
-    func drawImage(_ image: ImageReference, blend: Blend, interpolation: InterpolationMode) {}
-    func endDraw() {}
-    func close() {}
-    func dispose() {}
-}
-
-private struct StubTargetFactory: RenderTargetFactory {
-    func makeTarget() -> any RenderTarget { StubTarget() }
-}
-
 private func makeDescription(
     itemFrame: Int = 0, itemLength: Int = 90
 ) -> TimelineItemSourceDescription {

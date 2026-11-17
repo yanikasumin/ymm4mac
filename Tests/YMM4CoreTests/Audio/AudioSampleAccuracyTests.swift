@@ -1,49 +1,6 @@
 import XCTest
 @testable import YMM4Core
 
-// MARK: - テスト用の供給元
-
-private final class AccuracyProviderFactory: PCMProviderFactory {
-    var providers: [String: PCMProvider] = [:]
-
-    func createProvider(filePath: String?, audioTrackIndex: Int) -> PCMProvider? {
-        guard let filePath else { return nil }
-        return providers[filePath]
-    }
-}
-
-/// フレーム番号 + offset を値にしたランプ波形。
-/// offset を付けると無音（0）と内容の区別がつく。
-private func rampProvider(frames: Int, hz: Int, offset: Float = 0) -> InMemoryPCMProvider {
-    var samples: [Float] = []
-    samples.reserveCapacity(frames * 2)
-    for frame in 0..<frames {
-        samples.append(Float(frame) + offset)
-        samples.append(Float(frame) + offset)
-    }
-    return InMemoryPCMProvider(samples: samples, hz: hz)
-}
-
-private func constantAnimation(_ value: Double) -> Animation {
-    Animation(
-        defaultValue: value, minValue: -100_000, maxValue: 100_000,
-        animationType: .none, values: [AnimationValue(value)]
-    )
-}
-
-private func makeAudioItem(
-    filePath: String, frame: Int = 0, length: Int = 30, layer: Int = 0
-) -> AudioItem {
-    let item = AudioItem()
-    item.frame = frame
-    item.length = length
-    item.layer = layer
-    item.filePath = filePath
-    item.volume = constantAnimation(100)
-    item.pan = constantAnimation(0)
-    return item
-}
-
 private func makeTimeline(items: [BaseItem]) -> Timeline {
     let timeline = Timeline()
     var info = VideoInfo()
@@ -89,7 +46,7 @@ final class AudioSampleAccuracyTests: XCTestCase {
         // in = out / rate + 1 / (2 * rate) - 0.5 = out/2 - 0.25。
         // 出力フレーム 16384 以降は入力ウィンドウの補充（8192 フレーム
         // 境界）を跨ぐため、補充時のシークずれがあればここに出る。
-        let factory = AccuracyProviderFactory()
+        let factory = MapPCMProviderFactory()
         let sourceFactory = AudioSourceFactory(
             providerFactory: factory,
             voiceProviderResolver: { _ in rampProvider(frames: 24_000 * 3, hz: 24_000) }
@@ -118,7 +75,7 @@ final class AudioSampleAccuracyTests: XCTestCase {
         // 16kHz 素材 + 200%: チェーンは Resampler(byRate 2) →
         // PlaybackRate(2) → Resampler(48k) になる。理論の素材位置は
         // 出力フレーム j に対して 2j/3（16kHz フレーム）。
-        let factory = AccuracyProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["low"] = rampProvider(frames: 16_000 * 40, hz: 16_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let item = makeAudioItem(filePath: "low", length: 600)
@@ -151,7 +108,7 @@ final class AudioSampleAccuracyTests: XCTestCase {
         )
 
         // チェーン経由: 4800 フレーム（0.1 秒）素材を 1 秒ループ。
-        let factory = AccuracyProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["l"] = rampProvider(frames: 4800, hz: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let item = makeAudioItem(filePath: "l", length: 30)
@@ -311,7 +268,7 @@ final class AudioSampleAccuracyTests: XCTestCase {
         // 二重加算も欠落も無いことをランプで確認する。
         // グループ長 31 は tick で割り切れない分割点のケース。
         for groupLength in [30, 31] {
-            let factory = AccuracyProviderFactory()
+            let factory = MapPCMProviderFactory()
             factory.providers["a"] = rampProvider(frames: 48_000 * 3, hz: 48_000)
             let sourceFactory = AudioSourceFactory(providerFactory: factory)
             let group = GroupItem()
@@ -349,7 +306,7 @@ final class AudioSampleAccuracyTests: XCTestCase {
         // 始まる。これは本家式（FrameToTime の AwayFromZero 丸め +
         // TimeToPosition の偶数切り捨て）から導かれる値そのもので、
         // 実装の逸脱ではない。tick で割り切れるフレーム 30 では正確。
-        let factory = AccuracyProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = rampProvider(frames: 48_000 * 3, hz: 48_000, offset: 1000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
 
@@ -383,7 +340,7 @@ final class AudioSampleAccuracyTests: XCTestCase {
         // 1801 フレーム @30fps は tick で割り切れない長さ。アイテム側の
         // 打ち切り（EffectedAudioItemSource）とタイムライン長
         // （TimelineAudioMixer.duration）が同じサンプル数になること。
-        let factory = AccuracyProviderFactory()
+        let factory = MapPCMProviderFactory()
         factory.providers["a"] = rampProvider(frames: 48_000 * 65, hz: 48_000)
         let sourceFactory = AudioSourceFactory(providerFactory: factory)
         let item = makeAudioItem(filePath: "a", length: 1801)
