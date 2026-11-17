@@ -198,7 +198,8 @@
                                渡す。MAC-0028）、TimelineExporter
                                （映像・音声供給と ExportSession の組み立て）
       Apps/DebugApp/           検証用デバッグアプリ（読み込み診断・往復チェック・
-                               合成プレビュー。製品 UI ではない）
+                               合成プレビュー・応答性能の全自動テスト
+                               （MAC-0038）。製品 UI ではない）
       Tests/YMM4CoreTests/     上記のユニットテスト（432件）
       docs/ARCHITECTURE.md     本文書
       docs/IMPLEMENTATION_LOG.md
