@@ -13,9 +13,11 @@ import YMM4Core
 ///   下部の折りたたみ領域に残す（検証用）
 struct ContentView: View {
     @EnvironmentObject private var workspace: WorkspaceState
+    @StateObject private var autoTest = AutoTestState()
     @State private var selectedType: AnimationType = .linear
     @State private var frame: Double = 0
     @State private var isSampleExpanded = false
+    @State private var hasConsumedAutoTestTrigger = false
 
     private let totalFrames = 90
     private let videoInfo = VideoInfo()
@@ -39,6 +41,12 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             headerBar
+
+            if autoTest.isRunning || autoTest.report != nil
+                || autoTest.errorMessage != nil {
+                Divider()
+                autoTestSummary
+            }
 
             Divider()
 
@@ -64,6 +72,17 @@ struct ContentView: View {
             minWidth: 1100, maxWidth: .infinity,
             minHeight: 700, maxHeight: .infinity
         )
+        .onAppear {
+            // 起動時間（プロセス開始→画面表示）の終点を記録する。
+            AutoTestEnvironment.recordFirstAppear()
+            // 自動実行トリガ（環境変数 / トリガファイル）は起動時に
+            // 1回だけ消費する（SSH からの無人検証用）。
+            guard !hasConsumedAutoTestTrigger else { return }
+            hasConsumedAutoTestTrigger = true
+            if let trigger = AutoTestEnvironment.consumeTrigger() {
+                autoTest.run(workspace: workspace, trigger: trigger)
+            }
+        }
         .fileImporter(
             isPresented: Binding(
                 get: { workspace.isImporterPresented },
@@ -100,6 +119,10 @@ struct ContentView: View {
                     .font(.title3)
                     .bold()
                 Spacer()
+                Button("全自動テスト") {
+                    autoTest.run(workspace: workspace, trigger: "button")
+                }
+                .disabled(autoTest.isRunning)
                 Button("新規プロジェクト") {
                     workspace.newProject()
                 }
@@ -119,6 +142,46 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - 全自動テストの要約
+
+    /// 全自動テストの結果要約（測定値の正本はレポートファイル側。
+    /// ここは画面での目視確認用）。
+    private var autoTestSummary: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if autoTest.isRunning {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("全自動テストを実行中…")
+                        .font(.callout)
+                }
+            }
+            if let errorMessage = autoTest.errorMessage {
+                Text(errorMessage)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+            if let report = autoTest.report {
+                ForEach(
+                    Array(report.summaryLines.enumerated()), id: \.offset
+                ) { _, line in
+                    Text(line)
+                        .font(.callout)
+                        .monospacedDigit()
+                }
+                if let reportFilePath = autoTest.reportFilePath {
+                    Text("レポート: \(reportFilePath)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
