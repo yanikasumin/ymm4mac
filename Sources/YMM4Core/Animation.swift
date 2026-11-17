@@ -381,7 +381,7 @@ public struct Animation: Equatable, Sendable {
     /// Span を1周期とする無次元位置の前後±2周期の乱数を Cubic スプライン
     /// の重みで加重する。補間移動の経路と違い、重み和での正規化はしない
     /// （カーネルの重み和が概ね1であることに依存する）。
-    private static func randomMoveRate(
+    public static func randomMoveRate(
         seed: Int64, id: Int64, frame: Int, fps: Int, span: Double, seedOffset: Int64 = 0
     ) -> Double {
         let cubic = Cubic()
@@ -399,7 +399,7 @@ public struct Animation: Equatable, Sendable {
     ///
     /// Span/2 を半周期とする三角波（0→1→0）を作り、その率にイージングを
     /// 適用する。Animation からの呼び出しは Sine / InOut 固定。
-    private static func repeatMoveRate(
+    public static func repeatMoveRate(
         sec: Double, span: Double, family: EasingFamily, mode: EasingMode
     ) -> Double {
         let half = span / 2
