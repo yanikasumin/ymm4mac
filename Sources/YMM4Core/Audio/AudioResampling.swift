@@ -27,11 +27,79 @@ public struct CubicInterpolationKernel: InterpolationKernel {
     }
 }
 
+/// 帯域制限補間（窓関数 sinc）によるサンプル生成コア。
+///
+/// リサンプラの「契約」（長さ・シーク・位置の変換式と素通し規則）は
+/// 本家 MFT ラッパーの実測式で固定し、差し替えるのはこの生成コアだけ
+/// とする設計（AUDIO-FIDELITY-PLAN §1.1 の候補 (a)）。位置写像は
+/// 出力フレーム j → 素材位置 j × (Input.Hz / Hz) のままで、カーネルは
+/// 中心遅延 0 の対称 FIR として構成するため、遅延は生じない。
+///
+/// カーネルの形:
+/// - 倍率 scale = max(1, Input.Hz / Hz)。ダウンスンプル時は出力
+///   ナイキストに合わせてカーネルを scale 倍に広げ、折り返しを防ぐ
+///   （アップサンプル時は scale = 1 で入力ナイキストが帯域制限）。
+/// - 重み h(t) = sinc(t / scale) × Blackman 窓(t / 支持幅) / scale。
+///   支持幅は片側 `halfWidthCycles` 零点（scale = 1 のとき片側 48
+///   フレーム、計 97 タップ）。48 は実測で決めた値で、帯域端
+///   （44.1k→48k の 20kHz イメージ等）でも -80dB 級の抑制が
+///   全測定点で得られる最小級の長さである（実測は
+///   AudioResamplerQualityTests）。
+/// - 出力は重みの総和で割って正規化する。定数信号が厳密に保存され、
+///   DC ゲインが 1 になることを保証するため（窓掛けで落ちる
+///   ゲインを補う）。本家の MFT と波形が等しいことは引き続き
+///   **未検証**で、品質は自前の周波数応答実測で担保する。
+struct BandLimitedResamplingCore {
+    /// カーネル片側の零点数（scale = 1 のときのタップ半幅）。
+    static let halfWidthCycles = 48.0
+
+    /// 素材位置 `sourcePosition`（入力フレーム単位）における補間値。
+    /// `ratio` は Input.Hz / Hz（入力フレーム / 出力フレーム）。
+    static func sample(
+        window: InputFrameWindow, at sourcePosition: Double, ratio: Double
+    ) -> (left: Float, right: Float) {
+        let scale = max(1.0, ratio)
+        let support = halfWidthCycles * scale
+        let firstIndex = Int((sourcePosition - support).rounded(.up))
+        let lastIndex = Int((sourcePosition + support).rounded(.down))
+        var numeratorLeft = 0.0
+        var numeratorRight = 0.0
+        var denominator = 0.0
+        for index in firstIndex...lastIndex {
+            let distance = sourcePosition - Double(index)
+            let weight = kernelWeight(distance: distance, scale: scale, support: support)
+            if weight == 0 { continue }
+            let frame = window.frame(at: index)
+            numeratorLeft += Double(frame.left) * weight
+            numeratorRight += Double(frame.right) * weight
+            denominator += weight
+        }
+        guard denominator != 0 else { return (0, 0) }
+        return (
+            Float(numeratorLeft / denominator),
+            Float(numeratorRight / denominator)
+        )
+    }
+
+    /// 窓関数 sinc の重み。|distance| >= support では 0。
+    static func kernelWeight(distance: Double, scale: Double, support: Double) -> Double {
+        let magnitude = abs(distance)
+        if magnitude >= support { return 0 }
+        let scaled = distance / scale
+        let sincValue = scaled == 0 ? 1.0 : sin(.pi * scaled) / (.pi * scaled)
+        // Blackman 窓（支持端で 0、中心で 1）。
+        let phase = distance / support
+        let windowValue = 0.42 + 0.5 * cos(.pi * phase) + 0.08 * cos(2 * .pi * phase)
+        return sincValue * windowValue / scale
+    }
+}
+
 /// サンプリングレート変換。本家 `Resampler`（MediaFoundation の
 /// リサンプラー MFT）に対応する位置づけの処理器。
 ///
 /// 本家との関係: 本家は Windows の Resampler MFT（COM）に変換を委ね、
-/// `Input.Hz == Hz` のときだけ素通しする。ここでは変換を線形補間で
+/// `Input.Hz == Hz` のときだけ素通しする。ここでは変換を
+/// `BandLimitedResamplingCore`（窓関数 sinc の帯域制限補間）で
 /// 自前実装する。**変換の品質・位相特性が本家の MFT と等しいことは
 /// 未検証**であり、台帳に記録する前提の置換である。
 ///
@@ -111,13 +179,11 @@ public final class ResamplerStream: AudioEffectProcessorBase {
         let frameCount = count / 2
         for frameIndex in 0..<frameCount {
             let sourcePosition = Double(startFrame + frameIndex) * ratio
-            let lower = Int(sourcePosition.rounded(.down))
-            let fraction = Float(sourcePosition - Double(lower))
-            let first = window.frame(at: lower)
-            let second = window.frame(at: lower + 1)
-            buffer[offset + frameIndex * 2] = first.left + (second.left - first.left) * fraction
-            buffer[offset + frameIndex * 2 + 1] =
-                first.right + (second.right - first.right) * fraction
+            let value = BandLimitedResamplingCore.sample(
+                window: window, at: sourcePosition, ratio: ratio
+            )
+            buffer[offset + frameIndex * 2] = value.left
+            buffer[offset + frameIndex * 2 + 1] = value.right
         }
         return frameCount * 2
     }
