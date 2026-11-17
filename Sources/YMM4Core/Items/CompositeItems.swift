@@ -337,8 +337,8 @@ public final class TachieItem: VisualItem {
 
     public override func encodeKnownFields() -> [(key: String, value: JSONValue)] {
         super.encodeKnownFields() + [
-            (key: "Character", value: character?.encodeToJSONValue() ?? .null),
-            (key: "CharacterName", value: .string(characterName)),
+            // 本家は実行時参照 Character を [JsonIgnore] とし、保存は CharacterName のみ（MAC-0015）。
+            (key: "CharacterName", value: .string(character?.name ?? characterName)),
             (key: "TachieItemParameter", value: tachieItemParameter?.value ?? .null),
         ]
     }
@@ -377,8 +377,8 @@ public final class TachieFaceItem: BaseItem {
 
     public override func encodeKnownFields() -> [(key: String, value: JSONValue)] {
         super.encodeKnownFields() + [
-            (key: "Character", value: character?.encodeToJSONValue() ?? .null),
-            (key: "CharacterName", value: .string(characterName)),
+            // 本家は実行時参照 Character を [JsonIgnore] とし、保存は CharacterName のみ（MAC-0015）。
+            (key: "CharacterName", value: .string(character?.name ?? characterName)),
             (key: "TachieFaceParameter", value: tachieFaceParameter?.value ?? .null),
             (key: "TachieFaceEffects", value: .array(tachieFaceEffects.map { $0.value })),
         ]
