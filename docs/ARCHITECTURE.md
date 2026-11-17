@@ -81,18 +81,25 @@
                                InputFrameWindow（範囲外は無音のランダムアクセス窓）
           PCMProvider.swift    PCMProvider / PCMProviderFactory（デコードの差し替え点）、
                                InMemoryPCMProvider、FileAudioStream
+          AudioEffectContracts.swift アイテム音声の契約群: AudioItemProperties、
+                               AudioEffectProvider（ユーザー音声エフェクトの
+                               差し替え点）、AudioChainOptions
           EffectedAudioItemSource.swift アイテム音声の処理器連鎖（本家のチェーン順序）、
-                               AudioItemProperties、AudioEffectProvider（ユーザー
-                               音声エフェクトの差し替え点）、AudioSourceFactory
+                               AudioSourceFactory
           AudioEffectProcessors.swift NegativeSeekable / ContentOffset / Loop /
                                Reverse / Echo の各処理器と基底
-          AudioResampling.swift Resampler（生成芯は BandLimitedResamplingCore =
-                               窓関数 sinc の帯域制限補間。MAC-0024）/
-                               PlaybackRate / VariablePlaybackRate /
-                               Upsampler（補間カーネルは Linear / Cubic）
+          ResamplingCore.swift 補間カーネル（Linear / Cubic）と生成芯
+                               BandLimitedResamplingCore（窓関数 sinc の
+                               帯域制限補間。MAC-0024）
+          ResamplerStreams.swift Resampler / PlaybackRate / VariablePlaybackRate /
+                               Upsampler の各ストリーム
           VolumePanStream.swift VolumePan（サンプル対ごとの Animation 評価）
           AudioGroups.swift    AudioGroupResolver（グループ境界の区間分割と
-                               DirectGroups / Owner の算出）、GroupAudioBusSource
+                               DirectGroups / Owner の算出）、
+                               AudioGroupStreamBuilder（組み立て）
+          AudioGroupStreams.swift SegmentGate / GroupEffectChain の各ストリーム
+          GroupAudioBusSource.swift 音声合成グループのバス（バスミックス →
+                               グループエフェクト → Resampler）
           TimelineAudioMixer.swift タイムライン全体のミックス（レイヤー音量適用、
                                float 加算、リミッターなし）
         Effects/               映像エフェクト定義層＋DrawDescription 変換型処理器
