@@ -160,9 +160,10 @@
                                （BT.709 リミテッド）
           FFmpegProcessWriter.swift 音声・映像の別プロセス＋終了時 mux の本家方式
                                （プロセス起動は差し替え点）
-          LoudnessAnalysis.swift BS1770LoudnessAnalyzer（二段ゲーティング）
-          DynamicsProcessorStream.swift DynamicsProcessor（Ratio=1 高速経路）と
-                               EnvelopeFollower
+          LoudnessAnalysis.swift ラウドネス解析の倍率計算
+          BS1770LoudnessAnalyzer.swift BS.1770-3 アナライザ（二段ゲーティング）
+          DynamicsProcessorStream.swift DynamicsProcessor（Ratio=1 高速経路）
+          EnvelopeFollower.swift エンベロープフォロワ（再構成）とリングバッファ
       Sources/YMM4GPU/         GPU 実行層（Metal。全ソース #if os(macOS)、Linux では空）
         MetalGraphics.swift    MetalGraphicsDevices（デバイス共有・登録表・共有資源、
                                readBGRA によるバイト列読み戻しを含む）、
