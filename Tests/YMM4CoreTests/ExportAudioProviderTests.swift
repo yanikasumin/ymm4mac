@@ -147,6 +147,86 @@ final class ExportAudioProviderTests: XCTestCase {
         }
     }
 
+    // MARK: - 解析の省略（EX17-05: 解析不要設定では素材を読まない）
+
+    private final class CountingPCMProvider: PCMProvider {
+        private let base: InMemoryPCMProvider
+        private(set) var readCalls = 0
+
+        init(value: Float, frames: Int, hz: Int = 48_000) {
+            base = InMemoryPCMProvider(
+                samples: [Float](repeating: value, count: frames * 2), hz: hz
+            )
+        }
+
+        var hz: Int { base.hz }
+        var duration: TimeSpanValue { base.duration }
+
+        func seek(toTime time: TimeSpanValue) {
+            base.seek(toTime: time)
+        }
+
+        func read(into buffer: inout [Float], offset: Int, count: Int) -> Int {
+            readCalls += 1
+            return base.read(into: &buffer, offset: offset, count: count)
+        }
+    }
+
+    private func makeCountingSetup(
+        loudness: LoudnessNormalizationSettings,
+        compressor: CompressorSettings
+    ) -> (provider: TimelineExportAudioProvider, counting: CountingPCMProvider) {
+        let counting = CountingPCMProvider(value: 0.5, frames: 48_000)
+        let factory = MapProviderFactory()
+        factory.providers["a"] = counting
+        let timeline = makeTimeline(items: [makeAudioItem(filePath: "a")])
+        let provider = TimelineExportAudioProvider(
+            timeline: timeline,
+            factory: AudioSourceFactory(providerFactory: factory),
+            loudness: loudness,
+            compressor: compressor
+        )
+        return (provider, counting)
+    }
+
+    func testNoReadsWhenLoudnessAndCompressorDisabled() throws {
+        let (provider, counting) = makeCountingSetup(
+            loudness: LoudnessNormalizationSettings(mode: .disabled),
+            compressor: CompressorSettings(ratioMode: .disabled)
+        )
+        // 解析が省略され、初期化までに素材は一切読まれない
+        XCTAssertEqual(counting.readCalls, 0)
+        XCTAssertFalse(provider.analysisResult.analysisPerformed)
+        XCTAssertEqual(provider.analysisResult.volumeRate, 1, accuracy: 1e-6)
+        XCTAssertEqual(provider.analysisResult.compressorRate, 1, accuracy: 1e-6)
+        // 書き出し側の読み取りは通常どおり行われる
+        let samples = try provider.audioSamples(forFrame: 0)
+        XCTAssertEqual(samples.count, 3_200)
+        XCTAssertGreaterThan(counting.readCalls, 0)
+    }
+
+    func testNoReadsWhenCustomRatio() {
+        let (provider, counting) = makeCountingSetup(
+            loudness: LoudnessNormalizationSettings(mode: .disabled),
+            compressor: CompressorSettings(ratioMode: .custom, ratio: 2.5)
+        )
+        XCTAssertEqual(counting.readCalls, 0)
+        XCTAssertFalse(provider.analysisResult.analysisPerformed)
+        XCTAssertEqual(provider.analysisResult.compressorRate, 2.5, accuracy: 1e-6)
+        XCTAssertEqual(provider.analysisResult.volumeRate, 1, accuracy: 1e-6)
+    }
+
+    func testReadsHappenWhenAnalysisRequired() {
+        // 対照: 既定設定（解析あり）では初期化の解析パスで素材が読まれる。
+        // 読み取り回数を数えるフェイクが経路に介在することの確認も兼ねる
+        let (provider, counting) = makeCountingSetup(
+            loudness: LoudnessNormalizationSettings(),
+            compressor: CompressorSettings()
+        )
+        XCTAssertGreaterThan(counting.readCalls, 0)
+        XCTAssertTrue(provider.analysisResult.analysisPerformed)
+    }
+
     // MARK: - セッション統合（実音声供給＋記録ライター）
 
     private final class CapturingWriter: VideoFileWriting {

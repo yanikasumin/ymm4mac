@@ -452,6 +452,133 @@ final class LoudnessAnalysisTests: XCTestCase {
         XCTAssertEqual(chunks[0].samples[1000], 0)
         XCTAssertEqual(chunks[1].readCount, 0)
     }
+
+    // MARK: - 解析計画とストリーミング（MAC-0030、EX17-05 / EX17-06）
+
+    private final class CountingProvider: PCMProvider {
+        private let base: InMemoryPCMProvider
+        private(set) var readCalls = 0
+
+        init(samples: [Float], hz: Int) {
+            base = InMemoryPCMProvider(samples: samples, hz: hz)
+        }
+
+        var hz: Int { base.hz }
+        var duration: TimeSpanValue { base.duration }
+
+        func seek(toTime time: TimeSpanValue) {
+            base.seek(toTime: time)
+        }
+
+        func read(into buffer: inout [Float], offset: Int, count: Int) -> Int {
+            readCalls += 1
+            return base.read(into: &buffer, offset: offset, count: count)
+        }
+    }
+
+    func testAnalysisPlanSkipsReadingForDisabledCombinations() {
+        // 本家 W6-6.1: Loudness=Disabled かつ Compressor=Disabled /
+        // Custom では音声を読み直さない
+        let disabledCustom = LoudnessAnalysis.plan(
+            loudness: LoudnessNormalizationSettings(mode: .disabled),
+            compressor: CompressorSettings(ratioMode: .custom, ratio: 2.5)
+        )
+        XCTAssertFalse(disabledCustom.requiresReading)
+        XCTAssertEqual(disabledCustom.compressorRate, 2.5, accuracy: 0.0001)
+
+        let disabledDisabled = LoudnessAnalysis.plan(
+            loudness: LoudnessNormalizationSettings(mode: .disabled),
+            compressor: CompressorSettings(ratioMode: .disabled)
+        )
+        XCTAssertFalse(disabledDisabled.requiresReading)
+        XCTAssertEqual(disabledDisabled.compressorRate, 1, accuracy: 0.0001)
+
+        let disabledAuto = LoudnessAnalysis.plan(
+            loudness: LoudnessNormalizationSettings(mode: .disabled),
+            compressor: CompressorSettings(ratioMode: .auto)
+        )
+        XCTAssertTrue(disabledAuto.requiresReading)
+
+        let peakMode = LoudnessAnalysis.plan(
+            loudness: LoudnessNormalizationSettings(mode: .downMaximumVolume),
+            compressor: CompressorSettings(ratioMode: .disabled)
+        )
+        XCTAssertTrue(peakMode.requiresReading)
+    }
+
+    func testStreamingAnalyzeDoesNotReadWhenPlanSkips() {
+        let provider = CountingProvider(
+            samples: [Float](repeating: 0.5, count: 48_000 * 2), hz: 48_000
+        )
+        let stream = FileAudioStream(provider: provider)
+        let result = LoudnessAnalysis.analyze(
+            stream: stream, frameCount: 30,
+            loudness: LoudnessNormalizationSettings(mode: .disabled),
+            compressor: CompressorSettings(ratioMode: .custom, ratio: 2.5),
+            hz: 48_000, fps: 30
+        )
+        XCTAssertEqual(provider.readCalls, 0)
+        XCTAssertFalse(result.analysisPerformed)
+        XCTAssertEqual(result.compressorRate, 2.5, accuracy: 0.0001)
+        XCTAssertEqual(result.volumeRate, 1, accuracy: 0.0001)
+    }
+
+    func testStreamingAnalysisMatchesChunkAnalysis() {
+        // ストリーミング版とチャンク列版（テスト補助）で、ピーク・
+        // LKFS・倍率が一致すること
+        func sineSamples() -> [Float] {
+            var samples: [Float] = []
+            samples.reserveCapacity(3 * 48_000 * 2)
+            for frame in 0..<(3 * 48_000) {
+                let value = 0.8 * sinf(2 * Float.pi * 1000 * Float(frame) / 48_000)
+                samples.append(value)
+                samples.append(value)
+            }
+            return samples
+        }
+        let configurations: [(LoudnessNormalizationSettings, CompressorSettings)] = [
+            (
+                LoudnessNormalizationSettings(mode: .both),
+                CompressorSettings(ratioMode: .disabled)
+            ),
+            (
+                LoudnessNormalizationSettings(mode: .downMaximumVolume),
+                CompressorSettings(ratioMode: .auto)
+            ),
+            (
+                LoudnessNormalizationSettings(mode: .disabled),
+                CompressorSettings(ratioMode: .auto)
+            ),
+        ]
+        for (loudness, compressor) in configurations {
+            let chunkResult = LoudnessAnalysis.analyze(
+                chunks: LoudnessAnalysis.makeChunks(
+                    from: FileAudioStream(
+                        provider: InMemoryPCMProvider(samples: sineSamples(), hz: 48_000)
+                    ),
+                    frameCount: 90, hz: 48_000, fps: 30
+                ),
+                loudness: loudness, compressor: compressor, hz: 48_000
+            )
+            let streamResult = LoudnessAnalysis.analyze(
+                stream: FileAudioStream(
+                    provider: InMemoryPCMProvider(samples: sineSamples(), hz: 48_000)
+                ),
+                frameCount: 90,
+                loudness: loudness, compressor: compressor, hz: 48_000, fps: 30
+            )
+            XCTAssertEqual(streamResult.analysisPerformed, chunkResult.analysisPerformed)
+            XCTAssertEqual(streamResult.peakDb, chunkResult.peakDb, accuracy: 0.0001)
+            XCTAssertEqual(
+                streamResult.averageLoudness, chunkResult.averageLoudness, accuracy: 0.0001
+            )
+            XCTAssertEqual(streamResult.volumeRate, chunkResult.volumeRate, accuracy: 0.0001)
+            XCTAssertEqual(
+                streamResult.compressorRate, chunkResult.compressorRate, accuracy: 0.0001
+            )
+            XCTAssertEqual(streamResult.loudnessFix, chunkResult.loudnessFix, accuracy: 0.0001)
+        }
+    }
 }
 
 // MARK: - DynamicsProcessor
@@ -540,6 +667,8 @@ private enum FakeFailure: Error {
 private final class FakeWriter: VideoFileWriting {
     var supportedStreams: VideoWriterSupportedStreams
     var isGPUFrameSupported = false
+    var producesOutputFileValue = true
+    var producesOutputFile: Bool { producesOutputFileValue }
     var videoBufferIdentifiers: [ObjectIdentifier] = []
     var audioCounts: [Int] = []
     var finalizeCount = 0
@@ -726,7 +855,48 @@ final class ExportSessionTests: XCTestCase {
         XCTAssertTrue(outcome.outputProduced)
         XCTAssertFalse(outcome.accompanyingFilesProduced)
         XCTAssertNil(outcome.error)
-        XCTAssertEqual(outcome.warning?.severity, .warning)
+        XCTAssertNotNil(outcome.warning)
+        // 副次的かどうかは置き場所で表し、原因分類は包んだまま保持する（EX17-08）
+        XCTAssertEqual(outcome.warning?.cause, .unresolvable)
+    }
+
+    func testFinalizeSuccessWithoutOutputFileIsDistinguished() {
+        // 両ストリーム無効の writer: finalize は成功するが成果物は無い。
+        // 「確定処理成功」と「成果物あり」を区別する（EX17-07）。
+        let writer = FakeWriter()
+        writer.producesOutputFileValue = false
+        let session = ExportSession(writer: writer)
+        let outcome = session.run(
+            configuration: configuration(),
+            videoProvider: FakeVideoProvider(),
+            audioProvider: FakeAudioProvider(hz: 11_025, fps: 30)
+        )
+        XCTAssertEqual(outcome.completion, .completed)
+        XCTAssertTrue(outcome.finalizeInvoked)
+        XCTAssertTrue(outcome.finalizeSucceeded)
+        XCTAssertFalse(outcome.outputProduced)
+        XCTAssertNil(outcome.error)
+    }
+
+    func testActionableFinalizeErrorStillFails() {
+        // 原因が対処可能でも finalize の失敗は書き出しの失敗である。
+        // 対処可能性と成否は別の軸（EX17-08。是正前はこの組み合わせが
+        // 「警告」として返っていた）。
+        let writer = FakeWriter()
+        writer.finalizeError = ExportError(
+            cause: .actionable, message: "ストレージの空き容量が不足しています"
+        )
+        let session = ExportSession(writer: writer)
+        let outcome = session.run(
+            configuration: configuration(),
+            videoProvider: FakeVideoProvider(),
+            audioProvider: FakeAudioProvider(hz: 11_025, fps: 30)
+        )
+        XCTAssertEqual(outcome.completion, .failed)
+        XCTAssertTrue(outcome.finalizeInvoked)
+        XCTAssertFalse(outcome.finalizeSucceeded)
+        XCTAssertFalse(outcome.outputProduced)
+        XCTAssertEqual(outcome.error?.cause, .actionable)
     }
 
     func testAudioOnlyWriterNeverCallsVideoProvider() {
@@ -940,7 +1110,7 @@ final class FFmpegProcessWriterTests: XCTestCase {
         try writer.writeVideoFrame(ExportVideoFrameBuffer(byteCount: 64 * 64 * 4))
         XCTAssertThrowsError(try writer.finalize()) { error in
             let exportError = error as? ExportError
-            XCTAssertEqual(exportError?.severity, .warning)
+            XCTAssertEqual(exportError?.cause, .actionable)
             XCTAssertTrue(exportError?.message.contains("空き容量") ?? false)
         }
         // mux は起動しない
@@ -964,6 +1134,27 @@ final class FFmpegProcessWriterTests: XCTestCase {
         XCTAssertEqual(runner.launches.count, 1)
     }
 
+    func testBothStreamsNullProducesNoOutputFile() throws {
+        // 音声・映像とも -f null: 申告は不変だが成果物は生じない（EX17-07）
+        var settings = smallSettings()
+        settings.audioOptions = "-f null"
+        settings.videoOptions = "-f null"
+        let runner = FakeProcessRunner()
+        let writer = try FFmpegProcessWriter(
+            settings: settings, outputPath: "/tmp/ymm4test/out.mp4", runner: runner
+        )
+        XCTAssertTrue(writer.supportedStreams.contains(.video))
+        XCTAssertTrue(writer.supportedStreams.contains(.audio))
+        XCTAssertFalse(writer.producesOutputFile)
+        // 音声プロセスは起動せず、映像も受け取らない
+        XCTAssertEqual(runner.launches.count, 0)
+        try writer.writeAudioSamples([0.1, 0.2])
+        try writer.writeVideoFrame(ExportVideoFrameBuffer(byteCount: 64 * 64 * 4))
+        // finalize は成功する（例外なし）が mux も起動しない
+        try writer.finalize()
+        XCTAssertEqual(runner.launches.count, 0)
+    }
+
     func testClassifierTable() {
         let cases: [(String, String)] = [
             ("Permission denied", "権限"),
@@ -976,13 +1167,13 @@ final class FFmpegProcessWriterTests: XCTestCase {
             let error = FFmpegErrorClassifier.classify(
                 standardError: stderr, fallbackMessage: "fallback"
             )
-            XCTAssertEqual(error.severity, .warning, stderr)
+            XCTAssertEqual(error.cause, .actionable, stderr)
             XCTAssertTrue(error.message.contains(fragment), stderr)
         }
         let unknown = FFmpegErrorClassifier.classify(
             standardError: "something else", fallbackMessage: "fallback"
         )
-        XCTAssertEqual(unknown.severity, .fatal)
+        XCTAssertEqual(unknown.cause, .unresolvable)
         XCTAssertEqual(unknown.message, "fallback")
     }
 }
