@@ -28,6 +28,14 @@ public struct YmmpLoadDiagnostics: Sendable {
     /// （移行前 → 移行後）。エフェクト等の入れ子オブジェクトの移行は
     /// 保持オブジェクト側で適用されるが、ここには記録されない。
     public var migratedTypeNames: [(from: String, to: String)] = []
+    /// 値域外・異常値のため既定の扱いへ倒した項目の記録。
+    ///
+    /// 本家は範囲外の値も素通しで保持するが、巨大な寸法がそのまま
+    /// バッファ確保へ届くとメモリ不足や桁あふれでプロセスが落ちる。
+    /// そのため VideoInfo の値域と Length / MaxLayer の負値は読み込み
+    /// 時に検証し、既定の扱いへ倒してここへ記録する（ファイル自体は
+    /// 読み込みエラーにせず開けるままにする）。
+    public var correctedValues: [String] = []
 
     public init() {}
 }
@@ -196,7 +204,17 @@ public enum YmmpCodec {
     /// 一時ファイルへ書き出し、再読込して検証できたら本ファイルへ
     /// コピーする（ディレクトリが無ければ作る）。
     public static func save(_ project: Project, toFile path: String) throws {
-        let text = encode(project)
+        // 書き出しの再帰（serialized）がスタックオーバーフローで落ちる
+        // ことを防ぐため、シリアライズ前にツリーの深さを上限と照合する。
+        // 検査自体の再帰は上限 + 1 段で止まる。超過時は壊れた出力を
+        // 書かず、保存エラーにする。
+        let tree = encodeProject(project)
+        guard !tree.hasDepth(exceeding: JSONValue.maximumDepth) else {
+            throw YmmpError.verificationFailed(
+                "プロジェクトの入れ子が深すぎます（上限 \(JSONValue.maximumDepth)）"
+            )
+        }
+        let text = tree.serialized()
         let fileManager = FileManager.default
         let temporaryPath = fileManager.temporaryDirectory
             .appendingPathComponent("ymm4mac-\(UUID().uuidString).ymmp").path
@@ -267,7 +285,9 @@ public enum YmmpCodec {
             case "Name":
                 timeline.name = CodecSupport.string(fieldValue, default: timeline.name)
             case "VideoInfo":
-                timeline.videoInfo = decodeVideoInfo(fieldValue)
+                timeline.videoInfo = decodeVideoInfo(
+                    fieldValue, timelineIndex: timelineIndex, diagnostics: &diagnostics
+                )
             case "VerticalLine":
                 timeline.verticalLine = TimelineVerticalLine.decode(from: fieldValue)
             case "Items":
@@ -294,11 +314,34 @@ public enum YmmpCodec {
             }
         }
         // 本家は private setter 経由でキャッシュも復元する。キーが無い
-        // 場合は現在のアイテム集合から再計算した値を使う。
-        timeline.restoreCachedLength(
-            restoredLength ?? timeline.computeCurrentLength(),
-            maxLayer: restoredMaxLayer ?? timeline.computeCurrentMaxLayer()
-        )
+        // 場合は現在のアイテム集合から再計算した値を使う。復元値が
+        // 負値の場合はフレーム数・レイヤー番号として成立しないため、
+        // キーが無い場合と同じ再計算へ倒し、診断へ記録する。
+        let length: Int
+        if let restoredLength, restoredLength >= 0 {
+            length = restoredLength
+        } else {
+            length = timeline.computeCurrentLength()
+            if let restoredLength {
+                diagnostics.correctedValues.append(
+                    "Timeline[\(timelineIndex)].Length: \(restoredLength) は負値のため"
+                        + "再計算値 \(length) を使用"
+                )
+            }
+        }
+        let maxLayer: Int
+        if let restoredMaxLayer, restoredMaxLayer >= 0 {
+            maxLayer = restoredMaxLayer
+        } else {
+            maxLayer = timeline.computeCurrentMaxLayer()
+            if let restoredMaxLayer {
+                diagnostics.correctedValues.append(
+                    "Timeline[\(timelineIndex)].MaxLayer: \(restoredMaxLayer) は負値のため"
+                        + "再計算値 \(maxLayer) を使用"
+                )
+            }
+        }
+        timeline.restoreCachedLength(length, maxLayer: maxLayer)
         // タイムラインへ配置されたアイテムには VideoInfo の FPS が注入される
         for item in timeline.items {
             item.setFPS(timeline.videoInfo.fps)
@@ -316,16 +359,54 @@ public enum YmmpCodec {
         ])
     }
 
-    static func decodeVideoInfo(_ value: JSONValue) -> VideoInfo {
-        var videoInfo = VideoInfo()
-        videoInfo.fps = CodecSupport.int(value.field("FPS"), default: videoInfo.fps)
-        videoInfo.hz = CodecSupport.int(value.field("Hz"), default: videoInfo.hz)
-        videoInfo.width = CodecSupport.int(value.field("Width"), default: videoInfo.width)
-        videoInfo.height = CodecSupport.int(value.field("Height"), default: videoInfo.height)
+    static func decodeVideoInfo(
+        _ value: JSONValue, timelineIndex: Int, diagnostics: inout YmmpLoadDiagnostics
+    ) -> VideoInfo {
+        let defaults = VideoInfo()
+        var videoInfo = defaults
+        videoInfo.fps = validatedVideoInfoValue(
+            CodecSupport.int(value.field("FPS"), default: defaults.fps),
+            range: VideoInfo.fpsRange, default: defaults.fps,
+            fieldName: "FPS", timelineIndex: timelineIndex, diagnostics: &diagnostics
+        )
+        videoInfo.hz = validatedVideoInfoValue(
+            CodecSupport.int(value.field("Hz"), default: defaults.hz),
+            range: VideoInfo.hzRange, default: defaults.hz,
+            fieldName: "Hz", timelineIndex: timelineIndex, diagnostics: &diagnostics
+        )
+        videoInfo.width = validatedVideoInfoValue(
+            CodecSupport.int(value.field("Width"), default: defaults.width),
+            range: VideoInfo.widthRange, default: defaults.width,
+            fieldName: "Width", timelineIndex: timelineIndex, diagnostics: &diagnostics
+        )
+        videoInfo.height = validatedVideoInfoValue(
+            CodecSupport.int(value.field("Height"), default: defaults.height),
+            range: VideoInfo.heightRange, default: defaults.height,
+            fieldName: "Height", timelineIndex: timelineIndex, diagnostics: &diagnostics
+        )
         videoInfo.backgroundColor = CodecSupport.color(
             value.field("BackgroundColor"), default: videoInfo.backgroundColor
         )
         return videoInfo
+    }
+
+    /// VideoInfo の数値フィールドの値域検証。
+    ///
+    /// 範囲は本家の Range 属性（`VideoInfo` の各 `...Range`）をそのまま
+    /// 使う。範囲外の値は既定値へ倒し、診断へ記録する。欠落・型不一致
+    /// の場合は `CodecSupport` が既定値を返すため範囲内となり、記録は
+    /// 付かない。検証を通った VideoInfo は常に `isWithinValidRanges`
+    /// を満たす。
+    private static func validatedVideoInfoValue(
+        _ rawValue: Int, range: ClosedRange<Int>, default defaultValue: Int,
+        fieldName: String, timelineIndex: Int, diagnostics: inout YmmpLoadDiagnostics
+    ) -> Int {
+        guard !range.contains(rawValue) else { return rawValue }
+        diagnostics.correctedValues.append(
+            "Timeline[\(timelineIndex)].VideoInfo.\(fieldName): \(rawValue) は有効範囲 "
+                + "\(range.lowerBound)...\(range.upperBound) 外のため既定値 \(defaultValue) を使用"
+        )
+        return defaultValue
     }
 
     // MARK: - アイテムの変換
