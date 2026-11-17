@@ -164,15 +164,21 @@ public final class MetalExportVideoProvider: VideoFrameProviding {
         self.context = devices.makeContext(
             targetSize: PixelSize(width: videoInfo.width, height: videoInfo.height)
         )
+        // 供給元は外側と内部合成器（シーン・合成グループ）で同じ
+        // インスタンスを共有し、内部の子にも GPU エフェクトを効かせる
+        // （MAC-0028。プレビュー側と同じ配線）。
+        let effectProvider = MetalEffectPairProvider(devices: devices)
         let provider = MetalSourceProvider(
             devices: devices, baseDirectory: baseDirectory,
-            sceneResolver: { id in timelines.first { $0.id == id } }
+            sceneResolver: { id in timelines.first { $0.id == id } },
+            timeline: timeline,
+            effectProvider: effectProvider
         )
         self.composer = TimelineComposer(
             scene: TimelineScene(timeline: timeline),
             targetFactory: context,
             sourceProvider: provider.source(for:),
-            effectProvider: MetalEffectPairProvider(devices: devices)
+            effectProvider: effectProvider
         )
     }
 
