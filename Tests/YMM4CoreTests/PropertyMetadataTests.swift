@@ -267,6 +267,105 @@ final class PropertyMetadataTests: XCTestCase {
         XCTAssertTrue(encoded.contains("300"))
     }
 
+    // MARK: - エフェクト編集時の入れ子未知フィールド保持（UI29-01 / MAC-0032）
+
+    /// 既知エフェクト（ZoomEffect）の各階層に未知キーを仕込んだプロジェクト。
+    /// 仕込み位置: エフェクトのトップレベル、Zoom（Animation）の内部、
+    /// Bezier の内部。Animation と Bezier の内部は型付きコーデックが
+    /// 読み落とすため、修正前は編集の書き戻しで消えていた。
+    private func projectTextWithUnknownNestedEffectFields() -> String {
+        """
+        {"Timelines":[{"Name":"","Items":[{"$type":"YukkuriMovieMaker.Project.Items.TextItem, YukkuriMovieMaker","Frame":0,"Layer":0,"Length":30,"VideoEffects":[{"$type":"YukkuriMovieMaker.Project.Effects.ZoomEffect, YukkuriMovieMaker","Zoom":{"Values":[{"Value":150.0}],"Span":0.0,"AnimationType":"なし","Bezier":{"Points":[],"IsQuadratic":false,"FutureBezierKey":42},"FutureAnimationKey":"keep-me","FutureNested":{"Inner":[1,2,3]}},"ZoomX":{"Values":[{"Value":100.0}],"Span":0.0,"AnimationType":"なし","Bezier":{"Points":[],"IsQuadratic":false}},"ZoomY":{"Values":[{"Value":100.0}],"Span":0.0,"AnimationType":"なし","Bezier":{"Points":[],"IsQuadratic":false}},"IsNearestNeighbor":false,"IsEnabled":true,"FutureTopLevel":{"Note":"top"}}]}]}]}
+        """
+    }
+
+    private func assertUnknownNestedFieldsSurvive(
+        in effect: JSONValue, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        // トップレベル（定義の additionalFields 経由で従来から保持される）。
+        XCTAssertEqual(
+            effect.field("FutureTopLevel")?.field("Note")?.stringValue, "top",
+            file: file, line: line
+        )
+        // Animation の内部（型付きコーデックが読み落とす階層）。
+        let zoom = effect.field("Zoom")
+        XCTAssertEqual(
+            zoom?.field("FutureAnimationKey")?.stringValue, "keep-me",
+            file: file, line: line
+        )
+        XCTAssertEqual(
+            zoom?.field("FutureNested")?.field("Inner"),
+            .array([.number(1), .number(2), .number(3)]),
+            file: file, line: line
+        )
+        // Bezier の内部（さらに深い階層）。
+        XCTAssertEqual(
+            zoom?.field("Bezier")?.field("FutureBezierKey")?.intValue, 42,
+            file: file, line: line
+        )
+    }
+
+    func testEffectEditPreservesUnknownNestedFields() throws {
+        let (project, _) = try YmmpCodec.decode(projectTextWithUnknownNestedEffectFields())
+        let item = try XCTUnwrap(project.timelines.first?.items.first as? TextItem)
+
+        // 編集は IsEnabled の1項目だけ（UI29-01 の再現条件）。
+        let opened = try XCTUnwrap(EffectPropertyEditing.openDefinition(for: item, at: 0))
+        let enabled = try descriptor(EffectPropertyMetadata.descriptors(for: opened), "IsEnabled")
+        XCTAssertTrue(enabled.setBoolValue(false))
+        XCTAssertTrue(EffectPropertyEditing.writeBack(opened, for: item, at: 0))
+
+        // 書き戻し直後の保持列で、未知キーが全階層に残り、編集も反映される。
+        assertUnknownNestedFieldsSurvive(in: item.videoEffects[0].value)
+        XCTAssertEqual(item.videoEffects[0].value.field("IsEnabled")?.boolValue, false)
+
+        // 保存 → 再読み込みでも残る。
+        let saved = YmmpCodec.encode(project)
+        let (reloaded, _) = try YmmpCodec.decode(saved)
+        let reloadedItem = try XCTUnwrap(reloaded.timelines.first?.items.first as? TextItem)
+        assertUnknownNestedFieldsSurvive(in: reloadedItem.videoEffects[0].value)
+        XCTAssertEqual(reloadedItem.videoEffects[0].value.field("IsEnabled")?.boolValue, false)
+
+        // 編集していない既知の値は元のまま。
+        let reopened = try XCTUnwrap(
+            EffectPropertyEditing.openDefinition(for: reloadedItem, at: 0) as? ZoomEffectDefinition
+        )
+        XCTAssertEqual(reopened.zoom.firstValue, 150)
+    }
+
+    func testEffectEditInsideAnimationPreservesUnknownKeysInSameField() throws {
+        let (project, _) = try YmmpCodec.decode(projectTextWithUnknownNestedEffectFields())
+        let item = try XCTUnwrap(project.timelines.first?.items.first as? TextItem)
+
+        // 未知キーを含む Animation 自体（Zoom）を編集しても、同じ
+        // オブジェクト内の未知キーは再帰マージで保持される。
+        let opened = try XCTUnwrap(
+            EffectPropertyEditing.openDefinition(for: item, at: 0) as? ZoomEffectDefinition
+        )
+        let zoom = try descriptor(EffectPropertyMetadata.descriptors(for: opened), "Zoom")
+        XCTAssertTrue(zoom.setAnimationConstantValue(300))
+        XCTAssertTrue(EffectPropertyEditing.writeBack(opened, for: item, at: 0))
+
+        assertUnknownNestedFieldsSurvive(in: item.videoEffects[0].value)
+        XCTAssertEqual(
+            item.videoEffects[0].value.field("Zoom")?.field("Values")?
+                .arrayValue?.first?.field("Value")?.doubleValue,
+            300
+        )
+    }
+
+    func testUneditedProjectWithUnknownNestedFieldsRoundTripsToFixedPoint() throws {
+        // 無編集の往復は従来どおり固定点であり、未知キーも生保持のまま残る
+        // （修正が通常の読み込み・保存経路を変えていないことの回帰）。
+        let (project, _) = try YmmpCodec.decode(projectTextWithUnknownNestedEffectFields())
+        let first = YmmpCodec.encode(project)
+        let (reloaded, _) = try YmmpCodec.decode(first)
+        let second = YmmpCodec.encode(reloaded)
+        XCTAssertEqual(first, second)
+        let item = try XCTUnwrap(reloaded.timelines.first?.items.first as? TextItem)
+        assertUnknownNestedFieldsSurvive(in: item.videoEffects[0].value)
+    }
+
     func testEffectEditingBridgeRejectsUnknownAndOutOfRange() {
         let item = TextItem()
         item.videoEffects = [PreservedObject(.object([
