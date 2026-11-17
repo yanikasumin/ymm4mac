@@ -12,12 +12,29 @@ import YMM4Core
 /// 同じ3点（テクスチャ・境界・変換）を保持し、DrawingEffect 相当の変換は
 /// 中間テクスチャを作らず変換の記録として合成する（遅延評価）。
 /// 座標系は本家どおり、原点 = 画面中心・x 右・y 下・単位ピクセル。
+///
+/// 境界とテクスチャの平面範囲は分けて持つ。本家の画像は無限平面上の
+/// 存在であり、局所境界（GetImageLocalBounds）は内容のある範囲を指し、
+/// テクスチャの広がりとは一致しない（コマンドリストの内容境界など）。
+/// こちらでも、描画先（コマンドリスト相当）の内容境界はテクスチャが
+/// 張る平面範囲（texturePlaneRect）より小さくなりうる。描画時の UV は
+/// texturePlaneRect から求める。通常の画像（素材・生成テクスチャ）では
+/// 両者は一致する。
 public struct MetalImage {
     /// ピクセルの実体。属性は本家どおり BGRA 8bit / Premultiplied を基本とする
     /// （IMG-06: 合成コアに色管理は無い）。
     public var texture: MTLTexture
     /// transform 適用前の、平面座標における内容の境界。
     public var bounds: RectF
+    /// テクスチャが張る平面範囲（UV (0,0) が左上、(1,1) が右下に対応）。
+    /// 既定は bounds と同じ。
+    public var texturePlaneRect: RectF
+    /// ローカル座標（bounds の座標系）からテクスチャ平面座標へのずれ。
+    /// 通常は (0, 0) で両者は一致する。合成グループの出力のように、
+    /// 内容を平行移動してから1つの画像として扱う場合にだけ非ゼロになる
+    /// （ローカル点 + planeOffset が、その画素がテクスチャ平面上で
+    /// 置かれている位置）。
+    public var planeOffset: Vector2
     /// 描画時に境界へ適用する変換（透視の M34 = -0.001 を含む 4×4）。
     public var transform: Matrix4x4
     /// 不透明度（0.0〜1.0）。Premultiplied の全成分へ乗算する（本家の
@@ -29,15 +46,36 @@ public struct MetalImage {
     public init(
         texture: MTLTexture,
         bounds: RectF,
+        texturePlaneRect: RectF? = nil,
+        planeOffset: Vector2 = .zero,
         transform: Matrix4x4 = .identity,
         opacity: Double = 1,
         interpolation: InterpolationMode = .linear
     ) {
         self.texture = texture
         self.bounds = bounds
+        self.texturePlaneRect = texturePlaneRect ?? bounds
+        self.planeOffset = planeOffset
         self.transform = transform
         self.opacity = opacity
         self.interpolation = interpolation
+    }
+
+    /// ローカル座標の点をテクスチャ UV へ写す（planeOffset を加えてから
+    /// texturePlaneRect 基準で写す）。
+    public func uv(forLocalX x: Double, y: Double) -> SIMD2<Float> {
+        uv(forPlaneX: x + planeOffset.x, y: y + planeOffset.y)
+    }
+
+    /// 平面座標の点をテクスチャ UV へ写す（texturePlaneRect 基準）。
+    public func uv(forPlaneX x: Double, y: Double) -> SIMD2<Float> {
+        let width = texturePlaneRect.right - texturePlaneRect.left
+        let height = texturePlaneRect.bottom - texturePlaneRect.top
+        guard width != 0, height != 0 else { return SIMD2(0, 0) }
+        return SIMD2(
+            Float((x - texturePlaneRect.left) / width),
+            Float((y - texturePlaneRect.top) / height)
+        )
     }
 }
 
@@ -56,8 +94,18 @@ public final class MetalGraphicsDevices {
     let texturedPipeline: MTLRenderPipelineState
     let solidPipeline: MTLRenderPipelineState
     let shapePipeline: MTLRenderPipelineState
+    /// 色変換系エフェクトのパス（ブレンドなし。入力テクセルをそのまま読む）。
+    let effectPipeline: MTLRenderPipelineState
+    /// ガウスぼかしのパス（ブレンドなし。サンプラ経由で読む）。
+    let blurPipeline: MTLRenderPipelineState
+    /// モザイク（矩形）のコンピュートカーネル。
+    let mosaicPipeline: MTLComputePipelineState
     let nearestSampler: MTLSamplerState
     let linearSampler: MTLSamplerState
+    /// 範囲外を透明黒として読むサンプラ（ぼかしの Soft 境界用）。
+    let borderSampler: MTLSamplerState
+    /// 範囲外を鏡像として読むサンプラ（ぼかしの Hard 境界用）。
+    let mirrorSampler: MTLSamplerState
 
     /// 1×1 完全透明のテクスチャ（読み込み失敗時の代替・空出力の実体）。
     public let transparentTexture: MTLTexture
@@ -79,7 +127,10 @@ public final class MetalGraphicsDevices {
         guard let vertexFunction = library.makeFunction(name: "ymm4Vertex"),
               let texturedFunction = library.makeFunction(name: "ymm4TexturedFragment"),
               let solidFunction = library.makeFunction(name: "ymm4SolidFragment"),
-              let shapeFunction = library.makeFunction(name: "ymm4ShapeFragment")
+              let shapeFunction = library.makeFunction(name: "ymm4ShapeFragment"),
+              let effectFunction = library.makeFunction(name: "ymm4ColorEffectFragment"),
+              let blurFunction = library.makeFunction(name: "ymm4BlurFragment"),
+              let mosaicFunction = library.makeFunction(name: "ymm4MosaicKernel")
         else { return nil }
 
         let vertexDescriptor = MTLVertexDescriptor()
@@ -119,6 +170,24 @@ public final class MetalGraphicsDevices {
         solidPipeline = solid
         shapePipeline = shape
 
+        // エフェクト系のパスは中間画像への書き込みであり、合成（ブレンド）
+        // は行わない。入力を加工した結果で置き換える。
+        func makeEffectPipeline(fragment: MTLFunction) -> MTLRenderPipelineState? {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = vertexFunction
+            descriptor.fragmentFunction = fragment
+            descriptor.vertexDescriptor = vertexDescriptor
+            descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            return try? device.makeRenderPipelineState(descriptor: descriptor)
+        }
+        guard let effect = makeEffectPipeline(fragment: effectFunction),
+              let blur = makeEffectPipeline(fragment: blurFunction),
+              let mosaic = try? device.makeComputePipelineState(function: mosaicFunction)
+        else { return nil }
+        effectPipeline = effect
+        blurPipeline = blur
+        mosaicPipeline = mosaic
+
         func makeSampler(filter: MTLSamplerMinMagFilter) -> MTLSamplerState? {
             let descriptor = MTLSamplerDescriptor()
             descriptor.minFilter = filter
@@ -133,6 +202,24 @@ public final class MetalGraphicsDevices {
         else { return nil }
         nearestSampler = nearest
         linearSampler = linear
+
+        func makeBorderSampler(address: MTLSamplerAddressMode) -> MTLSamplerState? {
+            let descriptor = MTLSamplerDescriptor()
+            descriptor.minFilter = .linear
+            descriptor.magFilter = .linear
+            descriptor.mipFilter = .notMipmapped
+            descriptor.sAddressMode = address
+            descriptor.tAddressMode = address
+            if address == .clampToBorderColor {
+                descriptor.borderColor = .transparentBlack
+            }
+            return device.makeSamplerState(descriptor: descriptor)
+        }
+        guard let border = makeBorderSampler(address: .clampToBorderColor),
+              let mirror = makeBorderSampler(address: .mirrorRepeat)
+        else { return nil }
+        borderSampler = border
+        mirrorSampler = mirror
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: 1, height: 1, mipmapped: false
@@ -188,6 +275,31 @@ public final class MetalGraphicsDevices {
         guard let metal = image(for: reference) else { return nil }
         return Self.makeCGImage(from: metal.texture)
     }
+
+    /// 参照のテクスチャを BGRA バイト列として読み戻す（書き出し用）。
+    ///
+    /// `bytes` はテクスチャ寸法 × 4 バイトちょうどでなければならず、
+    /// サイズが合わない場合は何も書かずに false を返す。読み戻される
+    /// 並びはテクスチャの素の画素（BGRA / Premultiplied）で、本家の
+    /// 書き出しがレンダラから受け取る `byte[Width * Height * 4]` と
+    /// 同じ前提に立つ。
+    public func readBGRA(from reference: ImageReference, into bytes: inout [UInt8]) -> Bool {
+        guard let metal = image(for: reference) else { return false }
+        let texture = metal.texture
+        guard texture.width > 0, texture.height > 0,
+              texture.width * texture.height * 4 == bytes.count
+        else { return false }
+        bytes.withUnsafeMutableBytes { buffer in
+            guard let base = buffer.baseAddress else { return }
+            texture.getBytes(
+                base, bytesPerRow: texture.width * 4,
+                from: MTLRegionMake2D(0, 0, texture.width, texture.height),
+                mipmapLevel: 0
+            )
+        }
+        return true
+    }
+
 
     /// テクスチャのピクセルを読み戻す（BGRA Premultiplied のまま）。
     public static func makeCGImage(from texture: MTLTexture) -> CGImage? {
@@ -286,6 +398,176 @@ public final class MetalGraphicsDevices {
                 alpha = clamp(inner - outer, 0.0, 1.0);
             }
             return uniforms.color * alpha;
+        }
+
+        // 色変換系エフェクトの共通フラグメント。入力テクセルを座標そのまま
+        // 読み、mode ごとの数式で書き換える。いずれも本家が使う D2D 組み込み
+        // エフェクト（Invert / Sepia / Tint / Exposure / GammaTransfer /
+        // Posterize / LinearTransfer）と、本家カスタムシェーダの単色化に
+        // 対応する。入力は Premultiplied 前提。
+        // mode: 0=Invert, 1=Monocolorization, 2=Sepia, 3=Tint, 4=Exposure,
+        //       5=Gamma, 6=Posterize, 7=LinearTransfer
+        struct ColorEffectUniforms {
+            uint mode;
+            float4 param0;
+            float4 param1;
+        };
+
+        fragment float4 ymm4ColorEffectFragment(
+            VertexOut in [[stage_in]],
+            texture2d<float> input [[texture(0)]],
+            constant ColorEffectUniforms &uniforms [[buffer(0)]]
+        ) {
+            float4 color = input.read(uint2(in.position.xy));
+            float alpha = color.a;
+            switch (uniforms.mode) {
+                case 0: {
+                    // Invert: 直色の反転を Premultiplied で表すと a - rgb。
+                    color = float4(alpha - color.rgb, alpha);
+                    break;
+                }
+                case 1: {
+                    // 単色化: 輝度で基準色を調変し、Strength で原画と混合する。
+                    // param0 = 基準色 (Premultiplied), param1 = (Strength,
+                    // KeepBrightness ? 1 : 0, 基準色の輝度, 0)。
+                    float3 straight = alpha > 0.0 ? color.rgb / alpha : float3(0.0);
+                    float gray = dot(straight, float3(0.299, 0.587, 0.114));
+                    float tintAlpha = uniforms.param0.a;
+                    float3 tint = tintAlpha > 0.0
+                        ? uniforms.param0.rgb / tintAlpha : float3(0.0);
+                    float3 tinted;
+                    if (uniforms.param1.y > 0.5) {
+                        float tintLuma = uniforms.param1.z;
+                        tinted = tintLuma > 0.0
+                            ? tint * (gray / tintLuma) : float3(0.0);
+                    } else {
+                        tinted = tint * gray;
+                    }
+                    float3 mixed = mix(straight, tinted, uniforms.param1.x);
+                    color = float4(mixed * alpha, alpha);
+                    break;
+                }
+                case 2: {
+                    // Sepia: param0 = (Intensity, CrossFade の Weight, 0, 0)。
+                    // D2D Sepia（セピア行列と輝度グレーの混合）の出力を
+                    // Weight で原画と CrossFade する本家の構成を1パスに畳む。
+                    float3 straight = alpha > 0.0 ? color.rgb / alpha : float3(0.0);
+                    float gray = dot(straight, float3(0.2126, 0.7152, 0.0722));
+                    float3 sepia = float3(
+                        dot(straight, float3(0.393, 0.769, 0.189)),
+                        dot(straight, float3(0.349, 0.686, 0.168)),
+                        dot(straight, float3(0.272, 0.534, 0.131)));
+                    float3 tone = mix(float3(gray), sepia, uniforms.param0.x);
+                    float3 mixed = mix(straight, tone, uniforms.param0.y);
+                    color = float4(mixed * alpha, alpha);
+                    break;
+                }
+                case 3: {
+                    // Tint: param0 = 色 (Premultiplied の Vector4)。成分ごとの
+                    // 乗算（D2D Tint の定義どおり）。
+                    color = color * uniforms.param0;
+                    break;
+                }
+                case 4: {
+                    // Exposure: param0.x = 2^EV。色成分だけを拡縮する。
+                    color = float4(color.rgb * uniforms.param0.x, alpha);
+                    break;
+                }
+                case 5: {
+                    // GammaTransfer: param0 = (R, G, B, A) の指数。
+                    // Premultiplied の各成分へ独立に pow を適用する。
+                    color = float4(
+                        pow(color.r, uniforms.param0.x),
+                        pow(color.g, uniforms.param0.y),
+                        pow(color.b, uniforms.param0.z),
+                        pow(alpha, uniforms.param0.w));
+                    break;
+                }
+                case 6: {
+                    // Posterize: param0.xyz = (R, G, B) の階調数。
+                    // 離散転送（テーブル値 i/(n-1), 添字 floor(v*n) を n-1 で
+                    // クランプ）と等価な量子化。
+                    float3 counts = uniforms.param0.xyz;
+                    color = float4(
+                        min(floor(color.r * counts.x), counts.x - 1.0) / (counts.x - 1.0),
+                        min(floor(color.g * counts.y), counts.y - 1.0) / (counts.y - 1.0),
+                        min(floor(color.b * counts.z), counts.z - 1.0) / (counts.z - 1.0),
+                        alpha);
+                    break;
+                }
+                case 7: {
+                    // LinearTransfer: param0 = 傾き (RGBA), param1 = 切片 (RGBA)。
+                    color = color * uniforms.param0 + uniforms.param1;
+                    break;
+                }
+                default:
+                    break;
+            }
+            return color;
+        }
+
+        // ガウスぼかしの1パス。重みは対称であるため中心と片側だけを持つ。
+        // mapScale / mapOffset は入力 uv への写像（縮小・境界拡張を伴う
+        // 準備パス用。通常パスでは恒等写像）。
+        struct BlurUniforms {
+            float2 step;
+            float2 mapScale;
+            float2 mapOffset;
+            int radius;
+        };
+
+        fragment float4 ymm4BlurFragment(
+            VertexOut in [[stage_in]],
+            texture2d<float> input [[texture(0)]],
+            sampler inputSampler [[sampler(0)]],
+            constant BlurUniforms &uniforms [[buffer(0)]],
+            constant float *weights [[buffer(1)]]
+        ) {
+            float2 uv = in.uv * uniforms.mapScale + uniforms.mapOffset;
+            float4 acc = input.sample(inputSampler, uv) * weights[0];
+            for (int i = 1; i <= uniforms.radius; i++) {
+                float2 offset = uniforms.step * float(i);
+                acc += (input.sample(inputSampler, uv + offset)
+                      + input.sample(inputSampler, uv - offset)) * weights[i];
+            }
+            return acc;
+        }
+
+        // 矩形モザイク。スレッドがセル1つを担当し、セル内のテクセル平均を
+        // セル全体へ書き戻す。セルの格子は入力の左上（テクセル原点）に
+        // 固定する（本家カスタムシェーダの InputRect 基準に相当）。
+        struct MosaicUniforms {
+            float size;
+            uint width;
+            uint height;
+        };
+
+        kernel void ymm4MosaicKernel(
+            texture2d<float, access::read> input [[texture(0)]],
+            texture2d<float, access::write> output [[texture(1)]],
+            constant MosaicUniforms &uniforms [[buffer(0)]],
+            uint2 cell [[thread_position_in_grid]]
+        ) {
+            float size = max(uniforms.size, 1.0);
+            int x0 = max(int(ceil(float(cell.x) * size - 0.5)), 0);
+            int y0 = max(int(ceil(float(cell.y) * size - 0.5)), 0);
+            int x1 = min(int(ceil(float(cell.x + 1) * size - 0.5)), int(uniforms.width));
+            int y1 = min(int(ceil(float(cell.y + 1) * size - 0.5)), int(uniforms.height));
+            if (x0 >= x1 || y0 >= y1) {
+                return;
+            }
+            float4 sum = float4(0.0);
+            for (int y = y0; y < y1; y++) {
+                for (int x = x0; x < x1; x++) {
+                    sum += input.read(uint2(uint(x), uint(y)));
+                }
+            }
+            float4 average = sum / float((x1 - x0) * (y1 - y0));
+            for (int y = y0; y < y1; y++) {
+                for (int x = x0; x < x1; x++) {
+                    output.write(average, uint2(uint(x), uint(y)));
+                }
+            }
         }
         """
 }

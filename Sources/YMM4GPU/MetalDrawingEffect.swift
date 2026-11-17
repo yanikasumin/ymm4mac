@@ -93,6 +93,8 @@ public final class MetalDrawingEffect: DrawingEffectProcessor, PlaneSplitGeometr
                 image: MetalImage(
                     texture: input.texture,
                     bounds: input.bounds,
+                    texturePlaneRect: input.texturePlaneRect,
+                    planeOffset: input.planeOffset,
                     transform: combined,
                     opacity: drawDescription.opacity,
                     interpolation: drawDescription.zoomInterpolationMode
