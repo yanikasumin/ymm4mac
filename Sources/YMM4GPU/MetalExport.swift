@@ -182,12 +182,12 @@ public final class MetalExportVideoProvider: VideoFrameProviding {
         try composer.update(time: TimeSpanValue(seconds: seconds), usage: .exporting)
         guard let output = composer.output else {
             throw ExportError(
-                severity: .fatal, message: "フレーム \(frame) の合成出力がありません"
+                cause: .unresolvable, message: "フレーム \(frame) の合成出力がありません"
             )
         }
         guard devices.readBGRA(from: output, into: &buffer.bytes) else {
             throw ExportError(
-                severity: .fatal, message: "フレーム \(frame) の読み戻しに失敗しました"
+                cause: .unresolvable, message: "フレーム \(frame) の読み戻しに失敗しました"
             )
         }
         onFrameRendered?(frame)

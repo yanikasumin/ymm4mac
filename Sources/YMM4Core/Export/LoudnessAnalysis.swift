@@ -248,6 +248,55 @@ public enum LoudnessAnalysis {
         }
     }
 
+    // MARK: - 解析計画（本家 VideoFileWriter の分岐 W6-6.1）
+
+    /// 解析計画。音声を読み直す解析が必要かどうかと、不要な場合に
+    /// そのまま確定する倍率を表す。
+    ///
+    /// 本家 `VideoFileWriter.CreateFileAsync` は、Loudness=Disabled かつ
+    /// Compressor=Disabled では解析ブロック自体に入らず、
+    /// Loudness=Disabled かつ Compressor=Custom（固定 Ratio）では
+    /// 倍率を設定するだけで音声を読み直さない。呼び出し側は音声を
+    /// 読む前にこの計画で判定すること（EX17-05 の是正）。
+    public struct Plan: Equatable, Sendable {
+        /// 音声を読み直す解析が必要かどうか。
+        public var requiresReading: Bool
+        /// 解析が不要な場合にそのまま確定する音量倍率。
+        public var volumeRate: Float
+        /// 解析が不要な場合にそのまま確定するコンプレッサ倍率。
+        public var compressorRate: Float
+
+        public init(requiresReading: Bool, volumeRate: Float, compressorRate: Float) {
+            self.requiresReading = requiresReading
+            self.volumeRate = volumeRate
+            self.compressorRate = compressorRate
+        }
+    }
+
+    /// 設定から解析計画を立てる（本家 W6-6.1 の分岐）。
+    public static func plan(
+        loudness: LoudnessNormalizationSettings,
+        compressor: CompressorSettings
+    ) -> Plan {
+        if loudness.mode == .disabled, compressor.ratioMode == .custom {
+            return Plan(requiresReading: false, volumeRate: 1, compressorRate: compressor.ratio)
+        }
+        let requiresReading =
+            loudness.mode != .disabled || compressor.ratioMode != .disabled
+        return Plan(requiresReading: requiresReading, volumeRate: 1, compressorRate: 1)
+    }
+
+    /// 解析を行わない場合の結果。計画の倍率がそのまま確定値になり、
+    /// 測定値は初期値（ピーク・ラウドネスとも −60）のままになる。
+    public static func skippedResult(for plan: Plan) -> LoudnessAnalysisResult {
+        LoudnessAnalysisResult(
+            analysisPerformed: false,
+            volumeRate: plan.volumeRate,
+            compressorRate: plan.compressorRate,
+            loudnessFix: 0, averageLoudness: -60, peakDb: -60
+        )
+    }
+
     /// 本家の解析ループを、チャンク列に対する純粋計算として再現する。
     ///
     /// 中間経過（約5秒ごとの再計算）は本家では壁時計依存だが、
@@ -259,25 +308,71 @@ public enum LoudnessAnalysis {
         compressor: CompressorSettings,
         hz: Int
     ) -> LoudnessAnalysisResult {
-        var result = LoudnessAnalysisResult(
-            analysisPerformed: false, volumeRate: 1, compressorRate: 1,
-            loudnessFix: 0, averageLoudness: -60, peakDb: -60
-        )
-        guard loudness.mode != .disabled || compressor.ratioMode != .disabled else {
-            return result
-        }
-        if loudness.mode == .disabled, compressor.ratioMode == .custom {
-            result.compressorRate = compressor.ratio
-            return result
-        }
-        result.analysisPerformed = true
-
-        let mode = loudness.mode
-        let analyzer: BS1770LoudnessAnalyzer? =
-            (mode == .downOnly || mode == .both) ? BS1770LoudnessAnalyzer(hz: hz) : nil
-        analyzer?.beginLongTermLoudness()
-
+        let plan = plan(loudness: loudness, compressor: compressor)
+        guard plan.requiresReading else { return skippedResult(for: plan) }
+        var accumulator = Accumulator(loudness: loudness, compressor: compressor, hz: hz)
         for chunk in chunks {
+            accumulator.consume(chunk)
+        }
+        return accumulator.finish()
+    }
+
+    /// ストリームからフレーム単位で読みながら解析する（本番経路）。
+    ///
+    /// 本家どおり固定長の1配列を使い回し、全区間をメモリに保持しない
+    /// （EX17-06 の是正。チャンク列版はテスト補助として残す）。
+    /// 解析計画が読み取り不要を示す場合はストリームへ一切触れない。
+    /// 読み方は `makeChunks` と同じ（固定長・ゼロ埋め・読み件数の保持）。
+    public static func analyze(
+        stream: AudioStream,
+        frameCount: Int,
+        loudness: LoudnessNormalizationSettings,
+        compressor: CompressorSettings,
+        hz: Int,
+        fps: Int
+    ) -> LoudnessAnalysisResult {
+        let plan = plan(loudness: loudness, compressor: compressor)
+        guard plan.requiresReading else { return skippedResult(for: plan) }
+        var accumulator = Accumulator(loudness: loudness, compressor: compressor, hz: hz)
+        let rawLength = hz * 2 / fps
+        let frameLength = rawLength - rawLength % 2
+        guard frameLength > 0, frameCount > 0 else { return accumulator.finish() }
+        var buffer = [Float](repeating: 0, count: frameLength)
+        for _ in 0..<frameCount {
+            for index in buffer.indices { buffer[index] = 0 }
+            let readCount = stream.read(into: &buffer, offset: 0, count: frameLength)
+            accumulator.consume(FrameChunk(samples: buffer, readCount: readCount))
+        }
+        return accumulator.finish()
+    }
+
+    /// 解析の累積器。チャンク列版とストリーミング版で、1チャンク分の
+    /// 取り込みと最終値の確定計算を共有する。
+    private struct Accumulator {
+        private var result: LoudnessAnalysisResult
+        private let loudness: LoudnessNormalizationSettings
+        private let compressor: CompressorSettings
+        private let analyzer: BS1770LoudnessAnalyzer?
+
+        init(
+            loudness: LoudnessNormalizationSettings,
+            compressor: CompressorSettings,
+            hz: Int
+        ) {
+            self.loudness = loudness
+            self.compressor = compressor
+            result = LoudnessAnalysisResult(
+                analysisPerformed: true, volumeRate: 1, compressorRate: 1,
+                loudnessFix: 0, averageLoudness: -60, peakDb: -60
+            )
+            let mode = loudness.mode
+            analyzer = (mode == .downOnly || mode == .both)
+                ? BS1770LoudnessAnalyzer(hz: hz) : nil
+            analyzer?.beginLongTermLoudness()
+        }
+
+        mutating func consume(_ chunk: FrameChunk) {
+            let mode = loudness.mode
             analyzer?.process(chunk.samples)
             if mode == .downMaximumVolume || mode == .upDownMaximumVolume {
                 updatePeak(chunk: chunk, result: &result)
@@ -294,32 +389,37 @@ public enum LoudnessAnalysis {
             }
         }
 
-        result.averageLoudness = analyzer?.endLongTermLoudness() ?? -60
-        if mode == .downOnly || mode == .both {
-            let fixed = fixLoudnessVolume(
-                target: loudness.target, average: result.averageLoudness, mode: mode
-            )
-            result.loudnessFix = fixed.loudnessFix
-            result.volumeRate = fixed.volumeRate
+        mutating func finish() -> LoudnessAnalysisResult {
+            let mode = loudness.mode
+            result.averageLoudness = analyzer?.endLongTermLoudness() ?? -60
+            if mode == .downOnly || mode == .both {
+                let fixed = fixLoudnessVolume(
+                    target: loudness.target, average: result.averageLoudness, mode: mode
+                )
+                result.loudnessFix = fixed.loudnessFix
+                result.volumeRate = fixed.volumeRate
+            }
+            if mode == .downMaximumVolume || mode == .upDownMaximumVolume {
+                let effectivePeak = mode == .downMaximumVolume
+                    ? max(result.peakDb, 0) : result.peakDb
+                result.volumeRate = fixLoudnessVolume(
+                    target: 0, average: effectivePeak, mode: mode
+                ).volumeRate
+            } else if compressor.ratioMode == .auto {
+                result.compressorRate = compressorRate(
+                    peakDb: result.peakDb + result.loudnessFix, settings: compressor
+                )
+            } else if compressor.ratioMode == .custom {
+                result.compressorRate = compressor.ratio
+            }
+            return result
         }
-        if mode == .downMaximumVolume || mode == .upDownMaximumVolume {
-            let effectivePeak = mode == .downMaximumVolume
-                ? max(result.peakDb, 0) : result.peakDb
-            result.volumeRate = fixLoudnessVolume(
-                target: 0, average: effectivePeak, mode: mode
-            ).volumeRate
-        } else if compressor.ratioMode == .auto {
-            result.compressorRate = compressorRate(
-                peakDb: result.peakDb + result.loudnessFix, settings: compressor
-            )
-        } else if compressor.ratioMode == .custom {
-            result.compressorRate = compressor.ratio
-        }
-        return result
     }
 
-    /// ストリームから本家の読み方でチャンク列を組み立てる。
+    /// ストリームから本家の読み方でチャンク列を組み立てる（テスト補助）。
     ///
+    /// 全フレーム分の配列を蓄積するため、本番経路では使わない
+    /// （本番は `analyze(stream:...)` のストリーミング版。EX17-06）。
     /// 1フレームの配列長は `Hz * 2 / FPS`（整数除算）を偶数へ切り捨てた
     /// 固定長で、毎回ゼロ初期化してから読み、読み切れなかった尾部は
     /// ゼロ埋めのままチャンクに入る（W6-6.3）。

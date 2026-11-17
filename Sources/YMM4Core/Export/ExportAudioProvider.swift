@@ -38,18 +38,26 @@ public final class TimelineExportAudioProvider: AudioFrameProviding {
         self.timeline = timeline
         let info = timeline.videoInfo
 
-        // 解析パス（本家の読み直し）。チャンクの組み立て方は本家の
-        // 固定長配列方式（W6-6.3）を LoudnessAnalysis 側が担う。
-        let analysisMixer = TimelineAudioMixer(timeline: timeline, factory: factory)
-        let chunks = LoudnessAnalysis.makeChunks(
-            from: analysisMixer,
-            frameCount: timeline.length,
-            hz: info.hz,
-            fps: info.fps
-        )
-        let result = LoudnessAnalysis.analyze(
-            chunks: chunks, loudness: loudness, compressor: compressor, hz: info.hz
-        )
+        // 解析パス（本家の読み直し）。まず解析計画で要否を判定し、
+        // 不要な設定（Loudness=Disabled かつ Compressor=Disabled /
+        // Custom）ではミキサー自体を生成せず音声を一切読まない
+        // （本家 W6-6.1、EX17-05）。必要な場合は固定長配列を使い回す
+        // ストリーミング解析で全区間を保持しない（W6-6.3、EX17-06）。
+        let plan = LoudnessAnalysis.plan(loudness: loudness, compressor: compressor)
+        let result: LoudnessAnalysisResult
+        if plan.requiresReading {
+            let analysisMixer = TimelineAudioMixer(timeline: timeline, factory: factory)
+            result = LoudnessAnalysis.analyze(
+                stream: analysisMixer,
+                frameCount: timeline.length,
+                loudness: loudness,
+                compressor: compressor,
+                hz: info.hz,
+                fps: info.fps
+            )
+        } else {
+            result = LoudnessAnalysis.skippedResult(for: plan)
+        }
         analysisResult = result
 
         // 本書き出し。新しいミキサーへ DynamicsProcessor を被せる。

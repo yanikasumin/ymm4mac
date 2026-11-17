@@ -79,9 +79,20 @@ func exportSummaryText(
     var lines: [String] = []
     switch outcome.completion {
     case .completed:
-        lines.append("完了: \(outputURL.path)")
+        // finalize が成功しても、両ストリーム無効の構成では成果物
+        // ファイルが生成されない（EX17-07）。パスを表示して
+        // ファイルがあるかのように見せない。
+        lines.append(
+            outcome.outputProduced
+                ? "完了: \(outputURL.path)"
+                : "完了（成果物ファイルは生成されませんでした）"
+        )
     case .cancelled:
-        lines.append("キャンセルされました（出力は finalize 済み）")
+        lines.append(
+            outcome.outputProduced
+                ? "キャンセルされました（出力は finalize 済み）"
+                : "キャンセルされました"
+        )
     case .failed:
         lines.append("失敗: \(outcome.error?.message ?? "不明なエラー")")
     }
