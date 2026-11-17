@@ -397,4 +397,318 @@ public final class MetalFrameLineProcessor: MetalEffectProcessor {
     }
 }
 
+/// グラデーションのユニフォーム（MetalGraphics の GradientUniforms と一致）。
+struct GradientPassUniforms {
+    var outputOrigin: SIMD2<Float>
+    var outputSize: SIMD2<Float>
+    var center: SIMD2<Float>
+    var sinCos: SIMD2<Float>
+    var halfSize: Float
+    var opacity: Float
+    var type: UInt32
+    var extendMode: UInt32
+    var stopCount: UInt32
+    var pad0: Float
+}
+
+/// グラデーション。本家 `GradientEffect`（Issue #45）。
+/// 入力境界と同じ寸法の画像へブラシを描く: 線形は中心 (X, Y)・回転 θ の
+/// ブラシ空間で t = (−dx・sinθ + dy・cosθ) / (2h) + 0.5
+/// （h = max(Size/2, 0.01)）、円形は t = 中心からの距離 / (Size/2)。
+/// 凸形はストップを CPU 側で鏡像化して線形として扱う（本家どおり）。
+/// ストップ間の補間は格納値のまま（D2D の GAMMA_2_2 = sRGB 空間の
+/// 線形補間。本家が使う Vortice の CreateGradientStopCollection の
+/// 既定で確認）。ブラシ不透明度 Opacity/100 を掛け、入力の上へ
+/// SourceOver し、最後に入力 α でマスクする（本家の連鎖）。
+/// 混合モードが通常以外の場合は通常合成へ落とす（MAC-0012 台帳の
+/// 既存方針）。形状が unknown の場合は素通し。
+public final class MetalGradientProcessor: MetalEffectProcessor {
+    private let definition: GradientEffectDefinition
+
+    public init(context: MetalGraphicsContext, definition: GradientEffectDefinition) {
+        self.definition = definition
+        super.init(context: context)
+    }
+
+    override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
+        let type: UInt32
+        var stops = definition.stops
+        switch definition.gradientType {
+        case .linear:
+            type = 0
+        case .round:
+            type = 1
+        case .convex:
+            // 凸形: ストップを半分へ圧縮したものと、その鏡像を連結する。
+            let forward = stops.map {
+                GradientStopValue(offset: $0.offset / 2, color: $0.color)
+            }
+            let mirrored = stops.reversed().map {
+                GradientStopValue(offset: 1 - $0.offset / 2, color: $0.color)
+            }
+            stops = forward + mirrored
+            type = 0
+        case .unknown:
+            return input
+        }
+        guard !stops.isEmpty else { return input }
+        let size = evaluate(definition.size, description)
+        // 円形で Size = 0 のとき本家は半径 0 のブラシになる（未計測）。
+        // ゼロ除算だけを避け、見た目は最終ストップ色一色に倒す。
+        let halfSize = max(size / 2, 0.01)
+        let angle = evaluate(definition.rotation, description) * Double.pi / 180
+        let extend: UInt32 = switch definition.extendMode {
+        case .wrap: 1
+        case .mirror: 2
+        default: 0
+        }
+        var uniforms = GradientPassUniforms(
+            outputOrigin: SIMD2<Float>(
+                Float(input.bounds.left), Float(input.bounds.top)),
+            outputSize: SIMD2<Float>(
+                Float(input.bounds.right - input.bounds.left),
+                Float(input.bounds.bottom - input.bounds.top)),
+            center: SIMD2<Float>(
+                Float(evaluate(definition.x, description)),
+                Float(evaluate(definition.y, description))),
+            sinCos: SIMD2<Float>(Float(sin(angle)), Float(cos(angle))),
+            halfSize: Float(halfSize),
+            opacity: Float(evaluate(definition.opacity, description) / 100),
+            type: type,
+            extendMode: extend,
+            stopCount: UInt32(stops.count),
+            pad0: 0
+        )
+        var colors: [SIMD4<Float>] = stops.map { stop in
+            SIMD4<Float>(
+                Float(stop.color.red) / 255, Float(stop.color.green) / 255,
+                Float(stop.color.blue) / 255, Float(stop.color.alpha) / 255
+            )
+        }
+        var offsets: [Float] = stops.map { Float($0.offset) }
+        let outWidth = input.bounds.right - input.bounds.left
+        let outHeight = input.bounds.bottom - input.bounds.top
+        guard outWidth > 0, outHeight > 0 else { return input }
+        let gradientTexture = try makeTexture(
+            width: Int(ceil(outWidth)), height: Int(ceil(outHeight)),
+            usage: [.renderTarget, .shaderRead]
+        )
+        try executeRenderPass(
+            output: gradientTexture, pipeline: context.devices.gradientPipeline
+        ) { encoder in
+            encoder.setFragmentBytes(
+                &uniforms, length: MemoryLayout<GradientPassUniforms>.size, index: 0
+            )
+            encoder.setFragmentBytes(
+                &colors, length: MemoryLayout<SIMD4<Float>>.stride * colors.count, index: 1
+            )
+            encoder.setFragmentBytes(
+                &offsets, length: MemoryLayout<Float>.stride * offsets.count, index: 2
+            )
+        }
+        let gradient = MetalImage(texture: gradientTexture, bounds: input.bounds)
+        let blended = try renderComposite(
+            top: gradient, bottom: input, outputBounds: input.bounds, mode: 0
+        )
+        return try renderWarp(
+            input: blended, mask: input, outputBounds: input.bounds, mode: 3
+        )
+    }
+}
+
+/// 輪郭のユニフォーム（MetalGraphics の OutlineUniforms と一致）。
+struct OutlinePassUniforms {
+    var inputPlane: SIMD4<Float>
+    var inputOffset: SIMD2<Float>
+    var outputOrigin: SIMD2<Float>
+    var outputSize: SIMD2<Float>
+    var stepUV: Float
+    var smoothness: Float
+    var samples: UInt32
+    var mode: UInt32
+    var isAngular: UInt32
+    var pad0: Float
+}
+
+/// 輪郭。本家 `OutlineEffect`（Issue #45）。
+/// 連鎖（OutlineEffect.cs の実測）: 太さを Math.Round(x, 1)
+/// （.NET 既定 = 偶数丸め）→ DecomposeThicknessToSteps（2^k ずつ
+/// 切り出し降順）で OutlineLite を多段に掛け（Samples =
+/// min(Quality, (int)(step×2)² + 1)、出力境界は各段 ceil(step)
+/// ずつ拡大）→ FeatherAlpha（Smoothness/100）→ ブラシ単色塗りを
+/// AlphaMask → ガウスぼかし σ = Blur → 不透明度 Opacity/100 →
+/// 原画との合成（IsOutlineOnly または移動ありは DestinationOut の
+/// リング、それ以外は原画を上へ SourceOver）→ 回転・拡縮・平行移動
+/// （行ベクトル順: 回転→拡縮→移動、原点中心）→ 移動ありかつ
+/// 輪郭のみでない場合は膨張境界で切り取った原画の上へ最終合成。
+/// OutlineLite のサンプル距離は本家シェーダの実測どおり両軸とも
+/// StepPx / 入力テクスチャ高さ。単色ブラシ以外は素通し（ブラシ
+/// サブシステムが差し替え点）。移動なしの場合の恒等変換パスは
+/// 省略する（等値サンプリングのため結果は同一）。
+public final class MetalOutlineProcessor: MetalEffectProcessor {
+    private let definition: OutlineEffectDefinition
+
+    public init(context: MetalGraphicsContext, definition: OutlineEffectDefinition) {
+        self.definition = definition
+        super.init(context: context)
+    }
+
+    /// 本家 DecomposeThicknessToSteps の写し（float 演算の切り出し）。
+    public static func decomposeThickness(_ thickness: Double) -> [Double] {
+        var steps: [Double] = []
+        var remaining = thickness
+        var k = 0
+        while true {
+            let step = min(remaining, pow(2.0, Double(k)))
+            if step <= 0 { break }
+            steps.append(step)
+            remaining -= step
+            k += 1
+        }
+        if steps.isEmpty { steps = [0] }
+        return steps.sorted(by: >)
+    }
+
+    override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
+        guard let brushColor = solidBrushColor(definition.strokeBrush) else {
+            return input
+        }
+        let quality = Int(evaluate(definition.quality, description))
+        let thickness = (evaluate(definition.strokeThickness, description) * 10)
+            .rounded(.toNearestOrEven) / 10
+        var current = input
+        for step in Self.decomposeThickness(thickness) {
+            let samples = min(quality, Int(pow(step * 2, 2)) + 1)
+            let expand = ceil(step)
+            let bounds = RectF(
+                left: current.bounds.left - expand, top: current.bounds.top - expand,
+                right: current.bounds.right + expand, bottom: current.bounds.bottom + expand
+            )
+            current = try renderOutlinePass(
+                input: current, outputBounds: bounds, mode: 0,
+                stepUV: Float(step / Double(current.texture.height)),
+                smoothness: 0, samples: max(1, samples),
+                isAngular: definition.isAngular
+            )
+        }
+        let dilatedBounds = current.bounds
+        // FeatherAlpha（Smoothness は % → 0〜1）。
+        let feathered = try renderOutlinePass(
+            input: current, outputBounds: dilatedBounds, mode: 1,
+            stepUV: 0,
+            smoothness: Float(evaluate(definition.smoothness, description) / 100),
+            samples: 1, isAngular: false
+        )
+        guard let fill = try renderRoundedRectFill(
+            context: context, rect: dilatedBounds, radius: 0,
+            color: brushColor, outputBounds: dilatedBounds
+        ) else { return nil }
+        var chain = try renderWarp(
+            input: fill, mask: feathered, outputBounds: dilatedBounds, mode: 3
+        )
+        let blur = evaluate(definition.blur, description)
+        if blur > 0 {
+            chain = try renderGaussianBlurred(input: chain, sigma: blur, hardBorder: false)
+        }
+        let opacity = evaluate(definition.opacity, description) / 100
+        if opacity != 1 {
+            chain = try renderColorEffect(
+                input: chain,
+                uniforms: ColorEffectUniforms(
+                    mode: 7,
+                    param0: SIMD4<Float>(
+                        Float(opacity), Float(opacity), Float(opacity), Float(opacity)),
+                    param1: .zero
+                )
+            )
+        }
+        let x = evaluate(definition.x, description)
+        let y = evaluate(definition.y, description)
+        let zoom = evaluate(definition.zoom, description)
+        let rotation = evaluate(definition.rotation, description)
+        let isMoved = x != 0 || y != 0 || zoom != 100 || rotation != 0
+        let unionBounds = input.bounds.union(chain.bounds)
+        var combined: MetalImage
+        if definition.isOutlineOnly || isMoved {
+            combined = try renderComposite(
+                top: input, bottom: chain, outputBounds: unionBounds, mode: 1
+            )
+        } else {
+            combined = try renderComposite(
+                top: input, bottom: chain, outputBounds: unionBounds, mode: 0
+            )
+        }
+        if isMoved {
+            let matrix = Matrix4x4.createRotationZ(rotation * Double.pi / 180)
+                * Matrix4x4.createScale(x: zoom / 100, y: zoom / 100, z: 1, center: .zero)
+                * Matrix4x4.createTranslation(x: x, y: y, z: 0)
+            let transformedBounds = MetalDrawingEffect.boundingRect(
+                of: combined.bounds, transformedBy: matrix
+            )
+            combined = try renderTransformed(
+                input: combined, matrix: matrix, outputBounds: transformedBounds,
+                interpolation: .linear
+            )
+        }
+        if isMoved && !definition.isOutlineOnly {
+            // 膨張境界で切り取った原画を下地にする（本家 Crop 相当:
+            // 平面写像は原画のまま、境界だけ膨張側へ付け替えることで
+            // 範囲外は borderSampler が透明として読む）。
+            let cropped = MetalImage(
+                texture: input.texture, bounds: dilatedBounds,
+                texturePlaneRect: input.texturePlaneRect,
+                planeOffset: input.planeOffset,
+                interpolation: input.interpolation
+            )
+            return try renderComposite(
+                top: combined, bottom: cropped,
+                outputBounds: dilatedBounds.union(combined.bounds), mode: 0
+            )
+        }
+        return combined
+    }
+
+    /// OutlineLite（mode 0）/ FeatherAlpha（mode 1）の1パス。
+    private func renderOutlinePass(
+        input: MetalImage,
+        outputBounds: RectF,
+        mode: UInt32,
+        stepUV: Float,
+        smoothness: Float,
+        samples: Int,
+        isAngular: Bool
+    ) throws -> MetalImage {
+        let outWidth = outputBounds.right - outputBounds.left
+        let outHeight = outputBounds.bottom - outputBounds.top
+        let outputTexture = try makeTexture(
+            width: Int(ceil(outWidth)), height: Int(ceil(outHeight)),
+            usage: [.renderTarget, .shaderRead]
+        )
+        var uniforms = OutlinePassUniforms(
+            inputPlane: planeVector(input),
+            inputOffset: SIMD2<Float>(
+                Float(input.planeOffset.x), Float(input.planeOffset.y)),
+            outputOrigin: SIMD2<Float>(
+                Float(outputBounds.left), Float(outputBounds.top)),
+            outputSize: SIMD2<Float>(Float(outWidth), Float(outHeight)),
+            stepUV: stepUV,
+            smoothness: smoothness,
+            samples: UInt32(max(1, samples)),
+            mode: mode,
+            isAngular: isAngular ? 1 : 0,
+            pad0: 0
+        )
+        try executeRenderPass(
+            output: outputTexture, pipeline: context.devices.outlinePipeline
+        ) { encoder in
+            encoder.setFragmentTexture(input.texture, index: 0)
+            encoder.setFragmentSamplerState(context.devices.borderSampler, index: 0)
+            encoder.setFragmentBytes(
+                &uniforms, length: MemoryLayout<OutlinePassUniforms>.size, index: 0
+            )
+        }
+        return MetalImage(texture: outputTexture, bounds: outputBounds)
+    }
+}
+
 #endif
