@@ -2,6 +2,39 @@
 
 更新: **2026-11-17**。現状: モデル層＋.ymmp 互換層（MAC-0005）＋編集操作・モデル残件（MAC-0007・0008）＋描画層の土台（MAC-0009、`Sources/YMM4Core/Rendering/`）＋合成の実行部（MAC-0010）＋映像アイテム範囲の是正（MAC-0011）＋GPU 実行器と基本 Source（MAC-0012、`Sources/YMM4GPU/`）＋音声パイプラインの芯（MAC-0013、`Sources/YMM4Core/Audio/`）＋テキスト描画と VoiceItem 実効値の共通解決（MAC-0014、`Sources/YMM4GPU/MetalTextSources.swift` と `Sources/YMM4Core/Items/VoiceItemJimaku.swift`）＋キャラクター参照の保存・解決契約の是正（MAC-0015）＋音声 QA（MAC-0016）＋書き出しの芯（MAC-0017、`Sources/YMM4Core/Export/`）＋映像エフェクト定義層と変換型処理器（MAC-0018、`Sources/YMM4Core/Effects/`）＋定義層の合成チェーン接続（MAC-0019）＋VoiceItem の字幕エフェクト解決の接続（MAC-0020）＋GPU 失敗の検出・通知契約（MAC-0021）＋GPU 処理系エフェクトの定義層（MAC-0022）＋GPU エフェクト Metal 処理器 第1段（MAC-0023、Mac 検証済み・統合済み）＋音声リサンプラの高品質化（MAC-0024）＋実 Source 群＝動画・シーン・フレームバッファ・立ち絵（MAC-0025、`Sources/YMM4GPU/MetalMediaSources.swift`）＋書き出しの実接続（MAC-0026、実エンコード検証済み）＋合成グループの Source（MAC-0027）＋書き出しの解析・結果表現の是正（MAC-0030）＋エフェクト編集の入れ子未知フィールド保持（MAC-0032）＋GPU エフェクト Metal 処理器 第2段・内部合成への供給元伝播・上下反転是正（MAC-0028）＋GPU テクスチャ確保失敗のエラー伝播統一（MAC-0033）＋DebugApp フロントエンドの形（PR #32）＋レベルメーターの本家構成化と誤記修正（UI32-01）まで実装済み。デバッグ用アプリ（MAC-0006、`Apps/DebugApp/`）は本人の Mac でビルド・実ファイル読み込み・往復まで確認完了し、合成プレビュー欄と本家ワークスペースの形（PR #32）を備える。現行ツリーはクリーン検証でルート＋DebugApp ともビルド成功・警告0（2026-11-17）。テストは Linux 上で全414件合格（QA24-01 のテスト差し替えで413件から1件増）。
 
+## 作業環境とリポジトリ
+
+- Macネイティブ開発: https://github.com/yanikasumin/ymm4mac （Public、main。2026-11-16にオーナーが変更）
+- 本家解析: https://github.com/yanikasumin/ymm4-native-research （Public、2026-11-16にオーナーが変更）
+- 要件定義: https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/REQUIREMENTS.md
+- 要件定義の履歴: [初版v0.1 PR #1](https://github.com/yanikasumin/ymm4-native-research/pull/1)はマージ済み。オーナーの承認は**Muse経由の伝達**で受領し、v1.0が2026-11-16に正式発効。[正式化PR #2](https://github.com/yanikasumin/ymm4-native-research/pull/2)はマージ済み（`1fbc38827552272cb20bf28b960f264b668a29ea`）。本人の原発言の正確な日時は不明。
+- 本家解析の基準コミット: `9e2ea95e88d2e20cb30b7040f53ef521a4c0b412`
+- 開発初期化の最初のコミット: `eb4201ceaad6997406e5c8aaea779ce8e1b02858`
+- 既存Wine系の別プロジェクト: https://github.com/yanikasumin/YMM4M-custom （対象外）
+
+## 現時点で完了
+
+- 新しい開発リポジトリの作成を確認（当初Private、現在はPublic）。
+- READMEと開発ルール・As-built・詳細実装記録の最初の構成を設置。
+- 本家解析や要件は解析repoに残し、相互参照するようにした。
+- **製品 UI の実装はまだない。** GPU 合成は MAC-0012 で基礎（Metal 実行器＋画像・図形 Source）が入り、MAC-0014 でテキスト・字幕 Source が入り、MAC-0025 で動画・シーン・フレームバッファ・立ち絵の実 Source が入り、MAC-0027 で合成グループの Source も入って Source は全種別が揃った（AVFoundation 非対応コンテナは未対応のまま）。音声は MAC-0013 でパイプラインの芯（ストリーム基盤・処理器連鎖・ミックス・グループバス）が入り、MAC-0016 で QA（ドリフト実測とシーク量子化の修正）を行い、MAC-0024 でリサンプラの生成芯を帯域制限補間へ高品質化し、MAC-0026 でデコード実体（AVFoundation）と書き出し接続が入った（ユーザーエフェクト・再生接続は未実装）。書き出しは MAC-0017 で芯（状態機械・FFmpeg ライター・ラウドネス）が入り、MAC-0026 でフレーム供給・音声ミックスとの接続と実エンコード検証まで完了した。映像エフェクトは MAC-0018 で定義層と変換型処理器が入り、MAC-0019 で合成チェーンへの接続（生保持のまま消費側で型付き復元）、MAC-0020 で VoiceItem の字幕エフェクト解決の接続まで済み、MAC-0022 で GPU 処理系73種の定義層も揃った。GPU 処理系の処理器（Metal）は第1段10種を MAC-0023 で実装し Mac 検証済みで統合済み、残り63種は次段。GPU 実行の異常系は MAC-0021 で失敗の検出・通知契約を実装済み。
+
+## 次にすること
+
+1. 統合待ちの4ブロック（書き出しスナップショット／EffectItem＋クリッピング／TransitionSource／リサンプラ Kaiser 96 の製品化）を main へ統合する。MAC 番号の衝突（MAC-0034 の二重使用）もここで解消する。
+2. 統合が終わったら機能追加を止め、リポジトリ構造の全面整理（コード再配置と文書再編）を実施する。
+3. 整理の完了後に機能作業を再開する（残りの内蔵エフェクト処理器の実処理化、実時間再生、VoiceItem 音声供給。締切は 2026-11-24）。
+4. 正式な開発基準は要件定義 v1.2。以降の要件変更・例外実装には本人の事前承認を求める。
+
+## 中断前チェックリスト
+
+- [ ] 変更したファイル・シンボル・コミットが実装台帳に記録されている
+- [ ] 変更の理由・具体的動作・本家との差分・Mac固有リソース所有権が説明されている
+- [ ] 重要な実装の結果と失敗条件、テスト手順が記録されている
+- [ ] As-built、課題、解析側の互換マトリクスが整合している
+- [ ] 要件逸脱は事前承認を得ており、未承認例外をマージしていない
+- [ ] 次の作業と現在のブランチ・コミットが書かれている
+
 ## 2026-11-17 更新 — 台帳転記（PR #32・UI32-01）と全体監査の残作業（AUD-01〜04・06）
 
 - **転記（AUD-05 の是正の一部）**: PR #32（DebugApp フロントエンドの形）と UI32-01（レベルメーターの本家構成化＋「シーインタブ」誤記修正）は実施済みだったが IMPLEMENTATION_LOG / STATUS / HANDOFF に項目が無かった（全体監査 A-5(2)）。本バッチで IMPLEMENTATION_LOG に PR32 項と UI32-01 項を追加し、STATUS・本書の現行状態を同期した。作業内容の正本は解析側 `analysis-notes/UI-FRONTEND-DIFF.md`（形と接続台帳）と `REVIEW-DISPOSITION-MAC0028-FRONTEND.md`（UI32-01 の処分と本家構成の確定内容）。
@@ -213,39 +246,6 @@
 - 本人の指示「明日の朝までに実ソフトでデバッグできる段階まで」で追加。開き方: 本人の Mac で `Apps/DebugApp/Package.swift` を Xcode で開いて実行する（または同ディレクトリで `swift run`）。
 - できること: .ymmp を開く（読み込み診断＝未知 $type の読み飛ばし・型移行の一覧つき）、タイムライン／アイテム一覧、VisualItem の X/Y/Z アニメーションのスクラブ評価、往復固定点チェック、コピー保存。サンプル Animation の評価スクラブも残してある。
 - 注意: 製品 UI ではなく検証の殻。UI 実装方式は未確定のまま。Package の platforms 宣言はハーネス都合で macOS 14 としてある（製品の最低対応は macOS 26.0 のまま）。
-
-## 作業環境とリポジトリ
-
-- Macネイティブ開発: https://github.com/yanikasumin/ymm4mac （Public、main。2026-11-16にオーナーが変更）
-- 本家解析: https://github.com/yanikasumin/ymm4-native-research （Public、2026-11-16にオーナーが変更）
-- 要件定義: https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/REQUIREMENTS.md
-- 要件定義の履歴: [初版v0.1 PR #1](https://github.com/yanikasumin/ymm4-native-research/pull/1)はマージ済み。オーナーの承認は**Muse経由の伝達**で受領し、v1.0が2026-11-16に正式発効。[正式化PR #2](https://github.com/yanikasumin/ymm4-native-research/pull/2)はマージ済み（`1fbc38827552272cb20bf28b960f264b668a29ea`）。本人の原発言の正確な日時は不明。
-- 本家解析の基準コミット: `9e2ea95e88d2e20cb30b7040f53ef521a4c0b412`
-- 開発初期化の最初のコミット: `eb4201ceaad6997406e5c8aaea779ce8e1b02858`
-- 既存Wine系の別プロジェクト: https://github.com/yanikasumin/YMM4M-custom （対象外）
-
-## 現時点で完了
-
-- 新しい開発リポジトリの作成を確認（当初Private、現在はPublic）。
-- READMEと開発ルール・As-built・詳細実装記録の最初の構成を設置。
-- 本家解析や要件は解析repoに残し、相互参照するようにした。
-- **製品 UI の実装はまだない。** GPU 合成は MAC-0012 で基礎（Metal 実行器＋画像・図形 Source）が入り、MAC-0014 でテキスト・字幕 Source が入り、MAC-0025 で動画・シーン・フレームバッファ・立ち絵の実 Source が入り、MAC-0027 で合成グループの Source も入って Source は全種別が揃った（AVFoundation 非対応コンテナは未対応のまま）。音声は MAC-0013 でパイプラインの芯（ストリーム基盤・処理器連鎖・ミックス・グループバス）が入り、MAC-0016 で QA（ドリフト実測とシーク量子化の修正）を行い、MAC-0024 でリサンプラの生成芯を帯域制限補間へ高品質化し、MAC-0026 でデコード実体（AVFoundation）と書き出し接続が入った（ユーザーエフェクト・再生接続は未実装）。書き出しは MAC-0017 で芯（状態機械・FFmpeg ライター・ラウドネス）が入り、MAC-0026 でフレーム供給・音声ミックスとの接続と実エンコード検証まで完了した。映像エフェクトは MAC-0018 で定義層と変換型処理器が入り、MAC-0019 で合成チェーンへの接続（生保持のまま消費側で型付き復元）、MAC-0020 で VoiceItem の字幕エフェクト解決の接続まで済み、MAC-0022 で GPU 処理系73種の定義層も揃った。GPU 処理系の処理器（Metal）は第1段10種を MAC-0023 で実装し Mac 検証済みで統合済み、残り63種は次段。GPU 実行の異常系は MAC-0021 で失敗の検出・通知契約を実装済み。
-
-## 次にすること
-
-1. 要件定義v1.0を正式なベースラインとして維持し、以降の変更・例外実装には本人の事前承認を求める。
-2. [本家の6境界解析](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/11-RENDERING-OWNERSHIP-BOUNDARIES.md)を参照し、ChatGPTが次に提示する具体的な実装仕様を待って対象作業を確定する。Swift/C#、描画方式は未決定。
-3. 現実のコードと試験に基づいて実装を開始し、`IMPLEMENTATION_LOG.md`に自然言語で逐次説明する。
-4. 各セッションで実装のコードパス、コミット、テスト、未解決事項をここへ更新する。
-
-## 中断前チェックリスト
-
-- [ ] 変更したファイル・シンボル・コミットが実装台帳に記録されている
-- [ ] 変更の理由・具体的動作・本家との差分・Mac固有リソース所有権が説明されている
-- [ ] 重要な実装の結果と失敗条件、テスト手順が記録されている
-- [ ] As-built、課題、解析側の互換マトリクスが整合している
-- [ ] 要件逸脱は事前承認を得ており、未承認例外をマージしていない
-- [ ] 次の作業と現在のブランチ・コミットが書かれている
 
 ## 2026-11-16 更新 — 正式要件v1.0同期（本PRはレビュー待ち）
 

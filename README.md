@@ -4,7 +4,7 @@ macOSネイティブ版 YukkuriMovieMaker 4 移植プロジェクト。
 
 開発リポジトリ `yanikasumin/ymm4mac` と解析リポジトリ `yanikasumin/ymm4-native-research` は、ともに**Public**（2026-11-16にオーナーが変更）。
 
-**現状:** 開発リポジトリの初期設定中。映像編集機能の実装・動作はまだ確認されていません。
+**現状:** 実装進行中。モデル層・.ymmp互換層・描画（Metal）・音声・書き出しと、検証用のデバッグ用アプリ／製品UIの土台まで実装が進んでいる。現在地と未解決事項は [docs/STATUS.md](docs/STATUS.md)、作業規則は [AGENTS.md](AGENTS.md)、次にやることは [docs/HANDOFF.md](docs/HANDOFF.md) を参照。本家実機との互換テストは、本家を動かせる環境がないため未実施（検証は本家コードとの照合と自己往復の固定点確認に限定される）。
 
 ## 開発方針
 
