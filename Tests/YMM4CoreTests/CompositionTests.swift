@@ -167,6 +167,8 @@ private final class RecordingRenderTarget: RenderTarget {
     let log: EventLog
     private(set) var ops: [String] = []
     private(set) var disposed = false
+    /// close() で投げる失敗（失敗注入用。MAC-0021）。nil なら成功する。
+    var closeError: (any Error)?
 
     init(name: String, log: EventLog) {
         self.name = name
@@ -195,7 +197,11 @@ private final class RecordingRenderTarget: RenderTarget {
     }
 
     func endDraw() { record("end") }
-    func close() { record("close") }
+
+    func close() throws {
+        record("close")
+        if let closeError { throw closeError }
+    }
 
     func dispose() {
         disposed = true
@@ -206,13 +212,25 @@ private final class RecordingRenderTarget: RenderTarget {
 private final class RecordingTargetFactory: RenderTargetFactory {
     let log: EventLog
     private(set) var targets: [RecordingRenderTarget] = []
+    /// 生成する描画先の close() へ注入する失敗（失敗注入用。MAC-0021）。
+    var closeError: (any Error)?
+    /// closeError を注入する描画先の番号（1始まり）。nil なら全てに注入する。
+    var closeErrorTargetNumbers: Set<Int>?
 
     init(log: EventLog) {
         self.log = log
     }
 
     func makeTarget() -> any RenderTarget {
-        let target = RecordingRenderTarget(name: "T\(targets.count + 1)", log: log)
+        let number = targets.count + 1
+        let target = RecordingRenderTarget(name: "T\(number)", log: log)
+        if let numbers = closeErrorTargetNumbers {
+            if numbers.contains(number) {
+                target.closeError = closeError
+            }
+        } else {
+            target.closeError = closeError
+        }
         targets.append(target)
         return target
     }
@@ -825,6 +843,58 @@ final class TimelineComposerTests: XCTestCase {
             "end",
             "close",
         ])
+    }
+
+    // MAC-0021: 描画先の close() が失敗したら合成全体が失敗として伝わり、
+    // 不完全な画像が出力として公開されない（3つの close 呼び出し箇所を
+    // それぞれ観測する）。
+    func testItemTargetCloseFailurePropagates() throws {
+        let fixture = Fixture()
+        let item = makeVisualItem(TextItem(), frame: 0, length: 90, layer: 0)
+        fixture.timeline.items = [item]
+        fixture.registerSource(makeSource(log: fixture.log, imageLabel: "img"), for: item)
+        fixture.factory.closeError = FakeError()
+        let composer = fixture.makeComposer()
+
+        XCTAssertThrowsError(try composer.update(time: .zero, usage: .paused))
+        XCTAssertNil(composer.output)
+        // 失敗したアイテム側の描画先は公開されず、その場で解放される。
+        XCTAssertTrue(fixture.factory.targets[0].disposed)
+    }
+
+    func testComposerTargetCloseFailurePropagates() throws {
+        // アイテムが無いタイムラインでは合成側の描画先だけが作られるため、
+        // TimelineComposer 自身の close の失敗を直接観測できる。
+        let fixture = Fixture()
+        fixture.factory.closeError = FakeError()
+        let composer = fixture.makeComposer()
+
+        XCTAssertThrowsError(try composer.update(time: .zero, usage: .paused))
+        XCTAssertNil(composer.output)
+    }
+
+    func testFrameBufferBoundaryCloseFailurePropagates() throws {
+        let fixture = Fixture()
+        let frameBufferItem = makeVisualItem(FrameBufferItem(), frame: 0, length: 90, layer: 0)
+        let normalItem = makeVisualItem(TextItem(), frame: 0, length: 90, layer: 1)
+        fixture.timeline.items = [frameBufferItem, normalItem]
+        let frameBufferSource = FakeFrameBufferSource()
+        frameBufferSource.clearBackground = false
+        frameBufferSource.outputs = [StandardSourceOutput(
+            output: ImageReference(label: "fb-img"),
+            drawingEffect: FakeDrawingEffect(name: "DE-fb", log: fixture.log)
+        )]
+        fixture.registerSource(frameBufferSource, for: frameBufferItem)
+        fixture.registerSource(makeSource(log: fixture.log, imageLabel: "imgN"), for: normalItem)
+        // 境界で閉じられる合成側の描画先（T2）だけを失敗させる。
+        fixture.factory.closeError = FakeError()
+        fixture.factory.closeErrorTargetNumbers = [2]
+        let composer = fixture.makeComposer()
+
+        XCTAssertThrowsError(try composer.update(time: .zero, usage: .paused))
+        XCTAssertNil(composer.output)
+        // 境界の失敗は FrameBuffer の実行部更新へ進まない。
+        XCTAssertEqual(frameBufferSource.updateCount, 0)
     }
 
     func testItemUpdateFailureIsWrappedAndKeepsOutput() throws {
