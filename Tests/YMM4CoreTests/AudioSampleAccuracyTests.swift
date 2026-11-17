@@ -167,6 +167,62 @@ final class AudioSampleAccuracyTests: XCTestCase {
         }
     }
 
+    // MARK: - シークのタイブレーク（0.5 フレームちょうど）
+
+    func testSeekTieBreakRoundsToEvenFrame() {
+        // 44.1kHz では tick がちょうど半フレームに当たる位置が存在する:
+        // 50000 tick = 220.5 フレーム、150000 tick = 661.5 フレーム。
+        // InMemoryPCMProvider.seek の最近傍丸め（偶数丸め）では
+        // 220.5 → 220（下の偶数）、661.5 → 662（上の偶数）へ着地する
+        // （A16-QA 追加提案への対応、2026-11-17）。
+        let provider = rampProvider(frames: 44_100, hz: 44_100)
+        var buffer = [Float](repeating: 0, count: 2)
+        provider.seek(toTime: TimeSpanValue(ticks: 50_000))
+        XCTAssertEqual(provider.read(into: &buffer, offset: 0, count: 2), 2)
+        XCTAssertEqual(buffer, [220, 220])
+        provider.seek(toTime: TimeSpanValue(ticks: 150_000))
+        XCTAssertEqual(provider.read(into: &buffer, offset: 0, count: 2), 2)
+        XCTAssertEqual(buffer, [662, 662])
+    }
+
+    // MARK: - 44.1kHz で量子化されるループ長
+
+    func testLoopPeriodQuantizedByTimeSpanRoundTripAt44100() {
+        // 4411 フレーム（8822 サンプル）の 44.1kHz 素材は、Duration が
+        // TimeSpan 往復（PositionToTime → TimeToPosition、いずれも本家式
+        // の切り捨て）を通るため、ストリーム上の全長は 8820 サンプル
+        // （4410 フレーム）になる。ループのシーク折り返しはこの周期で
+        // 起きる。一方、読み取り側の折り返しは本家 LoopEffect と同じく
+        // 短い読み取り駆動であり、物理末尾（8822 サンプル）で起きる
+        // （A16-QA 追加提案への対応、2026-11-17）。
+        let provider = rampProvider(frames: 4411, hz: 44_100)
+        let fileStream = FileAudioStream(provider: provider)
+        XCTAssertEqual(fileStream.duration, 8820)
+
+        let loop = LoopAudioStream(isEnabled: true)
+        loop.input = fileStream
+        var buffer = [Float](repeating: 0, count: 2)
+        // 周期ちょうどへのシークは先頭へ折り返す。
+        loop.seek(to: 8820)
+        XCTAssertEqual(loop.read(into: &buffer, offset: 0, count: 2), 2)
+        XCTAssertEqual(buffer, [0, 0])
+        // 周期 + 200 サンプルは素材フレーム 100 へ着地する
+        // （PositionToTime → 最近傍丸めの往復でもサンプル厳密）。
+        loop.seek(to: 8820 + 200)
+        XCTAssertEqual(loop.read(into: &buffer, offset: 0, count: 2), 2)
+        XCTAssertEqual(buffer, [100, 100])
+
+        // 読み取り側: 物理末尾を跨ぐと先頭へ戻る。
+        loop.seek(to: 0)
+        var longBuffer = [Float](repeating: 0, count: 8822 + 4)
+        XCTAssertEqual(
+            loop.read(into: &longBuffer, offset: 0, count: 8822 + 4), 8822 + 4
+        )
+        XCTAssertEqual(longBuffer[8820], 4410)
+        XCTAssertEqual(longBuffer[8821], 4410)
+        XCTAssertEqual(Array(longBuffer[8822..<8826]), [0, 0, 1, 1])
+    }
+
     // MARK: - エコーの反復境界
 
     func testEchoTapsAndSeekConsistency() {
