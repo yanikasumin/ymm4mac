@@ -747,6 +747,18 @@
 
 **次の担当へ。** レポートの回収は `~/ymm4-work/YMM4MacAutoTest/latest.json`（Mac 上）。構造整理の各単位では、整理前後で release ビルドのレポートを取り、合成 p95 とリサンプラ実時間比の退行有無を比較すること。測定項目の追加は AutoTestJob の execute() へ足し、レポート形式を変える場合は formatVersion を上げる。
 
+#### MAC-0039 — DebugApp の .app バンドル化（IMPLEMENTED、Mac 検証済み。Dock 表示は未確認）
+
+**何を実装したか。** デモ版（DebugApp）は従来、ビルド済み実行ファイルを直接起動する形だったため、macOS の通常のアプリとして扱われず Dock にアイコンが出なかった（ウィンドウが他のアプリの後ろに埋もれて呼び出しにくい、という実害が本人の実機で発生）。パッケージング手順をリポジトリ内に正本として置き、`YMM4 for Mac.app` を組み立てて通常のアプリとして起動できる形にした。本家に相当する変更は無い（デバッグ用アプリの配布形態の話であり、本家互換の対象ではない）。
+
+**どこを変更したか。** 新規2件: `Apps/DebugApp/Info.plist`、`Apps/DebugApp/package-app.sh`。変更1件: `Apps/DebugApp/Sources/YMM4MacDebug/YMM4MacDebugApp.swift`（`DebugAppDelegate` を追加）。**YMM4Core / YMM4GPU は無変更。** 文書: 本台帳、STATUS（基準行・反映境界・デバッグ用アプリ行）、HANDOFF（完了項目）。
+
+**どう実装したか。** `package-app.sh` は SwiftPM でビルドし（既定 release、`CONFIGURATION` で切替）、実行ファイルを `Contents/MacOS/` へ、同梱の `Info.plist` と `PkgInfo` を `Contents/` へ配置して、アドホック署名（`codesign --sign -`）で仕上げる。出力先の既定は `~/Applications`。`Info.plist` の要点: `CFBundleIdentifier` = `com.yanikasumin.ymm4mac.debug`、`CFBundleName` / `CFBundleDisplayName` = `YMM4 for Mac`、`CFBundleExecutable` = `YMM4MacDebug`、`LSMinimumSystemVersion` = `26.0`、`NSHighResolutionCapable` = true。アプリ側の保険として、`DebugAppDelegate.applicationDidFinishLaunching` で `NSApp.setActivationPolicy(.regular)` を指定する（バンドル無し実行でも Dock へ登録されるようにする再確認であり、バンドルから起動した場合は無害）。
+
+**検証。** Mac 実機（検証コピー `~/ymm4-work/verify-appbundle/YMM4Mac`）: DebugApp の `swift build -c release` 成功・警告0（変更ファイルの再コンパイルでも警告なし）。組み立てた `~/Applications/YMM4 for Mac.app` は構造が `Contents/{Info.plist, MacOS/YMM4MacDebug, PkgInfo, _CodeSignature/}` で、`plutil -lint` OK、`codesign --verify` 合格。バンドル内の実行ファイルを環境変数 `YMM4MAC_AUTOTEST=1 YMM4MAC_AUTOTEST_EXIT=1` で起動し、全自動テスト（MAC-0038）が完走（終了コード0）してレポート `report-20261118-010826.json` と `latest.json` が `~/ymm4-work/YMM4MacAutoTest/` へ出力された（buildConfiguration = release、全セクション揃い）。本人の起動中アプリ（別プロセス）には触れていない。**Dock へのアイコン表示そのものは画面操作を伴うため未確認**であり、次回の引き渡し時に LaunchServices 経由の起動で実機確認する。
+
+**未解決事項。** Dock 表示の実機確認（上記）。配布用の Developer ID 署名・公証は対象外（アドホック署名はローカルビルド用の暫定形）。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
