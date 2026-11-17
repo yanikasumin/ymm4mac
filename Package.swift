@@ -3,6 +3,10 @@ import PackageDescription
 
 let package = Package(
     name: "YMM4Mac",
+    platforms: [
+        // 製品の最低対応 OS（CR-001）。Linux では無視され、テストは従来どおり通る。
+        .macOS("26.0"),
+    ],
     products: [
         .library(name: "YMM4Core", targets: ["YMM4Core"]),
         .library(name: "YMM4GPU", targets: ["YMM4GPU"]),
