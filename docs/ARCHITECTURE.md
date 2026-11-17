@@ -33,8 +33,13 @@
         Project.swift          プロジェクト（Timelines / Characters / ToolStates 等）
         Timeline.swift         タイムライン（Length / MaxLayer はキャッシュ済み派生値）
         TimelineSupport.swift  LayerSetting(s)、TimelineVerticalLine、SerializableToolState
-        TimelineEditing.swift  編集操作（追加・衝突解決・移動・分割・ChangeFrameRate・削除・
-                               空間を詰める削除の一族）
+        Editing/
+          TimelineEditing.swift  編集操作の基本（追加・移動・削除・移動可能性・スナップ）
+          TimelineEditingCollision.swift 衝突解決
+          TimelineEditingGroup.swift グループ ID・グループ化
+          TimelineEditingSplit.swift 分割・ChangeFrameRate
+          TimelineEditingDeleteAndMove.swift DeleteAndMove・長さ変更
+          TimelineEditingSpace.swift 空間を詰める削除の一族
         YmmpCodec.swift        .ymmp の読み込み・保存（$type 解決、型移行、診断記録）
         Items/
           BaseItem.swift       BaseItem / VisualItem / VideoItemProperties
