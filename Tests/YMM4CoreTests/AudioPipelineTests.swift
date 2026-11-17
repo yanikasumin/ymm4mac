@@ -316,15 +316,24 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertEqual(dc.read(into: &buffer, offset: 0, count: 96_000), 96_000)
         XCTAssertEqual(buffer[0], 0.75, accuracy: 1e-6)
         XCTAssertEqual(buffer[48_000], 0.75, accuracy: 1e-6)
-        // 最終フレームだけは終端の無音側へ補間される。
-        XCTAssertEqual(buffer[95_998], 0.75, accuracy: 1e-6)
+        // 最終フレームだけは終端の無音側へ補間される（入力位置 23999.5
+        // なので 0.75 と 0 の中点 = 0.375）。以前は 0.75 を期待していたが、
+        // それは素材シークの着地が 1 フレームずれていたときの見かけの値で、
+        // 2026-11-17 のドリフト実測で原因を特定し、シークの丸めを修正した
+        // ことに伴って本来の補間結果へ改めた（AudioDriftTests 参照）。
+        XCTAssertEqual(buffer[95_998], 0.375, accuracy: 1e-6)
 
         let ramp = ResamplerStream(toHz: 200)
         ramp.input = FileAudioStream(provider: rampProvider(frames: 100, hz: 100))
         ramp.seek(to: 0)
         var rampBuffer = [Float](repeating: 0, count: 8)
         XCTAssertEqual(ramp.read(into: &rampBuffer, offset: 0, count: 8), 8)
-        XCTAssertEqual(rampBuffer[3 * 2], 1.5, accuracy: 1e-6)
+        // 素材位置 1.5 の値。以前は 1.5 を期待していたが、それは線形補間が
+        // 区分線形のランプをそのまま再現したときの値。MAC-0024 で生成芯を
+        // 帯域制限補間（窓関数 sinc）へ差し替えた後は、フレーム 0 の微分の
+        // 折れ点の再構成が乗り、真値は約 1.5456 になる（Lanczos／Blackman／
+        // Hann の3窓で同値へ収束することを独立確認済み）。
+        XCTAssertEqual(rampBuffer[3 * 2], 1.5456, accuracy: 1e-3)
 
         // 同一 Hz は素通し。
         let passthrough = ResamplerStream(toHz: 100)

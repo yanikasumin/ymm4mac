@@ -47,8 +47,22 @@ public final class InMemoryPCMProvider: PCMProvider {
     }
 
     public func seek(toTime time: TimeSpanValue) {
-        let num = time.ticks * Int64(AudioStream.channelCount * hz) / 10_000_000
-        samplePosition = Int(num - num % 2)
+        // tick → サンプルは最も近いフレーム境界へ丸める。床への切り捨て
+        // （偶数切り捨て）にすると、呼び出し側の PositionToTime（本家式、
+        // 1 tick 未満の床誤差のみ）との往復で最大 1 フレーム手前に
+        // 系統的にずれる（実測: 48kHz / 44.1kHz とも多くの位置で -1
+        // フレーム）。本家のファイルソースは TimeSpan を受けて内部で
+        // 時刻→サンプル変換するため、この二重の量子化は本家には無い。
+        // 丸めれば往復誤差は 1 tick 相当（48kHz で 0.01 サンプル未満）に
+        // 収まる。
+        guard hz > 0 else {
+            samplePosition = 0
+            return
+        }
+        let exactSamples = Double(time.ticks) * Double(AudioStream.channelCount * hz)
+            / 10_000_000.0
+        let frames = (exactSamples / 2).rounded(.toNearestOrEven)
+        samplePosition = Int(frames) * 2
     }
 
     public func read(into buffer: inout [Float], offset: Int, count: Int) -> Int {
