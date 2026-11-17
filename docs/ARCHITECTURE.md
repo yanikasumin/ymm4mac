@@ -86,25 +86,18 @@
                                InputFrameWindow（範囲外は無音のランダムアクセス窓）
           PCMProvider.swift    PCMProvider / PCMProviderFactory（デコードの差し替え点）、
                                InMemoryPCMProvider、FileAudioStream
-          AudioEffectContracts.swift アイテム音声の契約群: AudioItemProperties、
-                               AudioEffectProvider（ユーザー音声エフェクトの
-                               差し替え点）、AudioChainOptions
           EffectedAudioItemSource.swift アイテム音声の処理器連鎖（本家のチェーン順序）、
-                               AudioSourceFactory
+                               AudioItemProperties、AudioEffectProvider（ユーザー
+                               音声エフェクトの差し替え点）、AudioSourceFactory
           AudioEffectProcessors.swift NegativeSeekable / ContentOffset / Loop /
                                Reverse / Echo の各処理器と基底
-          ResamplingCore.swift 補間カーネル（Linear / Cubic）と生成芯
-                               BandLimitedResamplingCore（窓関数 sinc の
-                               帯域制限補間。MAC-0024）
-          ResamplerStreams.swift Resampler / PlaybackRate / VariablePlaybackRate /
-                               Upsampler の各ストリーム
+          AudioResampling.swift Resampler（生成芯は BandLimitedResamplingCore =
+                               窓関数 sinc の帯域制限補間。MAC-0024）/
+                               PlaybackRate / VariablePlaybackRate /
+                               Upsampler（補間カーネルは Linear / Cubic）
           VolumePanStream.swift VolumePan（サンプル対ごとの Animation 評価）
           AudioGroups.swift    AudioGroupResolver（グループ境界の区間分割と
-                               DirectGroups / Owner の算出）、
-                               AudioGroupStreamBuilder（組み立て）
-          AudioGroupStreams.swift SegmentGate / GroupEffectChain の各ストリーム
-          GroupAudioBusSource.swift 音声合成グループのバス（バスミックス →
-                               グループエフェクト → Resampler）
+                               DirectGroups / Owner の算出）、GroupAudioBusSource
           TimelineAudioMixer.swift タイムライン全体のミックス（レイヤー音量適用、
                                float 加算、リミッターなし）
         Effects/               映像エフェクト定義層＋DrawDescription 変換型処理器
@@ -160,9 +153,10 @@
                                （BT.709 リミテッド）
           FFmpegProcessWriter.swift 音声・映像の別プロセス＋終了時 mux の本家方式
                                （プロセス起動は差し替え点）
-          LoudnessAnalysis.swift BS1770LoudnessAnalyzer（二段ゲーティング）
-          DynamicsProcessorStream.swift DynamicsProcessor（Ratio=1 高速経路）と
-                               EnvelopeFollower
+          LoudnessAnalysis.swift ラウドネス解析の倍率計算
+          BS1770LoudnessAnalyzer.swift BS.1770-3 アナライザ（二段ゲーティング）
+          DynamicsProcessorStream.swift DynamicsProcessor（Ratio=1 高速経路）
+          EnvelopeFollower.swift エンベロープフォロワ（再構成）とリングバッファ
       Sources/YMM4GPU/         GPU 実行層（Metal。全ソース #if os(macOS)、Linux では空）
         MetalGraphics.swift    MetalGraphicsDevices（デバイス共有・登録表・共有資源、
                                readBGRA によるバイト列読み戻しを含む）、
