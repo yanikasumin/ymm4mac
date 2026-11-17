@@ -43,10 +43,17 @@ final class ExportJob: @unchecked Sendable {
     }
 
     func run() {
-        guard let exporter = TimelineExporter(
-            timeline: timeline, timelines: timelines, baseDirectory: baseDirectory
-        ) else {
-            finish { $0.status = "Metal デバイスを初期化できませんでした" }
+        let exporter: TimelineExporter
+        do {
+            exporter = try TimelineExporter(
+                timeline: timeline, timelines: timelines, baseDirectory: baseDirectory
+            )
+        } catch let error as MetalInitializationError {
+            // 初期化失敗の理由をそのまま表示する（Issue #50）。
+            finish { $0.status = "Metal の初期化に失敗しました: \(error.userMessage)" }
+            return
+        } catch {
+            finish { $0.status = "書き出しを開始できませんでした: \(error)" }
             return
         }
         defer { exporter.dispose() }

@@ -43,6 +43,7 @@
 - MAC-0038 — デモ版内蔵のデバッグ用全自動テスト
 - MAC-0039 — DebugApp の .app バンドル化
 - MAC-0043 — PngWav ライター（PNG 連番＋WAV 書き出し）（Issue #49）
+- MAC-0044 — Metal 初期化診断（失敗を握りつぶさない）（Issue #50）
 - PR32 — DebugApp フロントエンドの形
 - UI32-01 — レベルメーターの本家構成化と誤記修正
 - W1 — 構造整理 第1単位: テスト基盤の整備とハーネスの git 管理化
@@ -932,6 +933,86 @@ Mac 側の設計判断:
   ライター本体と TimelineExporter の入口まで。
 - PNG の圧縮率は WIC と一致しない（可逆性と dpi 宣言は一致。
   圧縮方式の差異は仕様上の等価範囲と判断）。
+
+#### MAC-0044 — Metal 初期化診断（失敗を握りつぶさない）（Issue #50）
+
+##### 何を実装したか
+
+`MetalGraphicsDevices` の初期化が失敗しても理由が残らなかった
+問題（監査 AUD-06）を解消した。初期化を failable init から
+throws へ変え、失敗の種別と下位エラーを保持する型
+`MetalInitializationError` を新設。プレビューと書き出しの
+入口で利用者向けの理由文を表示し、自動テストのレポートにも
+理由を記録する。種別ごとのフォールバックは作らない（Issue の
+方針どおり）。
+
+##### どこを変更したか
+
+- 新規 `Sources/YMM4GPU/Graphics/MetalInitializationError.swift`:
+  種別（deviceUnavailable / shaderLibraryFailed /
+  shaderFunctionMissing / pipelineCreationFailed /
+  samplerCreationFailed / textureCreationFailed）、
+  利用者向け理由文 `userMessage`、種別＋下位エラーの
+  `description`
+- `Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift`:
+  `init?()` を `init() throws` へ。全ての nil 返し・try? を
+  対応する種別の throw に置換。シェーダソースを引数で受ける
+  初期化子 `init(shaderSource:)` を差し替え点として分離
+  （失敗の人為的誘発に使う）
+- `Sources/YMM4GPU/Export/MetalExportVideoProvider.swift` /
+  `TimelineExporter.swift`: init を throws に伝播
+- DebugApp `Export/ExportJob.swift`: MetalInitializationError
+  を捕捉し、状態表示に理由文を含める
+- DebugApp `Preview/PreviewBox.swift`: 非 failable 化し、
+  失敗時は `initializationFailure` に理由文を保持。
+  `Views/ProjectView.swift` がそれをプレビューエラーとして表示
+- DebugApp `AutoTest/AutoTestRunner.swift`: CompositionSession
+  が失敗理由を保持し、合成計測と書き出し計測の双方で
+  レポートに理由を記録する
+
+##### どう実装したか
+
+- 本家相当の既存契約: GPU 層の失敗検出は MAC-0021 で
+  MetalRenderError（close() から throw）に統一済み。本件は
+  その入口側（初期化）で同じ原則を適用したもの。
+- 初期化の段階ごとに種別を割り当てた: デバイス取得不可、
+  シェーダライブラリのコンパイル失敗（MTLLibrary のエラーを
+  文字列で保持）、シェーダ関数の不足（関数名を保持。検査順は
+  従来どおり）、パイプライン生成失敗（対象名＋下位エラー）、
+  サンプラ生成失敗（対象名）、透明テクスチャ生成失敗
+  （寸法を保持）。
+- 表示文言は種別ごとに固定の日本語文＋保持した名前・寸法を
+  埋め込む形とし、経路（プレビュー／書き出し／自動テスト）
+  ごとに別文言を作らない。
+- 失敗の再現は、壊れたシェーダソースと関数を欠いた
+  シェーダソースを `init(shaderSource:)` に渡すことで行う
+  （本番経路と同じ初期化を通る）。
+
+##### 検証
+
+- ハーネス Harnesses/media4950-harness（Mac・release）:
+  正常初期化（Apple M2 で成功）、壊れたシェーダ →
+  shaderLibraryFailed（理由文「GPU シェーダの初期化に
+  失敗しました」、description に MTLLibraryErrorDomain の
+  コンパイルエラーを保持）、ymm4MosaicKernel だけを欠く
+  シェーダ → shaderFunctionMissing（理由文に不足関数名を
+  含む）を実測で確認。全 11 件 PASS。
+- Mac ビルド: ルートパッケージ・DebugApp とも警告・エラー 0
+  （debug）。全テストは Linux 441 件・失敗 0。Mac でも
+  全スイートを実行し 438 件の完了と失敗 0 を確認した
+  （残り 3 件は MAC-0043 の検証項に記した長時間の既存
+  テストで、本記録の作成時点では実行中）。
+- DebugApp の自動テスト（MAC-0039 の方式、一時バンドルから
+  実行）で AutoTestRunner の変更経路を実行した。終了コード 0、
+  レポートの合成・書き出しとも error なし・書き出しは
+  completed で、Metal 初期化エラーは記録されなかった。
+
+##### 未解決事項
+
+- 理由文の画面表示そのもの（GUI のスクリーンショット等）は
+  未検証。検証したのは、初期化失敗が種別と理由文を伴って
+  入口まで伝播することと、表示先への配線がコンパイルと
+  自動テスト実行を通ることまで。
 
 ## 以降の記載テンプレート
 

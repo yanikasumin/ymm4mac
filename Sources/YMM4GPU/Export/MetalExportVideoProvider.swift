@@ -21,8 +21,10 @@ public final class MetalExportVideoProvider: VideoFrameProviding {
     /// フレームの合成が完了するたびに呼ばれる（進捗表示用）。
     public var onFrameRendered: ((Int) -> Void)?
 
-    public init?(timeline: Timeline, timelines: [Timeline], baseDirectory: URL?) {
-        guard let devices = MetalGraphicsDevices() else { return nil }
+    /// Metal 初期化に失敗した場合は `MetalInitializationError` を投げる
+    /// （Issue #50: 失敗を無言で握りつぶさず、理由を入口で表示する）。
+    public init(timeline: Timeline, timelines: [Timeline], baseDirectory: URL?) throws {
+        let devices = try MetalGraphicsDevices()
         self.devices = devices
         self.videoInfo = timeline.videoInfo
         self.context = devices.makeContext(

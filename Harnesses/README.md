@@ -36,6 +36,7 @@ swift run -c release
 | mac0033-harness | GPU テクスチャ確保失敗が素通しと区別され MetalRenderError として伝播すること（GPU28-03） | 引数なし。失敗ケースは環境変数 `MAC0033_RUN_FAILURE_CASE=1` のときだけ実行し、既定では SKIP と表示する | 通常ケース PASS。失敗ケースは macOS 26 の Metal 検証層がプロセスを abort するため完走しない（既知の制約。throw 経路の担保はコード監査に拠る） |
 | mac0034-harness | EffectItem 描画（本家 EffectSource）とクリッピングのアルファマスク | 引数なし | 25 件全 PASS |
 | mac0035-harness | 画面遷移（TransitionSource の配線、ブレンド9種のうち8種） | 引数なし | 27 件全 PASS |
+| media4950-harness | Issue #49（PngWav ライター）/ #50（Metal 初期化診断）。初期化失敗の人為的誘発（壊れたシェーダ・関数不足）と理由文の確認、実合成経路からの FFmpeg / PngWav 書き出し（30 フレーム、WAV 1 秒、PNG の ImageIO デコード） | 引数なし（出力先は任意で第1引数）。実 ffmpeg が /opt/homebrew/bin/ffmpeg に必要 | 11 件全 PASS |
 
 ## 材料について
 

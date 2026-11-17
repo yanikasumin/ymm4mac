@@ -42,16 +42,18 @@ public final class TimelineExporter {
     /// 音声解析の結果（書き出し前に確定する。表示・検証用）。
     public var analysisResult: LoudnessAnalysisResult { audioProvider.analysisResult }
 
-    public init?(
+    /// Metal 初期化に失敗した場合は `MetalInitializationError` を投げる
+    /// （Issue #50: 失敗を無言で握りつぶさず、理由を入口で表示する）。
+    public init(
         timeline: Timeline,
         timelines: [Timeline],
         baseDirectory: URL?,
         loudness: LoudnessNormalizationSettings = LoudnessNormalizationSettings(),
         compressor: CompressorSettings = CompressorSettings()
-    ) {
-        guard let videoProvider = MetalExportVideoProvider(
+    ) throws {
+        let videoProvider = try MetalExportVideoProvider(
             timeline: timeline, timelines: timelines, baseDirectory: baseDirectory
-        ) else { return nil }
+        )
         self.timeline = timeline
         self.videoProvider = videoProvider
         let factory = AudioSourceFactory(

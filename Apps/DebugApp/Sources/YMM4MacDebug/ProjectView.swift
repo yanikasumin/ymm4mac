@@ -1207,14 +1207,16 @@ struct ProjectView: View {
             url: sourceURL ?? URL(fileURLWithPath: "/untitled-project"),
             timelineIndex: timelineIndex
         )
-        guard let box = PreviewBox(
+        let box = PreviewBox(
             key: key, timeline: timeline, timelines: project.timelines,
             baseDirectory: baseDirectory
-        ) else {
-            previewError = "Metal デバイスを初期化できませんでした"
+        )
+        previewBox = box
+        if let failure = box.initializationFailure {
+            // 初期化失敗の理由をそのまま表示する（Issue #50）。
+            previewError = failure
             return
         }
-        previewBox = box
         renderPreview()
     }
 

@@ -189,6 +189,10 @@
           MetalGraphicsDevices.swift MetalGraphicsDevices（デバイス共有・
                                登録表・共有資源、readBGRA によるバイト列
                                読み戻しを含む）、シェーダ一式、CGImage 読み戻し
+          MetalInitializationError.swift Metal 初期化失敗の型（種別と
+                               下位エラーを保持し、利用者向け理由文を持つ。
+                               初期化は throws になり、失敗は握りつぶさない。
+                               MAC-0044）
           MetalImage.swift     MetalImage（ImageReference の実体。境界と
                                テクスチャ平面範囲 texturePlaneRect /
                                planeOffset を分けて持つ。MAC-0027）
