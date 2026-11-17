@@ -1,10 +1,55 @@
 # 実装台帳 — 何を・どこに・どう実装したか
 
-2026-11-16現在、**ドキュメントの初期構築のみ**。動画編集機能の実装履歴はない。
+この文書は実装の履歴の正本である（追記専用）。各変更について「何を・どこに・どう実装したか」を自然言語で記録する。現行状態は [STATUS.md](STATUS.md)、構造は [ARCHITECTURE.md](ARCHITECTURE.md)、次にやることは [HANDOFF.md](HANDOFF.md)、課題の台帳は GitHub Issues を参照すること。
+
+## 索引
+
+- DOC-0001 — 開発リポジトリの初期化
+- MAC-0001 — モデル層の土台: VideoInfo と Animation
+- MAC-0002 — Animation 評価の数式置き換え
+- MAC-0003 — ドメインモデル: Project / Timeline / アイテム13クラス
+- MAC-0004 — 編集操作: 追加・衝突解決・グループ移動・分割・ChangeFrameRate・削除
+- MAC-0005 — .ymmp 互換層
+- MAC-0006 — デバッグ用アプリの殻
+- MAC-0007 — 残りの編集操作
+- MAC-0008 — 隣接削除系・Character 型付き拡張・ShapeParameter 完全化
+- MAC-0009 — 描画層の土台
+- MAC-0010 — 合成の実行部
+- MAC-0011 — 映像アイテム範囲の是正
+- MAC-0012 — GPU 実行器
+- MAC-0013 — 音声パイプラインの芯
+- MAC-0014 — テキスト描画
+- MAC-0015 — キャラクター参照の保存・解決契約の是正
+- MAC-0016 — 音声 QA：ドリフト実測とシーク量子化の修正
+- MAC-0017 — 書き出し
+- MAC-0018 — 映像エフェクト定義層＋DrawDescription 変換型処理器
+- MAC-0019 — 映像エフェクト定義層のコーデック＋合成チェーン接続
+- MAC-0020 — VoiceItem の字幕エフェクト解決の接続
+- MAC-0021 — GPU 失敗の検出・通知契約
+- MAC-0022 — GPU 処理系エフェクトの定義層73種
+- MAC-0023 — GPU エフェクト Metal 処理器 第1段
+- MAC-0024 — 音声リサンプラの高品質化 第1段
+- MAC-0025 — Video／Scene／FrameBuffer／Tachie の実 Source
+- MAC-0026 — 書き出しの実接続
+- MAC-0027 — 合成グループの Source 実装
+- MAC-0028 — GPU エフェクト Metal 処理器 第2段と内部合成への供給元伝播、画像／動画の上下反転是正
+- MAC-0030 — 書き出しの解析・結果表現の是正
+- MAC-0032 — エフェクト編集の書き戻しで入れ子の未知キーが消える問題の修正
+- MAC-0033 — GPU テクスチャ確保失敗のエラー伝播統一
+- MAC-0034 — 書き出しのモデル共有によるデータ競合の解消
+- MAC-0035 — EffectItem 描画 Source
+- MAC-0036 — 画面遷移
+- MAC-0037 — 音声リサンプラの正式形
+- MAC-0038 — デモ版内蔵のデバッグ用全自動テスト
+- MAC-0039 — DebugApp の .app バンドル化
+- PR32 — DebugApp フロントエンドの形
+- UI32-01 — レベルメーターの本家構成化と誤記修正
+- W1 — 構造整理 第1単位: テスト基盤の整備とハーネスの git 管理化
+- 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 
 ## 実装記録（変更IDごとに自然言語で追記）
 
-### DOC-0001 — 開発リポジトリの初期化
+#### DOC-0001 — 開発リポジトリの初期化
 
 - 目的: 解析リポジトリからMac版ソースと実装記録を分離し、中断しても他の担当が引き継げる入口を設ける。
 - 変更先: `yanikasumin/ymm4mac` の `README.md`, `AGENTS.md`, `docs/`, `.github/pull_request_template.md`, `.gitignore`。
@@ -13,7 +58,7 @@
 - 検証: GitHub上のファイル存在を確認する。ビルドや映像処理のテストは**未実施**。
 - 承認: 要件変更は行っていない。
 
-### MAC-0001 — モデル層の土台: VideoInfo と Animation（IMPLEMENTED）
+#### MAC-0001 — モデル層の土台: VideoInfo と Animation（IMPLEMENTED）
 
 **何を実装したか。** Swift パッケージの土台と、モデル層のうち VideoInfo（解像度・FPS・サンプリングレート）と Animation（値の時間変化）の独立実装。仕様の正本は解析側の抽出仕様 `MODEL-SPEC-EXTRACTION.md`（訂正記録を含む）§3・§6。
 
@@ -33,7 +78,7 @@
 
 **次の担当へ。** 残課題は未抽出の数式群（上記）の抽出と評価の置き換え、KeyFrames の RemovesLeft/RemovesRight（分割用）、Timeline / BaseItem の実装。
 
-### MAC-0002 — Animation 評価の数式置き換え（IMPLEMENTED）
+#### MAC-0002 — Animation 評価の数式置き換え（IMPLEMENTED）
 
 **何を実装したか。** MAC-0001 で暫定実装（線形補間／先頭値で代用）だった `Animation` の評価分岐を、抽出済みの数式で全て置き換えた。対象はイージング全科、補間移動・加減速移動のスプライン加重平均、_Int イージング系の全体率経路、ベジェ評価（Linear_Bezier / Interpolation_Bezier）、ランダム移動（Span = 0 / Span > 0）、反復移動（Span > 0 と Span = 0 のパリティ修正）。数式の正本は解析側の `ANIMATION-FORMULAS.md`（全項目確定済み）。
 
@@ -56,7 +101,7 @@
 
 **次の担当へ。** 残課題は `GetHashCode()` 対応付けの確定（本家実機での乱数列採取が必要）、Timeline / BaseItem の実装、KeyFrames の RemovesLeft/RemovesRight、`ANIMATION-FORMULAS.md` §1.1 のループ上限表記の確認。
 
-### MAC-0003 — ドメインモデル: Project / Timeline / アイテム13クラス（IMPLEMENTED）
+#### MAC-0003 — ドメインモデル: Project / Timeline / アイテム13クラス（IMPLEMENTED）
 
 **何を実装したか。** モデル層の中心となるドメインモデル一式。`Project`（Timelines / Characters / CollapsedGroups / LayoutXml / ToolStates / FilePath / SelectedTimelineIndex）、`Timeline`（Items / CurrentFrame / Length・MaxLayer のキャッシュ / LayerSettings / TimelineVerticalLine / 選択）、アイテム13クラス（Audio / Video / Voice / Text / Image / Shape / Effect / Group / Scene / FrameBuffer / Tachie / TachieFace / Transition）と共通基底 `BaseItem` / `VisualItem`、`Character`（型付きは Name / GroupName / Color / Layer のみ）。仕様の正本は解析側 `MODEL-SPEC-EXTRACTION.md`（訂正記録を含む）と実コード。
 
@@ -89,7 +134,7 @@
 
 **次の担当へ。** Character の型付き範囲の拡張は必要になった時点で。フォント既定値とタイムライン名のリソース文字列は本家実機（リソースアセンブリ）の確認が必要。
 
-### MAC-0004 — 編集操作: 追加・衝突解決・グループ移動・分割・ChangeFrameRate・削除（IMPLEMENTED）
+#### MAC-0004 — 編集操作: 追加・衝突解決・グループ移動・分割・ChangeFrameRate・削除（IMPLEMENTED）
 
 **何を実装したか。** `Timeline` の編集操作一式を `Sources/YMM4Core/TimelineEditing.swift` に実装した。対象は本家 `Timeline` の TryAddItems / IsMovable / GetMovableDeltaFrame / MoveSelectedAndGroupedItems / ResolveItemCollision（3形態）/ ResolveItemCollisionInItems / ResolveAllItemsCollision / RenewGroupIDs / Group・Ungroup / SplitItems（+ SplitItemsCore、選択モード5種と Center の履歴処理）/ ChangeFrameRate / DeleteItems 系と、アイテム側の `BaseItem.split(atRelativeFrame:)`（KeyFrames の RemovesLeft / RemovesRight 連動を含む）。
 
@@ -106,7 +151,7 @@
 
 **次の担当へ。** DeleteAndMove、長さ変更（ChangeItemsStart / End 系）、スナップ（GetSnappedDelta）は未実装。必要になった時点で本家コードから起こす。
 
-### MAC-0005 — .ymmp 互換層（IMPLEMENTED）
+#### MAC-0005 — .ymmp 互換層（IMPLEMENTED）
 
 **何を実装したか。** `Sources/YMM4Core/YmmpCodec.swift` と基盤の `JSONValue.swift`（順序保持 JSON 値＋自前パーサ／シリアライザ）、`CodecSupport.swift`（Animation 等の JSON 形状変換）。読み込み（$type 解決、RenamedTypeResolver の移行、未知 $type の読み飛ばしと診断記録、旧形式の単一 Timeline 取り込み、YMM3 XML の拒否）と、保存（1行 JSON、一時ファイル→再読込検証→コピー）。
 
@@ -423,7 +468,7 @@
 
 **何を実装したか。** 本家内蔵エフェクトのうち未登録だった GPU 処理系73種の定義クラスを型付きで実装し、レジストリへ登録した。登録総数は95種（MAC-0018 の DrawDescription 変換群22種＋本件73種）となり、本家内蔵101種については、コミュニティ移行先等を除き定義層が揃った。対象から漏れた本家内蔵エフェクトは無い。ただし処理器は全て暫定の素通しであり、パラメータの型付き復元・往復保全のみが成立する。描画への反映は次段の Metal 処理器まで無い。
 
-**どこを変更したか。** 新規 `Sources/YMM4Core/Effects/` 10ファイル: `GPUTransformEffects.swift`（変形系14種）、`GPUBlurEffects.swift`（ぼかし系12種）、`GPUColorEffects.swift`（色調系11種）、`GPUShadowFillEffects.swift`（影・塗り系9種）、`GPUWarpEffects.swift`（歪み系8種）、`GPUMaskKeyEffects.swift`（マスク・キー系3種）、`GPUInOutEffects.swift`（出入り系10種）、`GPURandomRepeatEffects.swift`（ランダム・反復系4種）、`GPUCustomEffects.swift`（カスタム系2種）、`GPUEffectSupport.swift`（暫定処理器 `GPUEffectPassthroughProcessor`、GPU 定義の基底 `GPUEffectDefinitionBase`、新規列挙型19種）。変更: `VideoEffectRegistry.swift` への73種の登録。テストは新規 `Tests/YMM4CoreTests/GPUEffectsTests.swift`（27件）。
+**どこを変更したか。** 新規 `Sources/YMM4Core/Effects/` 10ファイル: `GPUTransformEffects.swift`（変形系14種）、`GPUBlurEffects.swift`（ぼかし系12種）、`GPUColorEffects.swift`（色調系11種）、`GPUShadowFillEffects.swift`（影・塗り系9種）、`GPUWarpEffects.swift`（歪み系8種）、`GPUMaskKeyEffects.swift`（マスク・キー系3種）、`GPUInOutEffects.swift`（出入り系10種）、`GPURandomRepeatEffects.swift`（ランダム・反復系4種）、`GPUCustomEffects.swift`（カスタム系2種）、`GPUEffectSupport.swift`（暫定処理器 `GPUEffectPassthroughProcessor`、GPU 定義の基底 `GPUEffectDefinitionBase`、新規列挙型18種）。変更: `VideoEffectRegistry.swift` への73種の登録。テストは新規 `Tests/YMM4CoreTests/GPUEffectsTests.swift`（27件）。
 
 **どう実装したか。** (1) 定義クラスは MAC-0018 の基盤（VideoEffectDefinitionBase）の作法に従い、$type 対応・Animation 型パラメータ・追加フィールド保持によるデータ保全を備える。GPU 系は共通基底 `GPUEffectDefinitionBase` を介する。(2) 処理器は暫定として `GPUEffectPassthroughProcessor`（入力をそのまま返す素通し）を全種に割り当てた。MAC-0019 の消費側の型付き復元により、合成チェーンへは型付き定義として供給されるが、描画結果にはまだ影響しない。(3) 旧互換キーの転送6件を実装しテストで固定した（Sepia / Gradient / CenterPoint / ChromaKey2 / Mask / InOutRotate の旧形式キーから現行プロパティへの読み替え）。
 
@@ -436,6 +481,8 @@
 **未解決事項。** (a) GPU 処理系73種の Metal 処理器（次段）。(b) 多態パラメータ内部の型付き化（Brush 等、上記）。(c) GradientStop / MeshDeformationPoint の完全な型付け。
 
 **次の担当へ。** 次段は Metal 処理器の実装で、`GPUEffectPassthroughProcessor` を種別ごとの実処理器へ置き換える。定義層は本件で揃っているため、処理器の段ではパラメータの読み取り方法は変更しない。（Metal 処理器の第1段は MAC-0023 で実装し、Mac 検証を経てメインへ統合済み。）
+
+- **件数訂正（2026-11-18、構造整理 W11）**: 本項の当初記載「新規列挙型19種」は誤りで、実ファイルの列挙は18件（現行の `Effects/GPU/GPUEffectEnums.swift` で確認）。結論に変更はない。
 
 #### MAC-0023 — GPU エフェクト Metal 処理器 第1段（IMPLEMENTED、Mac 検証済み・統合済み）
 
@@ -795,4 +842,4 @@
 
 **次の担当へ。** 残課題・修正候補・次に開くべきファイル／シンボル。
 
-※実装を伴う変更は、その同じ作業で `ARCHITECTURE`、`STATUS`、`HANDOFF` と解析側のAs-built・互換マトリクスを整合させる。
+※文書の更新先は AGENTS.md の「文書の更新規則（イベント別）」に従う。すべての変更がすべての文書を更新するのではなく、変更された事実の正本を確実に更新すること。
