@@ -5,6 +5,62 @@ import ImageIO
 import Metal
 import YMM4Core
 
+/// 素材パスを解決する。絶対パスと file URL はそのまま使い、相対パスは
+/// プロジェクトの基準フォルダから解決する。画像 Source と動画 Source で
+/// 共有する。
+func resolveMediaURL(path: String, baseDirectory: URL?) -> URL? {
+    if let url = URL(string: path), url.isFileURL {
+        return url
+    }
+    let fileURL = URL(fileURLWithPath: path)
+    if fileURL.path.hasPrefix("/") {
+        return fileURL
+    }
+    guard let baseDirectory else { return nil }
+    return baseDirectory.appendingPathComponent(path)
+}
+
+/// CGImage を BGRA（Premultiplied）のテクスチャへ変換する。
+/// 画像 Source（ImageIO のデコード結果）と動画 Source
+/// （AVAssetImageGenerator のフレーム）で共有する。
+func makePremultipliedTexture(
+    device: MTLDevice, cgImage: CGImage
+) -> (texture: MTLTexture, width: Int, height: Int)? {
+    var width = cgImage.width
+    var height = cgImage.height
+    guard width > 0, height > 0 else { return nil }
+    // テクスチャ上限を超える場合は比例縮小する（画像 Source の従来挙動）。
+    let maxDimension = 16384
+    if width > maxDimension || height > maxDimension {
+        let scale = Double(maxDimension) / Double(max(width, height))
+        width = max(1, Int(Double(width) * scale))
+        height = max(1, Int(Double(height) * scale))
+    }
+    let bytesPerRow = width * 4
+    guard let context = CGContext(
+        data: nil, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue
+    ), let data = context.data else { return nil }
+    // CGImage は左下原点、テクスチャは左上原点。上下を反転して描く。
+    context.translateBy(x: 0, y: CGFloat(height))
+    context.scaleBy(x: 1, y: -1)
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
+    )
+    descriptor.usage = [.shaderRead]
+    descriptor.storageMode = .shared
+    guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+    texture.replace(
+        region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+        withBytes: data, bytesPerRow: bytesPerRow
+    )
+    return (texture, width, height)
+}
+
 /// 画像アイテムの Source。本家 ImageSource に対応する。
 ///
 /// 本家と同じく、コンストラクタで自前の文脈（CreateContext）を生成して
@@ -92,59 +148,15 @@ public final class MetalImageSource: Source {
 
     private func resolveURL(_ path: String) -> URL? {
         if path.isEmpty { return nil }
-        if path.hasPrefix("/") {
-            return URL(fileURLWithPath: path)
-        }
-        if let baseDirectory {
-            return baseDirectory.appendingPathComponent(path)
-        }
-        return nil
+        return resolveMediaURL(path: path, baseDirectory: baseDirectory)
     }
 
     /// ImageIO でデコードし、Premultiplied BGRA のテクスチャへ変換する。
-    /// 寸法がデバイス上限（16384）を超える場合は比例縮小する。
     private func decodeTexture(url: URL) -> (texture: MTLTexture, width: Int, height: Int)? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
         else { return nil }
-        let maxDimension = 16384
-        var width = cgImage.width
-        var height = cgImage.height
-        if width > maxDimension || height > maxDimension {
-            let scale = Double(maxDimension) / Double(max(width, height))
-            width = max(1, Int(Double(width) * scale))
-            height = max(1, Int(Double(height) * scale))
-        }
-        var bytes = [UInt8](repeating: 0, count: width * height * 4)
-        let drawn = bytes.withUnsafeMutableBytes { buffer -> Bool in
-            guard let bitmap = CGContext(
-                data: buffer.baseAddress, width: width, height: height,
-                bitsPerComponent: 8, bytesPerRow: width * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue
-                    | CGImageAlphaInfo.premultipliedFirst.rawValue
-            ) else { return false }
-            // ビットマップの行順を画像の上端からにする（上下反転の打ち消し）。
-            bitmap.translateBy(x: 0, y: CGFloat(height))
-            bitmap.scaleBy(x: 1, y: -1)
-            bitmap.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
-        }
-        guard drawn else { return nil }
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
-        )
-        descriptor.usage = [.shaderRead]
-        descriptor.storageMode = .shared
-        guard let texture = context.devices.device.makeTexture(descriptor: descriptor)
-        else { return nil }
-        bytes.withUnsafeBytes { buffer in
-            texture.replace(
-                region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
-                withBytes: buffer.baseAddress!, bytesPerRow: width * 4
-            )
-        }
-        return (texture, width, height)
+        return makePremultipliedTexture(device: context.devices.device, cgImage: cgImage)
     }
 }
 
@@ -355,8 +367,8 @@ public final class MetalShapeSource: Source {
 
 /// 未対応アイテム種別の Source。透明な出力を返す。
 ///
-/// Text（次ブロック）・Video・Scene・Tachie・Effect・合成グループ等が
-/// 対象であり、未対応であることは台帳に明記する。DrawingEffect は実物を
+/// Video・Scene・Tachie・Effect・合成グループ等が対象であり、
+/// 未対応であることは台帳に明記する。DrawingEffect は実物を
 /// 持つため、変形・不透明度を適用しても結果は透明のままになる。
 public final class MetalEmptySource: Source {
     public let controllers: [VideoController] = []
@@ -395,16 +407,41 @@ public final class MetalEmptySource: Source {
 }
 
 /// アイテム種別から Source を供給する境界（TimelineComposer の
-/// sourceProvider に渡す）。対応は ImageItem / ShapeItem のみで、
-/// それ以外は MetalEmptySource（透明）を返す。
+/// sourceProvider に渡す）。対応は ImageItem / ShapeItem / TextItem /
+/// VoiceItem（字幕）/ VideoItem / SceneItem / FrameBufferItem /
+/// TachieItem / 合成グループ（GroupItem.IsComposite）で、それ以外は
+/// MetalEmptySource（透明）を返す。
 public struct MetalSourceProvider {
     public let devices: MetalGraphicsDevices
     /// 相対パスの解決基準（.ymmp のあるフォルダ）。
     public let baseDirectory: URL?
+    /// シーン参照の解決子（プロジェクト全体のタイムライン列から引く）。
+    /// 本家では説明の Scenes 列が担う役割。未設定ならシーンは空になる。
+    public let sceneResolver: ((UUID) -> Timeline?)?
+    /// 親シーンの連鎖（入れ子上限の判定用。通常は呼び出し側で設定しない）。
+    public let parentSceneChain: [UUID]
+    /// 立ち絵描画器の生成境界。未設定なら立ち絵は出力を持たない
+    /// （本家で対応プラグインが無い場合と同じ）。
+    public let tachieRendererFactory: (any MetalTachieRendererFactory)?
+    /// この供給元のアイテムが属するタイムライン。合成グループの内部
+    /// 合成（同じタイムラインの再合成）に使う。本家では CreateVideoSource
+    /// へシーンが渡ることが担う役割。未設定なら合成グループは空になる。
+    public let timeline: Timeline?
 
-    public init(devices: MetalGraphicsDevices, baseDirectory: URL? = nil) {
+    public init(
+        devices: MetalGraphicsDevices,
+        baseDirectory: URL? = nil,
+        sceneResolver: ((UUID) -> Timeline?)? = nil,
+        parentSceneChain: [UUID] = [],
+        tachieRendererFactory: (any MetalTachieRendererFactory)? = nil,
+        timeline: Timeline? = nil
+    ) {
         self.devices = devices
         self.baseDirectory = baseDirectory
+        self.sceneResolver = sceneResolver
+        self.parentSceneChain = parentSceneChain
+        self.tachieRendererFactory = tachieRendererFactory
+        self.timeline = timeline
     }
 
     public func source(for item: BaseItem & VideoItemProperties) -> any Source {
@@ -415,8 +452,106 @@ public struct MetalSourceProvider {
             )
         case let shapeItem as ShapeItem:
             return MetalShapeSource(devices: devices, item: shapeItem)
+        case let textItem as TextItem:
+            return MetalTextSource(devices: devices, item: textItem)
+        case let voiceItem as VoiceItem:
+            return MetalJimakuSource(devices: devices, item: voiceItem)
+        case let videoItem as VideoItem:
+            return MetalVideoSource(
+                devices: devices, item: videoItem, baseDirectory: baseDirectory
+            )
+        case let sceneItem as SceneItem:
+            return MetalSceneSource(
+                devices: devices, item: sceneItem, composerFactory: sceneComposerFactory()
+            )
+        case let frameBufferItem as FrameBufferItem:
+            return MetalFrameBufferSource(devices: devices, item: frameBufferItem)
+        case let tachieItem as TachieItem:
+            return MetalTachieSource(
+                devices: devices, item: tachieItem, rendererFactory: tachieRendererFactory
+            )
+        case let groupItem as GroupItem where groupItem.isComposite:
+            // 合成グループは内部合成を持つ Source を返す。属するタイム
+            // ラインが分からない供給元では内部合成を作れないため空に倒す
+            // （通常の配線では常に設定される）。
+            guard let timeline else { return MetalEmptySource(devices: devices) }
+            return MetalCompositeSource(
+                devices: devices, item: groupItem,
+                composerFactory: compositeComposerFactory(group: groupItem, timeline: timeline)
+            )
         default:
             return MetalEmptySource(devices: devices)
+        }
+    }
+
+    /// 合成グループの内部合成器を生成する境界。内部合成器は対象グループに
+    /// 束縛した CompositeItemPicker で、同じタイムラインを再合成する。
+    /// 描画先の文脈は呼び出し側（MetalCompositeSource が所有する文脈）を
+    /// 借り、その寸法をタイムラインの VideoInfo へ合わせる。子の供給元は
+    /// 同じタイムラインを引き継ぐため、入れ子の合成グループも再帰的に
+    /// 内部合成を持つ（階層はレイヤー範囲で有限に閉じる）。
+    private func compositeComposerFactory(
+        group: GroupItem, timeline: Timeline
+    ) -> (MetalGraphicsContext) -> TimelineComposer {
+        let devices = self.devices
+        let baseDirectory = self.baseDirectory
+        let sceneResolver = self.sceneResolver
+        let parentSceneChain = self.parentSceneChain
+        let tachieRendererFactory = self.tachieRendererFactory
+        return { context in
+            context.targetSize = PixelSize(
+                width: timeline.videoInfo.width, height: timeline.videoInfo.height
+            )
+            let childProvider = MetalSourceProvider(
+                devices: devices,
+                baseDirectory: baseDirectory,
+                sceneResolver: sceneResolver,
+                parentSceneChain: parentSceneChain,
+                tachieRendererFactory: tachieRendererFactory,
+                timeline: timeline
+            )
+            let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
+            return TimelineComposer(
+                scene: scene,
+                picker: CompositeItemPicker(groupItem: group),
+                targetFactory: context,
+                sourceProvider: { item in childProvider.source(for: item) }
+            )
+        }
+    }
+
+    /// シーンの内部合成器を生成する境界。解決・入れ子上限（本家
+    /// Scene.TryCreateVideoSource: 親シーン列に参照先 ID が 10 回
+    /// 現れたら生成しない）を担う。描画先の文脈は呼び出し側
+    /// （MetalSceneSource が所有する文脈）を借り、その寸法を参照先
+    /// タイムラインの VideoInfo へ合わせる。内部合成器は子の供給元を
+    /// 持ち、その供給元がさらに内側のシーンを解決する。
+    private func sceneComposerFactory() -> (UUID, MetalGraphicsContext) -> TimelineComposer? {
+        let devices = self.devices
+        let baseDirectory = self.baseDirectory
+        let sceneResolver = self.sceneResolver
+        let parentSceneChain = self.parentSceneChain
+        let tachieRendererFactory = self.tachieRendererFactory
+        return { sceneID, context in
+            guard let timeline = sceneResolver?(sceneID) else { return nil }
+            if parentSceneChain.filter({ $0 == sceneID }).count >= 10 { return nil }
+            context.targetSize = PixelSize(
+                width: timeline.videoInfo.width, height: timeline.videoInfo.height
+            )
+            let childProvider = MetalSourceProvider(
+                devices: devices,
+                baseDirectory: baseDirectory,
+                sceneResolver: sceneResolver,
+                parentSceneChain: parentSceneChain + [sceneID],
+                tachieRendererFactory: tachieRendererFactory,
+                timeline: timeline
+            )
+            let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
+            return TimelineComposer(
+                scene: scene,
+                targetFactory: context,
+                sourceProvider: { item in childProvider.source(for: item) }
+            )
         }
     }
 }
