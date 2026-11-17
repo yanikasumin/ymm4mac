@@ -172,6 +172,14 @@ struct ProjectView: View {
     @State private var canvasViewportWidth: CGFloat = 800
     /// 波形表示の有無（本家の「波形を表示/非表示」）。
     @State private var showWaveform = true
+    /// レベルメーターの表示フラグ（本家 YMMSettings の
+    /// PeakMeterSettings.IsEnabled / LoudnessMeterSettings.IsEnabled）。
+    /// ピークメーターは既定 true、ラウドネスメーターは既定 false
+    /// （SoundLevelMeterSettings のフィールド既定と YMMSettings の生成引数）。
+    @State private var isPeakMeterEnabled = true
+    @State private var isLoudnessMeterEnabled = false
+    /// メーター帯へのホバー（本家はホバー時に目盛り数値ラベルを出す）。
+    @State private var isMeterHovering = false
 
     init(project: Project, diagnostics: YmmpLoadDiagnostics, sourceURL: URL?) {
         self.project = project
@@ -227,7 +235,6 @@ struct ProjectView: View {
 
                         HStack(alignment: .top, spacing: 0) {
                             levelMeters
-                                .frame(width: 24)
                                 .frame(maxHeight: .infinity)
 
                             Divider()
@@ -966,40 +973,217 @@ struct ProjectView: View {
             .help(help)
     }
 
-    /// レベルメーター（本家 TimelineView 左端）の形。既定表示は
-    /// ピークメーターのみで、ラウドネスメーターは設定で有効化する
-    /// （UI-LAYOUT-FACTS.md §16）。脇に dB 数値を出す。
-    /// 音声レベルの供給は再生接続フェーズで行うため、現段階は
-    /// 目盛りのある枠のみで信号は流れない（台帳参照）。
-    private var levelMeters: some View {
-        VStack(spacing: 2) {
-            meterBar
-                .help("ピークメーター")
-            Text("-∞ dB")
-                .font(.system(size: 7))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
+    // MARK: - レベルメーター
+
+    /// レベルメーターの色帯（dB 区間）。本家 SoundLevelMeterSettings の
+    /// 帯定義（start が上端、end が下端）。
+    private struct MeterZones {
+        var redStart: Double
+        var redEnd: Double
+        var yellowStart: Double
+        var yellowEnd: Double
+        var greenStart: Double
+        var greenEnd: Double
     }
 
-    private var meterBar: some View {
+    /// 本家 VerticalLevelMeter の帯色（VerticalLevelMeter.xaml のリソース）。
+    private static let meterRed = SwiftUI.Color(red: 0xD5 / 255, green: 0, blue: 0)
+    private static let meterYellow = SwiftUI.Color(red: 1, green: 0xC4 / 255, blue: 0)
+    private static let meterGreen = SwiftUI.Color(
+        red: 0x4C / 255, green: 0xAF / 255, blue: 0x50 / 255)
+    private static let meterGray = SwiftUI.Color(
+        red: 0x54 / 255, green: 0x6E / 255, blue: 0x7A / 255)
+
+    /// ピークメーターの帯（SoundLevelMeterSettings 引数なし生成時の既定）。
+    private static let peakMeterZones = MeterZones(
+        redStart: 0, redEnd: -3, yellowStart: -3, yellowEnd: -35,
+        greenStart: -5, greenEnd: -15)
+    /// ラウドネスメーターの帯（YMMSettings の LoudnessMeterSettings 生成引数）。
+    private static let loudnessMeterZones = MeterZones(
+        redStart: 0, redEnd: -12, yellowStart: -12, yellowEnd: -45,
+        greenStart: -14, greenEnd: -25)
+
+    /// レベルメーター帯（本家 TimelineView 左端）の形。構成は本家コードで
+    /// 確定（REVIEW-DISPOSITION-MAC0028-FRONTEND UI32-01）:
+    /// ピークメーター（コード側呼称はサウンドレベルメーター）は
+    /// L/R ステレオ対の縦バー2本で、既定で表示される。
+    /// ラウドネスメーターは BS.1770 単一値の1本で、既定は無効、
+    /// 有効化したときだけ左側へ追加される。
+    /// 表示の切り替えは本家どおりコンテキストメニューから行う
+    /// （TimelineView.xaml の TogglePeakMeterVisibility /
+    /// ToggleLoudnessMeterVisibility）。
+    /// 音声レベルの供給は再生接続フェーズで行うため、現段階の値は
+    /// 無信号（下限 −60 dB）で固定（台帳参照）。
+    private var levelMeters: some View {
+        HStack(alignment: .top, spacing: 0) {
+            if isLoudnessMeterEnabled {
+                meterColumn(
+                    unitLabel: "LKFS",
+                    zones: Self.loudnessMeterZones,
+                    barCount: 1,
+                    barWidth: 20,
+                    helpText: "ラウドネスメーター（-∞ LUFS）")
+            }
+            if isPeakMeterEnabled {
+                meterColumn(
+                    unitLabel: "dB",
+                    zones: Self.peakMeterZones,
+                    barCount: 2,
+                    barWidth: 10,
+                    helpText: "ピークメーター（L: -∞ dB / R: -∞ dB）")
+            }
+        }
+        .onHover { isMeterHovering = $0 }
+        .contextMenu {
+            Toggle("ピークメーターを表示", isOn: $isPeakMeterEnabled)
+            Toggle("ラウドネスメーターを表示", isOn: $isLoudnessMeterEnabled)
+        }
+    }
+
+    /// メーター1カラム分。バーの上に目盛りの刻みを重ね、右上に単位表記、
+    /// ホバー時に目盛り数値（−5…−60）を重ねる（本家 TimelineView の
+    /// 各メーターグリッドの構造）。
+    private func meterColumn(
+        unitLabel: String, zones: MeterZones, barCount: Int,
+        barWidth: CGFloat, helpText: String
+    ) -> some View {
+        let columnWidth = barWidth * CGFloat(barCount)
+        return ZStack(alignment: .top) {
+            HStack(spacing: 0) {
+                ForEach(0..<barCount, id: \.self) { _ in
+                    levelMeterBar(zones: zones)
+                        .frame(width: barWidth)
+                }
+            }
+            meterTicks
+            Text(unitLabel)
+                .font(.system(size: 10))
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            if isMeterHovering {
+                meterScaleLabels
+            }
+        }
+        .frame(width: columnWidth)
+        .frame(maxHeight: .infinity)
+        .help(helpText)
+    }
+
+    /// 目盛りの刻み（5 dB ごと。本家の UniformGrid の刻み相当）。
+    private var meterTicks: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .bottom) {
-                Rectangle()
-                    .fill(Color.black.opacity(0.8))
-                ForEach([0.25, 0.5, 0.75], id: \.self) { ratio in
+            ZStack(alignment: .topLeading) {
+                ForEach(1...12, id: \.self) { step in
                     Rectangle()
-                        .fill(Color.white.opacity(0.35))
-                        .frame(height: 1)
-                        .offset(y: -geometry.size.height * CGFloat(ratio))
-                        .frame(maxHeight: .infinity, alignment: .bottom)
+                        .fill(SwiftUI.Color.primary.opacity(0.5))
+                        .frame(width: 2, height: 1)
+                        .offset(
+                            y: geometry.size.height * CGFloat(step) / 12 - 1)
                 }
             }
         }
-        .frame(width: 8)
+        .allowsHitTesting(false)
+    }
+
+    /// 目盛り数値 −5…−60（本家はホバー時または常時表示設定で出す）。
+    private var meterScaleLabels: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .topLeading) {
+                ForEach(1...12, id: \.self) { step in
+                    Text("-\(step * 5)")
+                        .font(.system(size: 9))
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .offset(
+                            y: geometry.size.height * CGFloat(step) / 12 - 11)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// VerticalLevelMeter 1本分。範囲は 0 dB（上端）〜 −60 dB（下端）の
+    /// 線形。背景は色帯を不透明度0.2で常時表示し、Peak バーは
+    /// 不透明度0.6で下から Peak 位置まで同じ色帯を重ねる。
+    /// Average（RMS）は黒線、PeakHold はその値が属する帯の色の線
+    /// （本家 VerticalLevelMeter.xaml）。
+    /// 現段階は無信号のため peak / average / peakHold は下限で固定。
+    private func levelMeterBar(
+        zones: MeterZones, peak: Double = -60, average: Double = -60,
+        peakHold: Double = -60
+    ) -> some View {
+        GeometryReader { geometry in
+            let height = geometry.size.height
+            ZStack(alignment: .topLeading) {
+                // 背景の色帯（不透明度0.2）
+                meterBand(color: Self.meterGray, start: 0, end: -60, height: height)
+                meterBand(
+                    color: Self.meterRed, start: zones.redStart,
+                    end: zones.redEnd, height: height)
+                meterBand(
+                    color: Self.meterYellow, start: zones.yellowStart,
+                    end: zones.yellowEnd, height: height)
+                meterBand(
+                    color: Self.meterGreen, start: zones.greenStart,
+                    end: zones.greenEnd, height: height)
+            }
+            .opacity(0.2)
+            ZStack(alignment: .topLeading) {
+                // Peak バー（帯の上端を peak でクランプ）
+                meterBand(color: Self.meterGray, start: peak, end: -60, height: height)
+                meterBand(
+                    color: Self.meterRed, start: min(zones.redStart, peak),
+                    end: zones.redEnd, height: height)
+                meterBand(
+                    color: Self.meterYellow, start: min(zones.yellowStart, peak),
+                    end: zones.yellowEnd, height: height)
+                meterBand(
+                    color: Self.meterGreen, start: min(zones.greenStart, peak),
+                    end: zones.greenEnd, height: height)
+            }
+            .opacity(0.6)
+            if peak > 0 {
+                // 0 dB 超過時は全面を赤で重ねる（本家の超過表示）。
+                Rectangle()
+                    .fill(Self.meterRed)
+                    .opacity(0.8)
+            }
+            // Average（RMS）の黒線
+            Rectangle()
+                .fill(SwiftUI.Color.black)
+                .frame(height: 2)
+                .opacity(0.7)
+                .offset(y: -average / 60 * height)
+            // PeakHold の線（値が属する帯の色）
+            Rectangle()
+                .fill(meterZoneColor(zones: zones, value: peakHold))
+                .frame(height: 2)
+                .offset(y: -peakHold / 60 * height)
+        }
+        .clipped()
+    }
+
+    /// dB 区間 [end, start] の帯。start が上端（0 dB が y=0）。
+    private func meterBand(
+        color: SwiftUI.Color, start: Double, end: Double, height: CGFloat
+    ) -> some View {
+        let bandHeight = height * CGFloat(start - end) / 60
+        return Rectangle()
+            .fill(color)
+            .frame(height: max(bandHeight, 0))
+            .offset(y: -start / 60 * height)
+    }
+
+    /// 値が属する帯の色（描画順で上に来る帯を優先する）。
+    private func meterZoneColor(zones: MeterZones, value: Double) -> SwiftUI.Color {
+        if value <= zones.greenStart && value >= zones.greenEnd {
+            return Self.meterGreen
+        }
+        if value <= zones.yellowStart && value >= zones.yellowEnd {
+            return Self.meterYellow
+        }
+        if value <= zones.redStart && value >= zones.redEnd {
+            return Self.meterRed
+        }
+        return Self.meterGray
     }
 
     // MARK: - ステータスバー
