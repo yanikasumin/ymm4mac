@@ -181,7 +181,7 @@ public final class TimelineComposer {
         picker: any ItemPicker = CompositeItemPicker(),
         targetFactory: any RenderTargetFactory,
         sourceProvider: @escaping (BaseItem & VideoItemProperties) -> any Source,
-        effectProvider: any EffectPairProvider = EmptyEffectPairProvider(),
+        effectProvider: any EffectPairProvider = TypedEffectPairProvider(),
         segmentBuilder: DrawSegmentBuilder = DrawSegmentBuilder(),
         zoomInterpolationMode: InterpolationMode = .linear,
         cameraFinalizer: @escaping (DrawDescription) -> DrawDescription = { $0 },
@@ -307,7 +307,7 @@ public final class TimelineComposer {
                 // 行う（本家と同じ2段構成）。
                 for resource in runResources {
                     guard let effected = resources[ObjectIdentifier(resource.item)] else { continue }
-                    if effected.item.isClippingWithObjectAbove {
+                    if effected.item.effectiveIsClippingWithObjectAbove {
                         effected.setAlphaMask(lastDrawnImage ?? floodOutput)
                     } else {
                         lastDrawnImage = effected.output
@@ -322,7 +322,7 @@ public final class TimelineComposer {
                     if fragment.hasCuts { continue }
                     if let image = effected.output {
                         target.drawImage(
-                            image, blend: effected.item.blend, interpolation: zoomInterpolationMode
+                            image, blend: effected.item.effectiveBlend, interpolation: zoomInterpolationMode
                         )
                     }
                     drawnAnything = true
@@ -342,8 +342,10 @@ public final class TimelineComposer {
                     // 本家の境界順序は EndDraw → ターゲット解除 → Close
                     // （EffectedItemSource 側の順序とは異なる）。この層では
                     // ターゲット解除が観測できないため endDraw → close に
-                    // 畳まれる。
-                    target.close()
+                    // 畳まれる。close の失敗もこの境界では包まずに伝える
+                    // （MAC-0021。失敗した描画先は currentTarget に残り、
+                    // dispose() で解放される）。
+                    try target.close()
                     currentTarget = nil
                     frameBufferInputs.append(target)
                     let closedTarget = target
@@ -373,15 +375,15 @@ public final class TimelineComposer {
                 }
                 // クリッピング対象は描画に先立ってマスクを設定される。
                 // 自身の出力は描かれるが、「直前の画像」としては数えない。
-                if effected.item.isClippingWithObjectAbove {
+                if effected.item.effectiveIsClippingWithObjectAbove {
                     effected.setAlphaMask(lastDrawnImage ?? floodOutput)
                 }
                 if let image = effected.output {
                     target.drawImage(
-                        image, blend: effected.item.blend, interpolation: zoomInterpolationMode
+                        image, blend: effected.item.effectiveBlend, interpolation: zoomInterpolationMode
                     )
                 }
-                if !effected.item.isClippingWithObjectAbove {
+                if !effected.item.effectiveIsClippingWithObjectAbove {
                     lastDrawnImage = effected.output
                 }
                 drawnAnything = true
@@ -392,7 +394,9 @@ public final class TimelineComposer {
             target.fillRect(RectF(left: 0, top: 0, right: 0, bottom: 0), color: .transparent)
         }
         target.endDraw()
-        target.close()
+        // close が失敗したら合成結果は差し替えず、失敗をそのまま伝える
+        // （不完全な画像を正常な出力として公開しない。MAC-0021）。
+        try target.close()
         output = target.image
 
         // TimelineItemRects（当たり判定用データ）の再構築は、画像境界の
@@ -509,7 +513,7 @@ public final class TimelineComposer {
         var description = TimelineItemSourceDescription(
             base, itemFrame: itemFrame, itemLength: itemLength, layer: item.layer
         )
-        let itemScale = abs(item.zoom.value(atFrame: itemFrame, length: itemLength, fps: base.fps) / 100)
+        let itemScale = abs(item.effectiveZoom.value(atFrame: itemFrame, length: itemLength, fps: base.fps) / 100)
         description.renderScale = TimelineItemSourceDescription.composeRenderScale(
             parentRenderScale: nil, itemScale: itemScale
         )
