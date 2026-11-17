@@ -583,6 +583,26 @@
 
 **次の担当へ。** 描画系で残る主項目は素通し32種の処理器化である。使用量の観点では Outline（実プロジェクトで52件）が最大だが、輪郭生成の方式確定が前提になる。HLSL カスタムシェーダ2種は実行基盤の判断が要る。あわせて、プレーン前提ガードの発動頻度を実プロジェクトで測ることが、実装済み効果の実効範囲を確定するうえで必要である。
 
+#### MAC-0033 — GPU テクスチャ確保失敗のエラー伝播統一（GPU28-03 の処分）（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** ChatGPT レビュー第5ラウンドの指摘 GPU28-03（処分は `analysis-notes/REVIEW-DISPOSITION-MAC0028-FRONTEND.md` で採用確定）: GPU エフェクト処理器のテクスチャ確保失敗が、確保ヘルパーの nil 戻りとして伝播し、基底処理器の `update` が入力をそのまま出力として公開していた。同じファイル内でもコマンドバッファ失敗は `MetalRenderError` を throw しており、MAC-0021 で入れた描画先の失敗通知契約とも不統一で、確保失敗だけが無言の素通しになっていた。確保失敗を「効果なしの素通し」と区別し、エラーとして伝播させるよう統一した。
+
+**どこを変更したか。** `Sources/YMM4GPU/MetalEffectProcessors.swift`（基底ヘルパー群と `makeTexture`）、`Sources/YMM4GPU/MetalEffectProcessorsStage2.swift`（第2段の呼び出し側と2つの描画ヘルパー）。YMM4Core・テスト・公開 API は無変更。クラス構成に変更はないため ARCHITECTURE は不変。
+
+**どう実装したか。** 契約の形は実コードで判断した: Core の `VideoEffectProcessor.update` は元々 throws であり（`Sources/YMM4Core/Rendering/EffectedItemSource.swift`。失敗時は例外を投げる契約で、連鎖側は DrawingEffect の失敗だけを包み処理器の失敗は伝播のみ）、基底 `MetalEffectProcessor.update` も `try render(...)` で呼んでいたため、プロトコル変更なしに直接 throw へ統一できた。失敗を画像／文脈側に記録して次の close() で送出する代替形（MAC-0021 の描画先方式）は、処理器には close() 相当の確定点が無く、失敗をその場で連鎖の呼び出し側へ伝播させる方が第4章の意味論に合うため採らなかった。(1) `makeTexture` を throw 化し、デバイスの確保失敗で既存ケース `MetalRenderError.textureCreationFailed(width:height:)`（MAC-0021 で新設済み）を投げる。(2) 確保失敗が nil の唯一の意味だった基底ヘルパ8種（renderColorEffect / renderGaussianBlurred / renderDirectionalBlurred / renderRectangleMosaic / renderTransformed / renderWarp / renderComposite / renderMorphology）は戻りを非 Optional へ変更し、内部の `guard let … else { return nil }` を通常の let へ置き換えた。空境界で透明画像を返す経路（renderTransformed 等）と、σ≤0 や寸法1以下で入力を返す経路は従来どおり。(3) 第2段の呼び出し側で、非 Optional 化したヘルパを受ける `guard let … else { return nil }` 7箇所（RoundCorner / BorderBlur / InOutBorderBlur のマスク、Shadow の3段、FillForeground のマスク、DrawLazyEffect の変換）を通常の let へ置き換えた。(4) 自前でデバイス確保する2ヘルパー（`renderRoundedRectFill` と FrameLine の `renderSolidRects`）は、nil を「出力境界が空＝描くものが無い正当な無処理」だけに限定し、テクスチャ確保失敗は textureCreationFailed、コマンドバッファ／エンコーダ生成失敗は commandBufferFailed を投げるよう分離した。(5) 基底 `render` の契約コメントに「nil を返してよいのは効果なしが正当な場合だけであり、資源失敗は MetalRenderError を投げる」ことを明記した。基底 `update` の nil → 入力登録のフォールバック自体は、正当な無処理を返す将来の処理器のための契約として残置した。
+
+**本家との差分。** 本家には対応する失敗通知経路が無く、これは MAC-0021 と同じく Swift 側の契約追加である（本家の失敗挙動の再現ではない）。正常経路の描画結果は無変更であり、ユーザーから見える違いは生じない。失敗時に不完全な画像が正常な出力として公開されなくなる点だけが変わる。
+
+**変更しなかった素通し（既知制限のまま）。** プレーン前提ガード（GPU28-01: 入力が恒等変換でなく不透明度≠1 のとき基底 update が入力を素通しする。DrawDescription フックは通る）、単色ブラシ以外での Shadow / FillBackground / FillForeground / FrameLine の素通し（GPU28-02、ブラシサブシステムが差し替え点）、非矩形モザイクの素通し（GPU23-01）。残存する nil 戻りは、値のパース（parseARGBColor、モザイクのパラメータ抽出）と空境界の無処理だけであることを grep で全数監査した。
+
+**メモリ・並行性。** 所有関係・解放順序の変更はない。throw した時点でその段の中間テクスチャは解放され（ARC）、連鎖の後段は実行されない。同期実行の構造も無変更。
+
+**検証。** Linux: `~/workspace/tools/swift-6.1.2/usr/bin/swift test` で全414件・0失敗（本件の変更は macOS 限定ファイルのみで Core・テストは無変更。実行は並行タスクのテスト実行と VM を共有し約26分を要した）。Mac 実機（検証コピー ~/verify-gpu28-03/YMM4Mac）: ルートパッケージの `swift build` 成功、変更2ファイルの強制再コンパイルで警告0。画素ハーネスを同コピーへ向け替えて再実行: mac0023 = 25 PASS / 0 FAIL、mac0028 = 90 PASS / 0 FAIL（いずれも従来どおり全合格で退行なし）。確保失敗の実行時模擬として専用ハーネスを新設した（本人の Mac の ~/mac0033-harness、正本は `~/workspace/ymm4-work/mac0033-harness/`）: 回転処理器へ DrawDescription の Zoom = 100000 を与え、出力テクスチャ寸法を約905万 px（2D 上限16384 超）にして確保を決定的に失敗させる設計で、対照2件（通常拡縮で更新成功・出力公開）は PASS。ただし失敗ケース自体の実行は、この Mac（macOS 26）では上限超えディスクリプタが makeTexture の nil 戻りより前に Metal のディスクリプタ検証アサーションでプロセスが abort するため成立しなかった（アサーション出力に要求寸法 9050967 が記録され、exit 134。MTL_DEBUG_LAYER=0 / METAL_DEVICE_WRAPPER_TYPE=0 でも回避不可）。寸法経路で nil 戻りを決定的に再現する手段が無いため、失敗ケース3件は環境変数 MAC0033_RUN_FAILURE_CASE=1 のときだけ実行する SKIP 表示とし、throw 経路の担保はコード監査（確保箇所は全て throw する makeTexture 経由か明示 throw）に拠る。メモリ枯渇による再現は本人の実機を不安定化させるため採らなかった。アサーション出力の要求寸法は、要求が素通しされずデバイスへ実際に到達した傍証にはなる。
+
+**未解決事項。** (1) 確保失敗の throw を実行時に観測する検証は上記の環境制約で未実施（コード監査で代替）。実運用で nil が返るのはメモリ圧迫時等であり、その経路は本件の throw 化で初めて通知されるようになった。(2) DebugApp パッケージは ProjectView.swift の `Color` 型曖昧性エラーでビルド失敗するが、本件と無関係なフロントエンド側の既存状態（本件の変更に公開 API の変更はない）。
+
+**次の担当へ。** GPU28-03 は本件で解消。第5ラウンド処分の残りは UI32-01（レベルメーターの L/R 2本化、フロントエンド側）と QA24-01 の比較試験（掃引＋窓長 48/64/96 比較）。GPU28-01 / 02 は既知制限として継続。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
