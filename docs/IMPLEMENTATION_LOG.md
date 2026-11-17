@@ -367,7 +367,7 @@
 
 **どこを変更したか。** `Sources/YMM4Core/Rendering/TimelineSource.swift`（TimelineComposer の既定 effectProvider を EmptyEffectPairProvider から TypedEffectPairProvider へ変更）、`Sources/YMM4Core/Rendering/EffectedItemSource.swift`（既定供給元の変更と陳腐化したコメントの更新）、`Sources/YMM4Core/Effects/VideoEffectRegistry.swift`（TypedEffectPairProvider にキーフレーム文脈の伝播を追加）。テストは新規 `Tests/YMM4CoreTests/EffectWiringTests.swift`（EffectWiringTests 4件）。DebugApp の PreviewBox は供給元を指定していないため、既定の変更により自動的に接続される（アプリ側の変更なし）。
 
-**どう実装したか。** (1) 保持形式の判断: モデル層は全箇所で従来どおり PreservedObject の生保持のままとし、保存経路は一切変更しない。型付き定義は消費側（TypedEffectPairProvider）が合成時に作る一時的なビューとし、保存時に型付き encode で再直列化することはしない。根拠は、実ファイルの初回保存のバイト列を変えない保証である（型付き encode を経由すると、キー順の並び替え、空の Remark の省略、数値の再直列化による表記の正規化が入りうる）。`VideoEffectRegistry.encode` は変換用途として利用可能なまま残置した。(2) 接続先: TimelineComposer の既定の EffectPairProvider を TypedEffectPairProvider に差し替えた。供給対象のキーは、VisualItem 系の VideoEffects、VoiceItem の JimakuVideoEffects、GroupItem の VideoEffects、TachieFaceItem・VoiceItem の TachieFaceEffects とした。SceneItem / TransitionItem の Before・AfterVideoEffects は対象外とした（供給経路が別系統のため）。(3) キーフレーム文脈の伝播: TypedEffectPairProvider は、定義の生成時と、所有アイテムの KeyFrames が変更されたときにだけ `setKeyFrames` を再伝播する。定義インスタンス自体は作り直さない（MAC-0010 の連鎖の再利用規則が、定義インスタンスの同一性で差し替えを判定するため）。
+**どう実装したか。** (1) 保持形式の判断: モデル層は全箇所で従来どおり PreservedObject の生保持のままとし、保存経路は一切変更しない。型付き定義は消費側（TypedEffectPairProvider）が合成時に作る一時的なビューとし、保存時に型付き encode で再直列化することはしない。この判断が保証する射程は、型付きエフェクト定義の消費経路が既存の生 JSON 保存経路を変更せず、エフェクトの保存結果を新たに正規化しないことまでである（型付き encode を経由すると、キー順の並び替え、空の Remark の省略、数値の再直列化による表記の正規化が入りうる）。プロジェクト全体の固定点は YmmpCodec の検証結果に依存する（EF18-02 による精密化、MAC-0030 で是正）。`VideoEffectRegistry.encode` は変換用途として利用可能なまま残置した。(2) 接続先: TimelineComposer の既定の EffectPairProvider を TypedEffectPairProvider に差し替えた。供給対象のキーは、VisualItem 系の VideoEffects、VoiceItem の JimakuVideoEffects、GroupItem の VideoEffects、TachieFaceItem・VoiceItem の TachieFaceEffects とした。SceneItem / TransitionItem の Before・AfterVideoEffects は対象外とした（供給経路が別系統のため）。(3) キーフレーム文脈の伝播: TypedEffectPairProvider は、定義の生成時と、所有アイテムの KeyFrames が変更されたときにだけ `setKeyFrames` を再伝播する。定義インスタンス自体は作り直さない（MAC-0010 の連鎖の再利用規則が、定義インスタンスの同一性で差し替えを判定するため）。
 
 **本家との差分。** 本家は読み込み時にエフェクトを型付き定義としてモデル層に保持するが、こちらはモデル層では生保持とし、型付き定義は消費側の一時的なビューに留める。合成時の評価・描画への影響はない（供給される定義と処理器は MAC-0018 のもの）。保存の出力は生保持の経路のままであるため、本家形式との関係は MAC-0005 以来の保持方針から変わらない。SceneItem / TransitionItem の Before・AfterVideoEffects が未接続な点は本件の範囲外とした未実装である。
 
@@ -427,7 +427,7 @@
 
 **どう実装したか。** (1) 定義クラスは MAC-0018 の基盤（VideoEffectDefinitionBase）の作法に従い、$type 対応・Animation 型パラメータ・追加フィールド保持によるデータ保全を備える。GPU 系は共通基底 `GPUEffectDefinitionBase` を介する。(2) 処理器は暫定として `GPUEffectPassthroughProcessor`（入力をそのまま返す素通し）を全種に割り当てた。MAC-0019 の消費側の型付き復元により、合成チェーンへは型付き定義として供給されるが、描画結果にはまだ影響しない。(3) 旧互換キーの転送6件を実装しテストで固定した（Sepia / Gradient / CenterPoint / ChromaKey2 / Mask / InOutRotate の旧形式キーから現行プロパティへの読み替え）。
 
-**本家との差分。** 定義（パラメータの保持と往復）は本家と一致させる一方、処理器が素通しのため、GPU 処理系エフェクトの描画結果は本家と異なる（エフェクトが効かない）。これは未実装の明示であり、次段の Metal 処理器で解消する。多態パラメータの内部（Brush、DisplacementMapTransform、NoiseParameter、MosaicParameter、Mask の ShapeParameter）は型付き化せず生保持のままである。GradientStop / MeshDeformationPoint は一部のみ型付けした新規構造体で、残部は追加フィールド保持とした。
+**本家との差分。** 定義（パラメータの保持と往復）は本家と一致させる一方、処理器が素通しのため、GPU 処理系エフェクトの描画結果は本家と異なる（エフェクトが効かない）。これは未実装の明示であり、次段の Metal 処理器で解消する。多態パラメータの内部（Brush、DisplacementMapTransform、NoiseParameter、MosaicParameter、Mask の ShapeParameter）は型付き化せず生保持のままである。GradientStop / MeshDeformationPoint は一部のみ型付けした新規構造体で、残部は追加フィールド保持とした。Gradient の旧キー転送には防御の差分がある: Stops が2要素未満の異常な旧ファイルでは、本家は ColorTo の setter が Stops[1] を無条件に参照するため失敗しうるが、Swift 側はデータ保全を優先し、要素がある場合だけ転送して回避する（GPU22-05、MAC-0030 で記録）。
 
 **メモリ・並行性。** 定義は MAC-0018 と同じ保持方式（参照型の定義インスタンス＋追加フィールド保持）。暫定処理器は入力参照をそのまま返すため、新たな資源は生じない。
 
@@ -528,6 +528,24 @@
 **未解決事項。** (a) 合成グループ内部・シーン内部の子への GPU 色エフェクト適用（内部合成器への MetalEffectPairProvider 接続）。(b) 画面外にはみ出す子の切り取り（画面サイズへの畳み込み、MAC-0012 以来の差分）。
 
 **次の担当へ。** 描画系の Source は本件で全種別が揃った。残る描画系の主項目は GPU 処理系エフェクト処理器の第2段以降（残り63種）と、内部合成器への GPU エフェクト接続である。
+
+#### MAC-0030 — 書き出しの解析・結果表現の是正（ChatGPT レビュー指摘 EX17-05〜EX17-08 の処分）（IMPLEMENTED）
+
+**何を実装したか。** MAC-0017（書き出しの芯）と MAC-0026（実接続）に対する ChatGPT レビューの指摘4件を処分した。いずれも実コードで照合し、指摘どおりの不整合が存在することを確認してから是正した。(EX17-05) ラウドネス解析の省略が接続側で効いておらず、解析不要の設定でも音声を全区間読み直していた。(EX17-06) 解析が全フレーム分の配列を蓄積し、長時間の書き出しでメモリを圧迫していた。(EX17-07) 両ストリーム無効の書き出しで、成果物が無いのに「出力あり」と報告されていた。(EX17-08) エラーの重大度軸に「対処可能性」と「成否」が混在し、一次的なエンコード失敗が「警告」と表示されうる矛盾があった。あわせて文書の精密化2件（EF18-02、GPU22-05）を本項で反映した。
+
+**どこを変更したか。** `Sources/YMM4Core/Export/LoudnessAnalysis.swift`（解析計画とストリーミング解析の新設、累積器への共有化）、`Sources/YMM4Core/Export/ExportAudioProvider.swift`（計画による判定へ変更）、`Sources/YMM4Core/Export/ExportSession.swift`（ExportError の軸分離、VideoFileWriting への producesOutputFile 追加、ExportOutcome への finalizeSucceeded 追加）、`Sources/YMM4Core/Export/FFmpegProcessWriter.swift`（分類器の軸変更、producesOutputFile の実装）、`Sources/YMM4GPU/MetalExport.swift`（ExportError 生成箇所の追随）、`Apps/DebugApp/Sources/YMM4MacDebug/ProjectView.swift`（書き出し要約の表示追随）。テストは `Tests/YMM4CoreTests/ExportTests.swift` と `Tests/YMM4CoreTests/ExportAudioProviderTests.swift`（新規9件、既存の断言4件を新軸へ更新）。
+
+**どう実装したか。** (EX17-05) `LoudnessAnalysis` に解析計画 `plan(loudness:compressor:)`（Plan: requiresReading / volumeRate / compressorRate）と `skippedResult(for:)` を新設した。`TimelineExportAudioProvider` は音声を読む前に計画を判定し、読み取り不要（Loudness=Disabled かつ Compressor=Disabled、または Disabled かつ Custom）の場合は解析用ミキサー自体を生成せず、倍率だけを確定する。本家 VideoFileWriter.cs L128–141 の分岐（解析ブロックの入口条件と Custom 時の倍率設定のみ）と一致する。(EX17-06) ストリーミング版 `analyze(stream:frameCount:loudness:compressor:hz:fps:)` を追加し、本家どおり固定長の1配列を使い回してフレーム単位でアナライザとピーク測定へ逐次渡すようにした。チャンク列版 `analyze(chunks:...)` との間で最終値の計算がずれないよう、1チャンク分の取り込みと確定計算を私設の Accumulator へ共有化した。`makeChunks` はテスト補助として残置した（全区間の保持は 48kHz ステレオ Float32 で1時間あたり約1.38GB に達していた）。(EX17-07) `VideoFileWriting` に `producesOutputFile`（プロトコル拡張で既定 true）を追加し、`FFmpegProcessWriter` はレイアウトが音声・映像とも `-f null` の場合に false を返す。`ExportOutcome` に `finalizeSucceeded` を新設し、`outputProduced = finalizeSucceeded && writer.producesOutputFile` とした。DebugApp の要約は、成果物が無い完了では出力パスを表示しない。(EX17-08) `ExportError.Severity`（warning / fatal）を廃止し、原因の対処可能性を表す `Cause`（actionable = 特定でき対処可能 / unresolvable = 特定できない・対処不能）へ置き換えた。`FFmpegErrorClassifier` の文言表の一致は actionable になる。付随ファイル生成の失敗など副次的な失敗は、従来どおり `ExportOutcome.warning` へ入れることで表し、その際エラー自体の cause は書き換えない（以前は severity を warning へ書き換えていた）。成否は completion / finalizeSucceeded / outputProduced が担う。
+
+**本家との差分。** 解析の省略条件・倍率の確定方法は本家の分岐どおりで、新たな差分は生じない。解析対象の範囲は従来どおりタイムライン全体であり、本家の EncodeFrom / EncodeTo による部分範囲の解析とは異なる（MAC-0026 以来の既存差分、本件の範囲外）。結果表現（ExportOutcome / ExportError）は Mac 版の内部契約であり、本家に対応物はない。文書の精密化: (EF18-02) MAC-0019 項の「どう実装したか」(1) にあった固定点の保証の表現を、「型付きエフェクト定義の消費経路は既存の生 JSON 保存経路を変更せず、エフェクトの保存結果を新たに正規化しない。プロジェクト全体の固定点は YmmpCodec の検証結果に依存する」という射程へ限定した。(GPU22-05) MAC-0022 項の「本家との差分」へ、Gradient の旧キー転送で Stops が2要素未満の異常な旧ファイルでは本家は失敗しうる（ColorTo の setter が Stops[1] を無条件に参照する）が Swift 側は防御して回避する、という差分を追記した（実コード照合済み: 本家 GradientEffect.cs の ColorTo setter のガードは `Stops.Count >= 0` のみ、Swift 側は `stops.count > 1` を要求する）。
+
+**メモリ・並行性。** 解析パスの保持量は固定長1フレーム分（48kHz / 30fps で 3,200 サンプル）＋アナライザ内部のブロック蓄積のみとなり、書き出し時間に比例しなくなった。Accumulator は値型で、解析は従来どおり初期化時の同期処理である。
+
+**検証。** `~/workspace/tools/swift-6.1.2/usr/bin/swift test`（Linux、Swift 6.1.2）で全410件・0失敗（従来401件＋新規9件）。新規テストの内訳: 解析計画の分岐（ExportTests）、ストリーミング版が計画省略時にストリームを読まないこと（読み取り回数を数えるフェイク）、ストリーミング版とチャンク列版でピーク・LKFS・倍率が一致すること（3設定の組み合わせ）、Provider の初期化で解析不要設定では素材が一切読まれないこと2件と解析あり設定では読まれる対照1件（ExportAudioProviderTests）、finalize 成功＋成果物なしの区別、対処可能な finalize 失敗でも completion が failed になること、FFmpeg の両系統 null で producesOutputFile が false になりプロセスが起動しないこと。既存テストの前提変更は、重大度軸の廃止に伴う断言4件の置き換えのみで、「全区間保持」に依存する期待は無かった（makeChunks のテストは読み方自体の検証であり不変）。Mac 実機でルート＋DebugApp の `swift build` 成功・警告0（UI 追随を含む）。
+
+**未解決事項。** 本件の範囲内では無し。
+
+**次の担当へ。** 書き出し系で残る既知の未解決は MAC-0017 / MAC-0026 由来のもの（EnvelopeFollower の Ratio≠1 波形一致、素材デコードの全体メモリ展開、AVAssetReader のトリム情報、VoiceItem の音声）であり、本件では扱っていない。
 
 ## 以降の記載テンプレート
 
