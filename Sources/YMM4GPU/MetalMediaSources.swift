@@ -524,7 +524,9 @@ public final class MetalCompositeSource: Source {
     }
 }
 
-/// フレームバッファアイテムの Source。本家 FrameBufferSource に対応する。
+/// フレームバッファ系 Source の共通基底。本家 FrameBufferSource の
+/// Metal 実体であり、派生が FrameBufferItem 用（MetalFrameBufferSource）
+/// と EffectItem 用（MetalEffectSource、MAC-0035）の2つある。
 ///
 /// 契約（第1章 IMG-04）は MAC-0009/0010 で用意済みであり、こちらは
 /// その Metal 実体である。合成側（TimelineComposer）が合成途中で
@@ -541,7 +543,13 @@ public final class MetalCompositeSource: Source {
 /// Crop 矩形の左上に対応し、登録する境界は Crop 矩形そのものとする。
 /// 入力の局所境界は、本家の GetImageLocalBounds に相当する量として、
 /// 登録済み実体の境界へ実体自身の変換を適用した外接矩形で近似する。
-public final class MetalFrameBufferSource: FrameBufferSource {
+///
+/// 派生ごとの差は3つのフック（背景クリア／Flood の透明化／境界拡張）と
+/// DrawingEffect の種類だけで、蓄積画像の実体化はこの基底が担う。
+/// フックの既定値は本家で FrameBufferItem として null を渡した場合の
+/// 帰結（B-1: ClearBackground = false、Flood は不透明な黒、境界は
+/// 画面サイズ）であり、EffectItem 用の派生は既定値のまま使う。
+public class MetalFrameBufferSourceBase: FrameBufferSource {
     public let controllers: [VideoController] = []
     public private(set) var outputs: [any SourceOutput] = []
 
@@ -549,22 +557,27 @@ public final class MetalFrameBufferSource: FrameBufferSource {
     public var input: ImageReference?
     /// フレームのサイズ。合成側が設定する。
     public var frameSize: PixelSize = PixelSize(width: 0, height: 0)
-    /// 背景をクリアするか（アイテムの保持値。合成側が引き継ぎ描画の
-    /// 判断に使う）。
-    public var clearBackground: Bool { item.clearBackground }
+    /// 背景をクリアするか（合成側が引き継ぎ描画の判断に使う）。
+    public var clearBackground: Bool { behaviorClearBackground }
 
-    private let context: MetalGraphicsContext
-    private let item: FrameBufferItem
-    private let drawingEffect: MetalDrawingEffect
+    /// 背景クリアの実値（派生が差し替える）。
+    var behaviorClearBackground: Bool { false }
+    /// Flood を透明にするか（本家 IsAlphaEnabled に対応）。
+    var floodIsTransparent: Bool { false }
+    /// 切り抜き境界を入力画像の局所境界まで広げるか（本家
+    /// IsFrameOutImageRenderingEnabled に対応）。
+    var expandsBoundsToInput: Bool { false }
+
+    let context: MetalGraphicsContext
+    private let drawingEffect: any DrawingEffectProcessor
     private let outputReference = ImageReference(label: "framebuffer-source")
     private var outputTexture: MTLTexture?
     private var outputPixelWidth: Int = 0
     private var outputPixelHeight: Int = 0
 
-    public init(devices: MetalGraphicsDevices, item: FrameBufferItem) {
-        self.context = devices.makeContext()
-        self.item = item
-        self.drawingEffect = MetalDrawingEffect(context: context)
+    init(context: MetalGraphicsContext, drawingEffect: any DrawingEffectProcessor) {
+        self.context = context
+        self.drawingEffect = drawingEffect
         outputs = [
             StandardSourceOutput(
                 output: outputReference, drawingEffect: drawingEffect, dontDispose: true
@@ -579,7 +592,7 @@ public final class MetalFrameBufferSource: FrameBufferSource {
         )
         var cropRect = frameRect
         let inputImage = input.flatMap { context.devices.image(for: $0) }
-        if item.isFrameOutImageRenderingEnabled, let inputImage {
+        if expandsBoundsToInput, let inputImage {
             let inputBounds = MetalDrawingEffect.boundingRect(
                 of: inputImage.bounds, transformedBy: inputImage.transform
             )
@@ -626,7 +639,7 @@ public final class MetalFrameBufferSource: FrameBufferSource {
         attachment?.loadAction = .clear
         // Flood の色（本家 FrameBufferSource.Update）: アルファ有効時は
         // 透明、無効時は不透明な黒。どちらも Premultiplied では同値。
-        attachment?.clearColor = item.isAlphaEnabled
+        attachment?.clearColor = floodIsTransparent
             ? MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
             : MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         attachment?.storeAction = .store
@@ -689,6 +702,27 @@ public final class MetalFrameBufferSource: FrameBufferSource {
             )
         )
     }
+}
+
+/// フレームバッファアイテムの Source。本家 FrameBufferSource に対応する。
+/// アイテムの保持値（ClearBackground / IsAlphaEnabled /
+/// IsFrameOutImageRenderingEnabled）を基底のフックへそのまま渡し、
+/// DrawingEffect は通常のアイテム変形（MetalDrawingEffect）を使う。
+public final class MetalFrameBufferSource: MetalFrameBufferSourceBase {
+    private let item: FrameBufferItem
+
+    public init(devices: MetalGraphicsDevices, item: FrameBufferItem) {
+        self.item = item
+        let context = devices.makeContext()
+        super.init(
+            context: context,
+            drawingEffect: MetalDrawingEffect(context: context)
+        )
+    }
+
+    override var behaviorClearBackground: Bool { item.clearBackground }
+    override var floodIsTransparent: Bool { item.isAlphaEnabled }
+    override var expandsBoundsToInput: Bool { item.isFrameOutImageRenderingEnabled }
 }
 
 /// 口の形。本家 MouthShape に対応する。

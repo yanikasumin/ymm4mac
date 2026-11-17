@@ -505,6 +505,37 @@ final class YmmpCodecTests: XCTestCase {
         XCTAssertEqual(try canonical(second), try canonical(third))
     }
 
+    /// EffectItem の Blur（本家 `EffectItem.Blur`）が型付きで往復し、
+    /// 固定点に到達する（MAC-0035 で型付き化。従来は追加フィールドの
+    /// 生保持のみで評価できなかった）。
+    func testEffectItemBlurRoundTripFixedPoint() throws {
+        let project = Project()
+        let timeline = Timeline()
+        let effect = EffectItem()
+        effect.frame = 0
+        effect.length = 30
+        effect.blur = Animation(defaultValue: 12.5, minValue: 0, maxValue: 250)
+        effect.invertMask = true
+        timeline.items = [effect]
+        project.timelines = [timeline]
+
+        let first = YmmpCodec.encode(project)
+        XCTAssertTrue(first.contains("\"Blur\":"))
+        let (loaded, _) = try YmmpCodec.decode(first)
+        let loadedEffect = try XCTUnwrap(loaded.timelines.first?.items.first as? EffectItem)
+        XCTAssertEqual(loadedEffect.blur.firstValue, 12.5)
+        XCTAssertEqual(loadedEffect.blur.minValue, 0)
+        XCTAssertEqual(loadedEffect.blur.maxValue, 250)
+        XCTAssertTrue(loadedEffect.invertMask)
+        // 型付きで消費されるため、追加フィールドには残らない。
+        XCTAssertFalse(loadedEffect.additionalFields.contains { $0.key == "Blur" })
+
+        let second = YmmpCodec.encode(loaded)
+        let (reloaded, _) = try YmmpCodec.decode(second)
+        let third = YmmpCodec.encode(reloaded)
+        XCTAssertEqual(try canonical(second), try canonical(third))
+    }
+
     /// 本家形式の RectangleShapeParameter JSON が型付き値として
     /// 読み込まれる。
     func testShapeParameterHonkeStyleJSON() throws {

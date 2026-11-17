@@ -188,7 +188,7 @@ public final class MetalShapeSource: Source {
     private var renderedTexture: MTLTexture?
     private var renderedKey: RenderKey?
 
-    private struct RenderKey: Equatable {
+    struct RenderKey: Equatable {
         var width: Double
         var height: Double
         var round: Double
@@ -217,14 +217,7 @@ public final class MetalShapeSource: Source {
         let size = Self.evaluateSize(parameter: parameter, frame: frame, length: length, fps: fps)
         let round = parameter.round.value(atFrame: frame, length: length, fps: fps)
         let stroke = parameter.strokeThickness.value(atFrame: frame, length: length, fps: fps)
-        // 単色ブラシ以外のブラシは未対応のため白で代用する（本家の
-        // 既定ブラシも単色・白）。
-        let color: Color
-        if case .solidColor(let solid) = parameter.brush.parameter {
-            color = solid.color
-        } else {
-            color = .white
-        }
+        let color = Self.fillColor(for: parameter)
         let key = RenderKey(
             width: size.width, height: size.height,
             round: round, strokeThickness: stroke, color: color
@@ -295,9 +288,42 @@ public final class MetalShapeSource: Source {
         ensureOutputs()
     }
 
+    /// 塗りの色。単色ブラシ以外のブラシは未対応のため白で代用する
+    /// （本家の既定ブラシも単色・白）。
+    static func fillColor(for parameter: RectangleShapeParameter) -> Color {
+        if case .solidColor(let solid) = parameter.brush.parameter {
+            return solid.color
+        }
+        return .white
+    }
+
+    /// パラメータを評価して図形テクスチャを描く（EffectItem のマスク
+    /// 形状と共有する入口）。寸法が正でない場合と生成失敗時は nil。
+    static func rasterizeShape(
+        context: MetalGraphicsContext,
+        parameter: RectangleShapeParameter,
+        frame: Int, length: Int, fps: Int
+    ) -> (texture: MTLTexture, width: Double, height: Double)? {
+        let size = evaluateSize(parameter: parameter, frame: frame, length: length, fps: fps)
+        let key = RenderKey(
+            width: size.width, height: size.height,
+            round: parameter.round.value(atFrame: frame, length: length, fps: fps),
+            strokeThickness: parameter.strokeThickness.value(
+                atFrame: frame, length: length, fps: fps
+            ),
+            color: fillColor(for: parameter)
+        )
+        guard let texture = rasterize(context: context, key: key) else { return nil }
+        return (texture, size.width, size.height)
+    }
+
     /// 図形をテクスチャへ描き込む。完了まで待つ（合成全体が同期実行の
     /// ため、この段も同期で確定させる）。
     private func rasterize(key: RenderKey) -> MTLTexture? {
+        Self.rasterize(context: context, key: key)
+    }
+
+    static func rasterize(context: MetalGraphicsContext, key: RenderKey) -> MTLTexture? {
         guard key.width > 0, key.height > 0 else { return nil }
         let width = max(1, min(Self.maxTextureDimension, Int(ceil(key.width))))
         let height = max(1, min(Self.maxTextureDimension, Int(ceil(key.height))))
@@ -370,7 +396,7 @@ public final class MetalShapeSource: Source {
 
 /// 未対応アイテム種別の Source。透明な出力を返す。
 ///
-/// Video・Scene・Tachie・Effect・合成グループ等が対象であり、
+/// TransitionItem 等、対応する Source がまだ無い種別が対象であり、
 /// 未対応であることは台帳に明記する。DrawingEffect は実物を
 /// 持つため、変形・不透明度を適用しても結果は透明のままになる。
 public final class MetalEmptySource: Source {
@@ -412,8 +438,8 @@ public final class MetalEmptySource: Source {
 /// アイテム種別から Source を供給する境界（TimelineComposer の
 /// sourceProvider に渡す）。対応は ImageItem / ShapeItem / TextItem /
 /// VoiceItem（字幕）/ VideoItem / SceneItem / FrameBufferItem /
-/// TachieItem / 合成グループ（GroupItem.IsComposite）で、それ以外は
-/// MetalEmptySource（透明）を返す。
+/// EffectItem / TachieItem / TransitionItem / 合成グループ
+/// （GroupItem.IsComposite）で、それ以外は MetalEmptySource（透明）を返す。
 public struct MetalSourceProvider {
     public let devices: MetalGraphicsDevices
     /// 相対パスの解決基準（.ymmp のあるフォルダ）。
@@ -476,6 +502,23 @@ public struct MetalSourceProvider {
             )
         case let frameBufferItem as FrameBufferItem:
             return MetalFrameBufferSource(devices: devices, item: frameBufferItem)
+        case let effectItem as EffectItem:
+            return MetalEffectSource(devices: devices, item: effectItem)
+        case let transitionItem as TransitionItem:
+            // 画面遷移は内部合成（Before / After）を2つ持つ Source を返す。
+            // 属するタイムラインが分からない供給元では内部合成を作れない
+            // ため空に倒す（合成グループと同じ扱い）。
+            guard let timeline else { return MetalEmptySource(devices: devices) }
+            return MetalTransitionSource(
+                devices: devices, item: transitionItem,
+                screenSize: PixelSize(
+                    width: timeline.videoInfo.width, height: timeline.videoInfo.height
+                ),
+                composerFactory: transitionComposerFactory(
+                    item: transitionItem, timeline: timeline
+                ),
+                effectPairsProvider: transitionEffectPairsProvider()
+            )
         case let tachieItem as TachieItem:
             return MetalTachieSource(
                 devices: devices, item: tachieItem, rendererFactory: tachieRendererFactory
@@ -528,9 +571,82 @@ public struct MetalSourceProvider {
                 picker: CompositeItemPicker(groupItem: group),
                 targetFactory: context,
                 sourceProvider: { item in childProvider.source(for: item) },
-                effectProvider: effectProvider ?? TypedEffectPairProvider()
+                effectProvider: effectProvider ?? TypedEffectPairProvider(),
+                alphaMaskFactory: MetalAlphaMaskEffectFactory(context: context)
             )
         }
+    }
+
+    /// 画面遷移の内部合成器（Before / After）を生成する境界。各側は
+    /// TransitionItemPicker（isBefore の別）で同じタイムラインを再合成し、
+    /// 描画先の文脈は MetalTransitionSource が所有する文脈を借りる。
+    /// 子の供給元は同じタイムラインを引き継ぐため、下位レイヤーの
+    /// トランジションも再帰的に内部合成を持つ（階層はレイヤーで閉じる）。
+    private func transitionComposerFactory(
+        item: TransitionItem, timeline: Timeline
+    ) -> (MetalGraphicsContext, MetalGraphicsContext)
+        -> (before: TimelineComposer, after: TimelineComposer) {
+        let devices = self.devices
+        let baseDirectory = self.baseDirectory
+        let sceneResolver = self.sceneResolver
+        let parentSceneChain = self.parentSceneChain
+        let tachieRendererFactory = self.tachieRendererFactory
+        let effectProvider = self.effectProvider
+        return { beforeContext, afterContext in
+            func makeComposer(
+                context: MetalGraphicsContext, isBefore: Bool
+            ) -> TimelineComposer {
+                context.targetSize = PixelSize(
+                    width: timeline.videoInfo.width, height: timeline.videoInfo.height
+                )
+                let childProvider = MetalSourceProvider(
+                    devices: devices,
+                    baseDirectory: baseDirectory,
+                    sceneResolver: sceneResolver,
+                    parentSceneChain: parentSceneChain,
+                    tachieRendererFactory: tachieRendererFactory,
+                    timeline: timeline,
+                    effectProvider: effectProvider
+                )
+                let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
+                return TimelineComposer(
+                    scene: scene,
+                    picker: TransitionItemPicker(
+                        transitionItem: item, isBefore: isBefore
+                    ),
+                    targetFactory: context,
+                    sourceProvider: { child in childProvider.source(for: child) },
+                    effectProvider: effectProvider ?? TypedEffectPairProvider(),
+                    alphaMaskFactory: MetalAlphaMaskEffectFactory(context: context)
+                )
+            }
+            return (
+                before: makeComposer(context: beforeContext, isBefore: true),
+                after: makeComposer(context: afterContext, isBefore: false)
+            )
+        }
+    }
+
+    /// Before/AfterVideoEffects の定義供給。合成器と同じ供給元を使い、
+    /// GPU エフェクトの差し替え（MetalEffectPairProvider）を全体エフェクト
+    /// にも効かせる。供給元が無い場合は nil を返し、Source 側の型付き
+    /// 供給元へ倒す。どちらでもない供給元では全体エフェクトは供給しない
+    /// （本家では常にアイテムの保持列が使われるため、これはカスタム
+    /// 供給元向けの制限として記録する）。
+    private func transitionEffectPairsProvider()
+        -> ((TransitionItem, Bool) -> [EffectPair])? {
+        if let metal = effectProvider as? MetalEffectPairProvider {
+            return { item, isBefore in
+                metal.transitionEffectPairs(for: item, isBefore: isBefore)
+            }
+        }
+        if let typed = effectProvider as? TypedEffectPairProvider {
+            return { item, isBefore in
+                typed.transitionEffectPairs(for: item, isBefore: isBefore)
+            }
+        }
+        if effectProvider == nil { return nil }
+        return { _, _ in [] }
     }
 
     /// シーンの内部合成器を生成する境界。解決・入れ子上限（本家
@@ -566,7 +682,8 @@ public struct MetalSourceProvider {
                 scene: scene,
                 targetFactory: context,
                 sourceProvider: { item in childProvider.source(for: item) },
-                effectProvider: effectProvider ?? TypedEffectPairProvider()
+                effectProvider: effectProvider ?? TypedEffectPairProvider(),
+                alphaMaskFactory: MetalAlphaMaskEffectFactory(context: context)
             )
         }
     }

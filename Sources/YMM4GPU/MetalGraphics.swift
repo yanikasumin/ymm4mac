@@ -562,7 +562,11 @@ public final class MetalGraphicsDevices {
         // 本家の D2D 効果チェーンの構成を1パスへ畳んだもので、数式の根拠は
         // 各処理器のコメントに記す。
         // mode: 0=ぼかしアルファによるマスク（縁ぼかし・角丸）, 1=色収差,
-        //       2=タイリング, 3=素のアルファマスク, 4=複写反転, 5=シルエット
+        //       2=タイリング, 3=素のアルファマスク, 4=複写反転, 5=シルエット,
+        //       6=調整つきアルファマスク（EffectItem 用: マスクαの反転と
+        //       不透明度係数をマスク側へ先に適用してから入力へ乗算する。
+        //       本家 Primitive.Mask の ColorMatrix（反転）→ ColorMatrix
+        //       （不透明度）→ AlphaMask の畳み込み）
         struct WarpUniforms {
             float4 inputPlane;
             float4 maskPlane;
@@ -669,6 +673,17 @@ public final class MetalGraphicsDevices {
                         inputSampler, ymm4WarpUV(point, uniforms.inputPlane, uniforms.inputOffset));
                     return uniforms.param0 * color.a;
                 }
+                case 6: {
+                    // 調整つきアルファマスク: param0.x = 反転フラグ
+                    // (0.5 超で反転), param0.y = マスク不透明度係数。
+                    float4 color = input.sample(
+                        inputSampler, ymm4WarpUV(point, uniforms.inputPlane, uniforms.inputOffset));
+                    float maskAlpha = mask.sample(
+                        inputSampler, ymm4WarpUV(point, uniforms.maskPlane, uniforms.maskOffset)).a;
+                    float adjusted = (uniforms.param0.x > 0.5
+                        ? 1.0 - maskAlpha : maskAlpha) * uniforms.param0.y;
+                    return color * adjusted;
+                }
                 default:
                     return float4(0.0);
             }
@@ -711,6 +726,17 @@ public final class MetalGraphicsDevices {
                 case 1: {
                     float4 b = bRaw * uniforms.opacityB;
                     return b * (1.0 - aRaw.a);
+                }
+                case 2: {
+                    // 加重和（MAC-0036）。本家 D2D CrossFade と同じく
+                    // Premultiplied 同士の重み付き加算であり、SourceOver
+                    // の2回描画では半透明部が一致しないため専用モードを持つ。
+                    return aRaw * uniforms.opacityA + bRaw * uniforms.opacityB;
+                }
+                case 3: {
+                    // マスク乗算（MAC-0036）。b を a のアルファで切り取る
+                    // （本家 AlphaMask の可視結果に相当）。
+                    return bRaw * uniforms.opacityB * aRaw.a;
                 }
                 default:
                     return float4(0.0);

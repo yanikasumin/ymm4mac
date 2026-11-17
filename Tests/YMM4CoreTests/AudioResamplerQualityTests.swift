@@ -10,10 +10,19 @@ import XCTest
 /// 周波数はすべて整数 Hz で、1 秒区間に整数周期が収まるため、
 /// 基本波とスプリアスの相互漏れは生じない）。
 ///
-/// 閾値について: 計画書 §3.1 のとおり正式な合格値は ChatGPT
-/// レビューとオーナー承認で決めるものであり、ここに置く閾値は
-/// 実測値に余裕を持たせた「回帰検出用の暫定ガード」である。
-/// 対照として旧方式（線形補間）も同じ測定系で測り、改善量を固定する。
+/// 閾値について: 正式な合格値は 2026-11-17 に決定した
+/// （AUDIO-FIDELITY-PLAN §3.1.3。オーナーが要件定義の趣旨に
+/// 従って委任し、QA24-01 比較試験 §3.1.2 の結果に基づく）。
+/// 48k→44.1k についての合格値「阻止帯域 [23.2k–24kHz] の
+/// 最悪値 -80 dB 以下、通過帯域 20kHz まで ±0.1 dB 以内」を、
+/// testFormalStopbandSweep / testFormalPassbandFlatness が
+/// 合否判定として固定する。それ以外の閾値は実測値に余裕を
+/// 持たせた回帰検出用のガードである。対照として旧方式
+/// （線形補間）も同じ測定系で測り、改善量を固定する。
+///
+/// 比較試験（AudioResamplerWindowComparisonTests）は本ファイルへ
+/// 統合した: 候補比較の役割は §3.1.2 の記録で果たし終え、掃引
+/// 測定は正式合格値のアサーションとしてここへ移した。
 ///
 /// エイリアス測定の是正（QA24-01、2026-11-17）: 旧試験は 48kHz
 /// 標本化の入力に 30k / 26k / 40kHz の正弦波を使っており、それらの
@@ -94,6 +103,49 @@ final class AudioResamplerQualityTests: XCTestCase {
         return 20 * log10(magnitude / Double(amplitude))
     }
 
+    // MARK: - 正式合格値（48k → 44.1k、§3.1.3）
+
+    /// 正式合格値その1: 阻止帯域の掃引。妨害波を 22,075Hz から
+    /// 24,000Hz まで 25Hz 刻みで掃引し（§3.1.2 と同じ物差し）、
+    /// 阻止帯域 [23.2k–24kHz] の最悪値が -80 dB 以下であること。
+    /// 留保: 25Hz 格子の最悪値は真の連続最悪値より数 dB 楽観的な
+    /// 可能性がある（§3.1.2）。実測（2026-11-17、正式形）:
+    /// 最悪値 -94.54 dB @23,200Hz で、余裕は 14.5 dB。
+    func testFormalStopbandSweep() {
+        var worst = -Double.infinity
+        var worstFrequency = 0.0
+        var frequency = 22_075.0
+        while frequency <= 24_000.0 {
+            let output = resampleSinc(frequency: frequency, inHz: 48_000, outHz: 44_100, seconds: 3)
+            let level = levelDB(output, hz: 44_100, frequency: 44_100.0 - frequency)
+            if frequency >= 23_200.0, level > worst {
+                worst = level
+                worstFrequency = frequency
+            }
+            frequency += 25.0
+        }
+        print("formal stopband sweep: worst=\(worst) dB at \(Int(worstFrequency)) Hz")
+        XCTAssertLessThanOrEqual(
+            worst, -80,
+            "阻止帯域の最悪値が正式合格値 -80 dB を満たさない: \(worst) dB @\(Int(worstFrequency)) Hz"
+        )
+    }
+
+    /// 正式合格値その2: 通過帯域の平坦さ。20kHz までの利得が
+    /// ±0.1 dB 以内であること。実測（2026-11-17、正式形）は
+    /// 全点で 0.0001 dB 未満。
+    func testFormalPassbandFlatness() {
+        for frequency in [1_000.0, 5_000.0, 10_000.0, 15_000.0, 18_000.0, 20_000.0] {
+            let output = resampleSinc(frequency: frequency, inHz: 48_000, outHz: 44_100, seconds: 3)
+            let gain = levelDB(output, hz: 44_100, frequency: frequency)
+            print("formal passband f=\(Int(frequency)) gain=\(gain) dB")
+            XCTAssertLessThanOrEqual(
+                abs(gain), 0.1,
+                "f=\(frequency) の通過利得が正式合格値 ±0.1 dB を満たさない: \(gain) dB"
+            )
+        }
+    }
+
     // MARK: - 通過帯域の平坦さ（44.1k → 48k アップサンプル）
 
     func testUpsamplePassbandFlatness() {
@@ -130,22 +182,19 @@ final class AudioResamplerQualityTests: XCTestCase {
         // QA24-01 是正後の測定系: 妨害波は入力ナイキスト (24kHz) の
         // 内側かつ出力ナイキスト (22.05kHz) の外側に置き、出力の
         // |f - 44.1k| への折り返し成分を測る。
-        // 遮断周波数 (22.05kHz) からの距離で帯域の性格が変わる。
-        // 窓長は片側 48 零点 × scale (48k/44.1k ≈ 1.088) ≈ 片側 52
-        // フレームしかなく、遷移帯は ±1.4kHz 級の幅を持つ:
-        // 22.5kHz は遷移帯の内側、23kHz は遷移帯の途中、23.5k /
-        // 23.9kHz は阻止帯域の点である。
-        // 実測（2026-11-17、是正後の測定系）: 22.5kHz → -16.7 dB、
-        // 23kHz → -41.6 dB、23.5kHz → -78.6 dB、23.9kHz →
-        // -75.3 dB。阻止帯域の床は -75 dB 級であり、23.5kHz の値は
-        // サイドローブのリプルの山に当たったもので床ではない。
-        // 暫定ガードは各実測に余裕を持たせた値であり、正式な
-        // 合格値は未決定（計画書 §3.1）。
+        // 正式コア（Kaiser 窓・片側 96 零点 × scale (48k/44.1k ≈
+        // 1.088) ≈ 片側 104 フレーム、§3.1.3）での実測
+        // （2026-11-17）: 22.5kHz → -36.65 dB（遷移帯の内側）、
+        // 23kHz → -92.54 dB、23.5kHz → -105.68 dB、23.9kHz →
+        // -130.40 dB（阻止帯域。掃引全体の最悪値は
+        // testFormalStopbandSweep が正式合格値で固定する）。
+        // ここでのガードは各実測に 6〜10 dB の余裕を持たせた
+        // 回帰検出用である。
         for (frequency, alias, guardDB) in [
-            (22_500.0, 21_600.0, -10.0),
-            (23_000.0, 21_100.0, -35.0),
-            (23_500.0, 20_600.0, -70.0),
-            (23_900.0, 20_200.0, -65.0),
+            (22_500.0, 21_600.0, -30.0),
+            (23_000.0, 21_100.0, -85.0),
+            (23_500.0, 20_600.0, -98.0),
+            (23_900.0, 20_200.0, -120.0),
         ] {
             let output = resampleSinc(frequency: frequency, inHz: 48_000, outHz: 44_100, seconds: 3)
             let level = levelDB(output, hz: 44_100, frequency: alias)

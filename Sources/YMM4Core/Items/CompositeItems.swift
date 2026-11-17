@@ -97,6 +97,8 @@ public final class EffectItem: VisualItem {
         "YukkuriMovieMaker.Shape.QuadrilateralShapePlugin, YukkuriMovieMaker"
     /// 図形パラメータ（マスク形状。ShapeItem と同型）。
     public var shapeParameter: ShapeParameter = .defaultValue
+    /// マスクのぼかし量（本家 `Blur`。Animation で、既定 0・範囲 0〜250）。
+    public var blur: Animation = Animation(defaultValue: 0, minValue: 0, maxValue: 250)
     /// マスクを反転するか。
     public var invertMask: Bool = false
 
@@ -110,6 +112,7 @@ public final class EffectItem: VisualItem {
         fields += [
             (key: "ShapeType2", value: .string(shapeType2)),
             (key: "ShapeParameter", value: shapeParameter.encodeToJSONValue()),
+            (key: "Blur", value: CodecSupport.encodeAnimation(blur)),
             (key: "InvertMask", value: .bool(invertMask)),
         ]
         return fields
@@ -118,6 +121,7 @@ public final class EffectItem: VisualItem {
     public override func forEachAnimation(_ body: (inout Animation) -> Void) {
         super.forEachAnimation(body)
         shapeParameter.forEachAnimation(body)
+        body(&blur)
     }
 
     public override func decodeKnownField(_ key: String, _ value: JSONValue) -> Bool {
@@ -137,6 +141,9 @@ public final class EffectItem: VisualItem {
         case "ShapeType":
             // 旧互換（set 専用）: ShapeType2 へ転送される
             shapeType2 = LegacyShapeType.pluginTypeName(for: value)
+            return true
+        case "Blur":
+            CodecSupport.decodeAnimation(value, into: &blur)
             return true
         case "InvertMask":
             invertMask = CodecSupport.bool(value, default: invertMask)

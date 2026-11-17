@@ -639,6 +639,88 @@
 
 **次の担当へ。** UI32-01 は本件で解消。第5ラウンド処分の残りは QA24-01 の比較試験のみ（GPU28-03 は MAC-0033 で解消済み）。MAC32-01 は将来条件として処分ファイルに記録済み。
 
+
+#### MAC-0034 — 書き出しのモデル共有によるデータ競合の解消（AUD-07）（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** ChatGPT 最終QAレビューで新規 P1 として確定した AUD-07（処分は解析側 `analysis-notes/REVIEW-DISPOSITION-AUDIT.md` で採用確定）の修正。`ExportJob`（DebugApp）が編集中の Timeline と `project.timelines` を直接保持し、`Task.detached` の書き出しが開始時に長さと動画設定を読み、全フレームを通じて同じオブジェクト群を生で読み続けていた。UI 側の変更経路（レイヤー設定の下付き代入と append、デスクリプタ経由のアイテム値、動画設定の差し替え、アイテム配列の追加・削除）は書き出し中も有効であり、出力への編集混入にとどまらず配列の並行変更によるクラッシュを起こしえた。`ExportJob` の doc コメントは「ジョブは生成後に単一のバックグラウンドスレッドからのみ触れる」ことを安全性の根拠としていたが、前提が誤っていた（ジョブ自体ではなく、ジョブが保持するモデルオブジェクトが UI と共有されていた）。
+
+**どこを変更したか。** `Sources/YMM4Core/YmmpCodec.swift`（`Project.makeExportSnapshot(of:)` の新設と `YmmpError.timelineNotInProject` の追加）、`Apps/DebugApp/Sources/YMM4MacDebug/ProjectView.swift`（`runExport` がスナップショットを構築してジョブへ渡す形へ変更、`ExportJob` の doc コメントを実態へ是正）、`Tests/YMM4CoreTests/ExportSnapshotTests.swift`（新規3件）。作業は分離ツリー `ymm4mac-exportsnap` で実施し、本項は統合時の転記である。
+
+**どう実装したか。** (1) 書き出し開始時（`runExport`、UI スレッド上）で `project.makeExportSnapshot(of: timeline)` を呼び、プロジェクト全体を YmmpCodec でエンコード→デコードしてジョブ専有のインスタンス群を作る。対象は `timelines` 全体（SceneItem の解決が他タイムラインを引くため対象タイムラインだけでは不十分）。キャラクター参照はデコード時にスナップショット内のキャラクターへ張り直され、アイテム側の参照がスナップショット内のインスタンスを保持するため、ジョブが保持する timelines だけでスナップショット全体が生存する。(2) 対象タイムラインの対応付けは同一性（`===`）のインデックスで行い、返る timeline はスナップショット側 timelines の同一要素である（内部合成の同一性前提を保つ）。(3) スナップショットを構築できない場合は、編集中のモデルを共有する形へフォールバックせず、状態欄へ理由を表示して書き出し自体を中止する。(4) 進捗の総フレーム数はスナップショット側の長さから取る。(5) `ExportJob` の doc コメントは、安全性の根拠を「保持するモデルがジョブ専有のスナップショットであり編集中のプロジェクトとインスタンスを共有しない」ことへ是正した。UI の全面無効化は行っていない（応急処置に留まるため）。
+
+**なぜその実装なのか。** 手書きの深い複製はフィールドの写し漏れ（MAC-0032 が防いだ類の欠陥）と未知フィールドの生保持（PreservedObject）の複製仕様の二重管理を招く。固定点が検証済みの既存コーデック往復を使えば、写し漏れを構造的に避けられる。コストは書き出し開始時の1回の符号化・復号のみで、実ファイル規模（〜780KB）では書き出し全体の時間に対して無視できる。
+
+**本家との差分。** 本家の書き出しは WPF の単一 UI スレッドモデルを前提としており、対応する競合自体が存在しない。こちらは内部の並行性の修正であり、ユーザーから見える差は「書き出し結果は開始時点のプロジェクト状態で確定し、書き出し中の編集は出力へ混入しない」という点だけである。書き出し結果の意味論（範囲・設定・解析）は無変更。UI を無効化しないため、書き出し中も編集は継続できる。
+
+**メモリ・並行性。** スナップショットの所有者はジョブのみで、解放はジョブの終了時。書き出しセッション（TimelineExporter 以下）はスナップショットだけを読む。`ExportJob` の `@unchecked Sendable` は、専有スナップショットの存在によって初めて前提が成立する形になった。ARCHITECTURE はクラス構成の変更がないため不変（対象は既存コーデックへの API 追加とアプリ層の受け渡しのみ）。
+
+**検証。** 新規 `ExportSnapshotTests` 3件（生成時点の内容一致＝タイムライン単位の符号化が元と同一・参照がスナップショット内へ解決されること、生成後の元モデル変更＝アイテム値・動画設定の差し替え・アイテム配列の追加と削除・レイヤー設定の下付き代入と追加・キャラクター改名・他タイムライン改名が書き出し側の値へ一切漏れないこと、プロジェクト外タイムラインの拒否）。Linux 全件テストは全417件・0失敗（従来414件＋3件）。Mac 実機（検証コピー ~/verify-exportsnap/YMM4Mac）でルート＋DebugApp のビルド成功・警告0。既存の書き出し検証（スタブハーネス mac0026、同コピーへ向け替えて実行）は全項目合格（19 PASS / 0 FAIL、ALL PASS。ピーク −6.0206 dB・映像 stdin 138,240 バイト・Y プレーン一致・ffmpeg 起動3回は MAC-0026 の基準値と同一）。なお同ハーネスの stub.log は追記式のため、同一作業ディレクトリへの再実行では起動回数チェックが偽陽性で失敗する（新規ディレクトリでは全合格を確認済み。ハーネス側の性質であり本件の退行ではない）。
+
+**未解決事項。** 実際の競合そのもの（書き出し実行中の実編集）はヘッドレスでは再現検証できない。担保はスナップショットの独立性を固定したテストと、ジョブがスナップショット以外へ到達しないことのコード監査に拠る。実機で書き出し中に編集しても出力が開始時点の状態で確定することは、本人の実機確認待ち。
+
+**次の担当へ。** AUD-07 は本件で解消。監査の残作業は AUD-01〜04・06（STATUS の監査セクション）。
+
+**統合。** 本項の変更は統合 PR でメインへ反映済み（確定番号はツリー側の MAC-0034 を据え置き）。統合後の検証（Linux 全件・Mac ビルド・ハーネス再実行・実ファイル往復）は STATUS を参照。統合後の最終実測として、Mac 実機で `swift test --parallel` 全432件・0失敗を確認した（内訳の突合: 従来414件＋本項3件＋MAC-0035 の1件＋MAC-0036 の12件＋MAC-0037 の差分2件＝432件）。
+
+
+#### MAC-0035 — EffectItem 描画 Source（AUD-01）とクリッピング実効マスク（AUD-03）（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** 全体監査（解析側 `analysis-notes/AUDIT-2026-11-17-FULL.md`、処分は `REVIEW-DISPOSITION-AUDIT.md` で全件採用確定）の AUD-01 と AUD-03 を解消した。AUD-01: `MetalSourceProvider.source(for:)` に EffectItem の分岐が無く空 Source（透明）になっていたため、本家 EffectSource（FrameBufferSource のサブクラス）相当の Source を実装し、蓄積画像へ図形マスクを適用する描画までを通した。AUD-03: Core 合成器が `setAlphaMask` まで配線済みだったクリッピング（IsClippingWithObjectAbove）について、`AlphaMaskEffectFactory` の本番（Metal）実装を作り、プレビュー・書き出し・シーン・複合グループの全生成経路で注入した。あわせて処分の付帯確定事項 B-1（EffectSource の基底コンストラクタへ FrameBufferItem として null を渡す特殊性）と B-2（白 Flood の実体 (i) と、マスク入力が描画段で後から設定される順序 (ii)）を再現した。実装は分離ツリー `ymm4mac-effectsrc` で行い、本項は統合 PR でメインへ反映された（ツリー側では MAC-0034 と記録していたが、確定番号は MAC-0035）。
+
+**どこを変更したか。** 新規 `Sources/YMM4GPU/MetalEffectSources.swift`（MetalEffectSource と MetalEffectItemDrawingEffect）と `Sources/YMM4GPU/MetalAlphaMask.swift`（MetalAlphaMaskEffect と MetalAlphaMaskEffectFactory）。変更: `Sources/YMM4GPU/MetalMediaSources.swift`（MetalFrameBufferSource を共通基底クラスへ分離）、`Sources/YMM4GPU/MetalSources.swift`（EffectItem 分岐の追加、図形ラスタライズの静的ヘルパー公開、内部合成器工場への factory 伝播）、`Sources/YMM4GPU/MetalGraphics.swift`（ワープシェーダへ mode 6＝調整済みマスクによる切り抜きを追加）、`Sources/YMM4GPU/MetalExport.swift` と `Apps/DebugApp/Sources/YMM4MacDebug/PreviewBox.swift`（TimelineComposer へ factory を注入）、`Sources/YMM4Core/Items/CompositeItems.swift`（EffectItem へ型付き `Blur` を追加）、`Tests/YMM4CoreTests/YmmpCodecTests.swift`（Blur の往復テスト1件）。文書: 本項、STATUS（冒頭・大きな表・監査セクション・優先課題）、HANDOFF、ARCHITECTURE（ファイル構成と描画（GPU 実行）の記述）。
+
+**どう実装したか。** (1) FrameBuffer の分離: 本家 EffectSource は FrameBufferSource のサブクラスだが、基底コンストラクタへ FrameBufferItem として null を渡す（EffectSource.cs）。null の場合の意味論は ClearBackground=false、背景 Flood は不透明な黒（0,0,0,1）、切り抜き境界は入力境界の拡張なし（±画面サイズ/2 ちょうど）である。従来の `MetalFrameBufferSource` は実アイテム前提の値（ClearBackground 等）を保持値から読んでいたため、そのまま転用すると意味論がずれる。そこで共通部（Flood→SourceOver→Crop の実体化、入力の所有権、出力の登録）を `MetalFrameBufferSourceBase` へ分離し、意味論の差分3点（`behaviorClearBackground` / `floodIsTransparent` / `expandsBoundsToInput`）をフックとして基底の既定値を全て null 時の意味論に置いた。実アイテム側は薄いサブクラスが保持値でフックを上書きし、公開 API（型名・初期化子）は不変。`MetalEffectSource` は基底をそのまま使い、描画効果だけを差し替える。(2) マスク描画効果: 本家 EffectItemDrawingEffect は原始 Mask のラッパであり、その処理列は「図形画像 → Crop → Transform3D（Rz·Ry(−符号)·Rx(−符号)·平行移動·カメラ·透視 M34=−0.001。ズームなし）→ 透明 Flood への合成 → Crop（境界は反転時＝入力画像の局所境界、それ以外＝変換後マスクの境界）→ GaussianBlur（σ=Blur、Soft 境界）→ 色行列による α 反転（反転時）→ 色行列による不透明度 → D2D AlphaMask（入力0=本体、入力1=処理済みマスク）」である。これを既存の Metal ヘルパー（renderTransformed / renderGaussianBlurred / renderWarp）の組み合わせで再現し、最後の AlphaMask はワープシェーダの mode 6（調整済みマスク α で入力を切り抜く）として追加した。不透明度は DrawDescription.Opacity × フェード係数であり、フェード係数は本家が EffectDescription のアイテム局所位置・長さから再計算するため、CreateDrawDescription で適用済みのフェードが二重に効く。本家の実挙動であるため再現し、「修正」はしていない。図形画像は MetalShapeSource のラスタライズを静的ヘルパーとして切り出して再利用し、RenderKey でキャッシュする。平面分割の幾何（PlaneSplitGeometryProviding）は本家 Mask の IBoundsQuadProvider（マスク画像の局所境界 × 透視込みの全行列）に倣った。(3) クリッピングマスク: `MetalAlphaMaskEffect` は出力参照を固定で返し、入力が設定されるたびに出力実体を作り直して登録し直す。本家は効果グラフの遅延評価により、出力が公開された後（描画段）で SetAlphaMask されても最終描画へ反映される（B-2(ii)）。こちらは消費者が描画時に登録表を引く構造のため、再実体化による登録の差し替えで同じ意味論になる。実体化は warp mode 3（素のアルファマスク、平面座標サンプリング）。入力0未設定なら出力を登録解除、入力1未設定なら透明を登録（D2D の未設定入力の扱いに対応）。(4) 白 Flood（B-2(i)）: 先行画像が無い場合に合成器が渡す "flood" トークンは、本家 TimelineSource がコンストラクタで作る不透明な白の Flood 出力に対応する。全面不透明なマスクによる AlphaMask は恒等変換（出力＝入力）であるため、本体画像をそのまま出力として登録して解決した。当初は 1×1 の白テクスチャを実体として warp で読む形を実装したが、border サンプラでは線形フィルタの足跡が境界色（透明黒）と混ざり全面が減衰した（64×64 画面の隅で α≈74/255 を実測）。clampToEdge への切替は、図形マスク側で縁テクセルが境界の外へ複写されて漏れる（EffectItem のマスクが反対側へ効く）ため不採用とし、恒等解決へ落ち着いた。(5) Core の `EffectItem.Blur`: 本家は `Animation(0, 0, 250)` の型付きプロパティだが、こちらは追加フィールドの生保持だけだった。型付き化し、エンコードのキー並びは本家の宣言順（ShapeParameter と InvertMask の間）に一致させ、`forEachAnimation` の走査にも加えた。
+
+**本家との差分。** (a) ShapeParameter が型付きでない（生保持＝図形プラグイン由来）EffectItem は、マスク画像を生成できないため透明マスクとして扱う（本家でも図形プラグインが無ければ図形は生成されない。矩形以外の型付き図形も、MetalShapeSource の対応範囲＝矩形のみという既存制限をそのまま受ける）。(b) アルファマスクの GPU 実行が失敗した場合、この境界（`setInput`）は例外を投げられないため、マスク未適用の本体を正しい出力として公開せず透明を登録する（MAC-0021 の方針の適用）。描画効果側の失敗は従来契約どおり EffectedItemError として伝播する。(c) フェードの二重適用は本家の実挙動の再現であり差分ではない。(d) 白 Flood の恒等解決は、全面不透明マスクという入力条件の下で D2D AlphaMask と厳密に等価であり、見える差分はない。
+
+**メモリ・並行性。** factory は生成経路ごとに、その合成器が使う MetalGraphicsContext へ束縛して生成する（デバイスと登録表は全経路で共有され、文脈の所有関係は従来どおり）。アルファマスク効果は入力設定のたびに中間テクスチャを1枚作る（描画段の設定で実質1回）。出力として本体画像自身を登録する Flood 経路では新規確保はない（登録は参照の結び付けのみで、テクスチャの所有はアイテム描画先のまま）。図形テクスチャのキャッシュは描画効果が所有し、dispose で解放する。FrameBuffer 基底分離による所有関係の変更はない。
+
+**検証。** 画素ハーネスを新設した（本人の Mac の ~/mac0034-harness、正本は `~/workspace/ymm4-work/mac0034-harness/`）。kiminihare は EffectItem・クリッピング指定とも0件で受入検証に使えないため、64×64 の人工最小プロジェクトで25項目を検証し全合格: EffectItem 単体（Flood の不透明な黒が Invert で白になり、マスク外は透明のまま、被覆が右半分ちょうど2048px）、赤画像＋EffectItem（右半分だけ Invert のシアン、左半分は無変更）、InvertMask（左右が入れ替わる）、Opacity 50%（合成が単回適用の灰色128。二重適用なら緑成分≈64 になるため判別可能）、図形によるクリッピング（赤の被覆が 32×32＝1024px ちょうど、形状外は α0）、先行画像なしのクリッピング（Flood で全面表示）、合成グループ内部のクリッピング、シーン内部のクリッピング、書き出し経路（MetalExportVideoProvider の借用バッファ直読）のクリッピング。Mac 実機（検証コピー ~/verify-effectsrc/YMM4Mac）でルート＋DebugApp の `swift build` 成功、変更 GPU ファイルの強制再コンパイルで警告0。回帰ハーネスを同コピーへ向け替えて再実行: mac0023 = 25 PASS / 0 FAIL、mac0025 = 18 PASS / 0 FAIL、mac0027 = 15 PASS / 0 FAIL、mac0028 = 90 PASS / 0 FAIL（FrameBuffer と図形 Source の分離・再構成による退行なし）。Linux: `~/workspace/tools/swift-6.1.2/usr/bin/swift test` で全415件・0失敗（従来414件＋Blur 往復テスト1件）。このテスト実行の後に変更したのは macOS 限定の GPU ファイル（サンプラ方式の差し替えと撤回）と文書のみで、Linux のテスト対象である YMM4Core は同一であり、最終ツリーでの `swift build` 成功も確認済み。本家実機との比較試験は未実施のため IMPLEMENTED 止まり（期待値は逆コンパイル実コードからの解析値）。
+
+**未解決事項。** (1) メインクローンへの統合は統合 PR で完了。(2) 矩形以外の図形パラメータ（MetalShapeSource の対応範囲の拡張は別件）。(3) 本家との画素一致（Golden Master は本家環境が無いため到達不可）。
+
+**次の担当へ。** AUD-01 / AUD-03 は本件で解消。監査の残りは AUD-02（トランジション合成の配線）、AUD-04（PngWav ライター）、AUD-06（Metal 初期化失敗の診断）。STATUS の大きな表・監査セクションは統合時に確定形（MAC-0035）へ更新済み。
+
+#### MAC-0036 — 画面遷移（TransitionSource）の配線（AUD-02 の処分）（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** 全体監査 AUD-02（正本は解析側 `analysis-notes/AUDIT-2026-11-17-FULL.md` と処分 `REVIEW-DISPOSITION-AUDIT.md`）: TransitionItemPicker は実装・テスト済みだが合成器から一度も使われず、MetalSourceProvider に TransitionItem 用の Source が無かった。そのため主合成側の除外規則だけが効き、遷移区間では下位レイヤーが主合成から消える一方、前後画面の合成もブレンドも描かれなかった。本家 TransitionSource の意味論を実装し、MetalSourceProvider へ配線した。番号は並行作業（AUD-01 / AUD-03）が MAC-0034 を使用しているため 0035 とした。
+
+**本家の意味論（逆コンパイル実読で確定）。** TransitionSource は内部に TimelineSource を2つ持ち、両側へ同一の現在時刻の更新記述を渡す。Before 側のピッカーだけが選定フレームを transitionItem.Frame − 1 に固定する（選定アイテムのアニメーションは静止しない。処分 AUD-02 の訂正どおりで、Mac 側 ItemPickers.swift の既存解釈と一致したためピッカーは無変更）。各側は EffectedTimelineSource（内側合成 → 画面矩形で Crop → Before/AfterVideoEffects 連鎖（IsEnabled のみ）→ DrawingEffect（恒等 DrawDescription））を通る。ITransitionSource の生成し直しはパラメータ参照が変わったときだけ。内蔵パラメータは9種（None / Switch / Fade / Slide / Push / DoubleOpenDoor / DoubleSlideDoor / Slice / RuleImage）で、TransitionItem の既定は PushTransitionParameter。Fade は D2D CrossFade の式 output = Weight × Destination + (1 − Weight) × Source（入力0 = After、入力1 = Before、Weight = イージング済み進行率。式は Microsoft Learn で確認）。Switch は進行フレームが尺の半分未満で Before、それ以外で After。パラメータの既定値（Easing は Fade / Slide / Push / ドア / Slice が Expo・InOut、RuleImage のみ Linear・InOut、Angle 既定 0、Slice の Slices 6 / Shift 0 / Start Left / Direction Alternating、Target / OverlayTarget 既定 Before、RuleImage の Tolerance 3 / KeepAspect true）は各クラスのフィールド初期化子の実測。
+
+**どこを変更したか。** 新規2件: `Sources/YMM4Core/Effects/TransitionParameters.swift`（パラメータの型付き復号。$type のクラス名で9種＋unknown を判定し、nil は本家のフィールド初期化子どおり Push。Animation 項目は CodecSupport.decodeAnimation で読み、キーフレーム文脈は applyKeyFrames で伝播）、`Sources/YMM4GPU/MetalTransitionSources.swift`（MetalTransitionSource とブレンド階層＝基底 MetalTransitionBlend（MetalEffectProcessor の描画パス機械を再利用）＋内蔵8種＋TransitionGeometry（本家の象限式・DoorResources・SliceResources の移し替え））。変更5件: `Sources/YMM4GPU/MetalSources.swift`（TransitionItem ケースの追加と、内部合成器ファクトリ／全体エフェクト供給の2メソッド。シーン・合成グループと同じ捕捉を共有）、`Sources/YMM4GPU/MetalGraphics.swift`（合成シェーダへ加重和モード2（a × opacityA + b × opacityB）とマスク乗算モード3（b × opacityB × a.a）を追加。既存モード0 / 1 は無変更）、`Sources/YMM4GPU/MetalEffectProcessors.swift` と `Sources/YMM4Core/Effects/VideoEffectRegistry.swift`（Before/AfterVideoEffects の定義供給 `transitionEffectPairs(for:isBefore:)` を Metal / 型付きの両供給元へ追加。EffectPairProvider プロトコル自体は無変更で、既存のテスト用供給元を壊さない）、`Tests/YMM4CoreTests/TransitionParameterTests.swift`（新規12件）。**TimelineSource.swift 等の合成器ファイルは無変更。** 文書: 本台帳、ARCHITECTURE（ファイル一覧へ MetalTransitionSources を追加、テスト件数 414 → 426）、STATUS（AUD-02 を解消済みに更新）、HANDOFF（統合待ちの記録）。
+
+**どう実装したか。** (1) MetalTransitionSource は自前文脈と自前 DrawingEffect を所有し、供給元のファクトリが文脈ごとに子 MetalSourceProvider と TransitionItemPicker（isBefore の別）を持つ TimelineComposer を構築する（合成グループ・シーンと同じ内部合成の形）。下位レイヤーのトランジションも再帰的に内部合成を持つ。(2) 各側の連鎖は Core の EffectedOutput（applyItemTransform = false、入力は描画効果なしの StandardSourceOutput）で実行し、全体エフェクトの定義は合成器と同じ供給元から取る（GPU エフェクトの差し替えが全体エフェクトにも効く）。(3) Crop の等価実現: 内部合成器の出力テクスチャは画面サイズだが、その登録の境界は内容境界（画面より大きいアイテムでは画面を超える）であり、そのまま平行移動すると空いた側が端画素の引き伸ばしで埋まる。そこで同じテクスチャを画面矩形の境界・平面範囲で登録し直した参照を連鎖とブレンドへ渡す。(4) ブレンド: Fade は合成シェーダの加重和モードで自前参照へ公開。Switch は前後どちらかの参照をそのまま返す。None / Slide / Push / ドア系 / Slice は描画先へ順序描画し、平行移動は境界＋planeOffset の登録差し替え（MetalCompositeSource の中心ずらしと同じ写像。描画は記録時点で実体を解決するため逐次再登録が安全）、回転は変換行列の登録差し替えで表す。ドアとスライスのマスクは本家の四角形を白でラスタライズしたテクスチャをマスク乗算モードで適用する。(5) ブレンドの作り直しはパラメータの保持値が変わったときだけ（下記の内部差分）。キーフレーム文脈は毎回伝播する。
+
+**本家との差分（内部実装の違い。ユーザーから見える違いはない）。** (1) ブレンド作り直しの判定がパラメータ参照の変化ではなく保持値（PreservedObject、Equatable）の変化。(2) ブレンドへは毎回その時点の前後画像参照を渡す（Mac 合成器の描画先はフレームごとに新しい参照になるため）。(3) 本家は2つの内部合成を Parallel.ForEach で更新するが、こちらは逐次（観測結果は同一）。(4) Crop はテクスチャの再登録で等価に実現。(5) 型付きでも Metal でもないカスタム EffectPairProvider では Before/AfterVideoEffects を供給しない（本家では常にアイテムの保持列が使われるため、カスタム供給元向けの制限として記録）。
+
+**差し替え点（未実装として記録）。** RuleImage はシェーダ本体が外部コンパイル済みリソース（ShaderResourceUri.Get("Transition")）で逆コンパイル集合に含まれず、閾値の法則が未確認のため実装しなかった（捏造しない）。RuleImage と未知方式（プラグイン）は Switch の挙動へ倒す。プラグイン方式の差し替え点は MetalTransitionBlend.make の種別分岐。
+
+**メモリ・並行性。** MetalTransitionSource が所有するのは自前文脈・DrawingEffect・内部合成器2つ・連鎖2つ・ブレンド1つで、dispose で全て解放する。ブレンドの描画先はフレームごとに作り直し、前回のものは次回 blend の先頭で解放する（EffectedItemSource の出力描画先と同じ所有形態。消費側が前フレーム出力を読み終えた後のタイミング）。平行移動・マスク用の登録はブレンド所有の scratch 参照を使い回し、dispose で登録解除する。画面矩形へ登録し直した前後参照は Source 所有で dispose 時に解除する。
+
+**検証。** Linux: `~/workspace/tools/swift-6.1.2/usr/bin/swift test` で全426件・0失敗（従来414件＋新規12件＝パラメータ復号の種別判定・既定値・easedRate・前後キャッシュ分離・コーデック往復）。Mac 実機（検証コピー ~/verify-transition/YMM4Mac）: ルート＋DebugApp の `swift build` 成功・警告0。画素ハーネスを新設した（本人の Mac の ~/mac0035-harness、正本は `~/workspace/ymm4-work/mac0035-harness/`）: kiminihare 両ファイルは TransitionItem 0件で受入検証に使えないため、人工の最小プロジェクト（64×48 / 30fps、赤の全面図形 frame 0〜99 と青の全面図形 frame 100〜199 をレイヤー0、TransitionItem frame 100 / length 20 をレイヤー1）で27件全合格。内訳: Fade（Linear）の中点 frame 110 で中心画素 (128, 0, 128)（理論値 127.5 の丸め範囲内）、端点 frame 100 = 赤・frame 119 = (13, 0, 242)（率 0.95 の理論値どおり）、区間外 frame 99 = 赤・frame 120 = 青（主合成のみ）、Switch の中点切替、Push（既定パラメータ）の中点で左半分 = 青・右半分 = 赤、Slide（Target = After）も同形、DoubleSlideDoor の両端扉と中央露出、DoubleOpenDoor の蝶番近傍と中央露出、Slice（2帯・Down）の帯移動、BeforeVideoEffects の Invert が Before 側だけに効くこと（frame 100 で (0, 255, 255)、中点で (0, 128, 255)）。開発中に画素ハーネスで検出した不具合が1件ある: 実装当初は内部合成の出力（内容境界つき登録）をそのままブレンドへ渡していたため Push / Slide の空いた側が端画素で埋まった。上記 (3) の画面矩形への登録し直しで解消し、全ケース再合格した。本家実機との比較試験は未実施のため IMPLEMENTED 止まり（画素の期待値は本家コードの式からの解析値であり、本家 Direct2D 出力との画素一致は主張しない）。
+
+**統合時の継ぎ目の是正。** トランジション内部合成器（Before / After）は、本ブロックの設計時点では AlphaMask factory の注入対象に含まれていなかった。AUD-03（MAC-0035）の「全生成経路で注入する」契約に合わせ、統合時に `transitionComposerFactory` でも factory を注入した（合成グループ・シーンの内部合成器と同じ形）。これにより遷移前後の内部合成でもクリッピングが効く。
+
+**未解決事項。** RuleImage の閾値法則（シェーダ未確認）とプラグイン方式は差し替え点のまま。解析側の Mac As-built と互換マトリクスの同期は統合時に行う。本件は分離コピーツリー（`~/workspace/ymm4-work/ymm4mac-transition/`）での実装であり、メインクローンへの統合は統合 PR で完了した。統合後の検証は STATUS を参照。
+
+#### MAC-0037 — 音声リサンプラの正式形（Kaiser 窓・片側96零交差への固定）（IMPLEMENTED）
+
+**何を実装したか。** MAC-0024 で帯域制限補間化した ResamplerStream の生成芯について、QA24-01（レビュー第4ラウンドで確定した測定系の欠陥）の処分として行った再測定と比較試験（解析側 `analysis-notes/AUDIO-FIDELITY-PLAN.md` §3.1.1・§3.1.2）を受け、窓関数と正式合格値を正式仕様として固定し、製品形へ実装した。正式合格値と窓仕様はオーナー承認事項だったが、オーナーが「要件定義の趣旨に従って任せる」と委任した（2026-11-17）ため、基本指示の優先順位（互換性・忠実度 > 速度）と音声忠実度最優先の方針に従い、合格値を実装に合わせて下げる事後調整をせず、暫定目標候補どおりの水準を満たす唯一の候補を採用した。決定の正本は AUDIO-FIDELITY-PLAN §3.1.3。
+
+**どこを変更したか。** `Sources/YMM4Core/Audio/AudioResampling.swift`（生成芯の窓を Kaiser 窓へ差し替え、実験フックを撤去）、`Tests/YMM4CoreTests/AudioResamplerQualityTests.swift`（合格値を合否判定として固定する正式テストへ再構成。候補比較用の AudioResamplerWindowComparisonTests は役割を終えたため qa ツリー内で削除し、掃引は正式テストへ統合）。作業は分離ツリー `ymm4mac-resample-qa` で実施し、本項は統合時の転記である。
+
+**どう実装したか。** 窓関数 = Kaiser 窓（β = 8.96、設計減衰 A ≈ 90 dB に対応）、支持幅 = 片側 96 零交差（scale = 1 で計 193 タップ）。Bessel I0 は比較試験の実装と同じ級数評価（製品形として早期終了つき）。リサンプラの契約（長さ・シーク・素通し規則、位置写像、中心遅延 0）は無変更。正式合格値は 48k→44.1k で阻止帯域 [23.2k–24kHz]（25Hz 格子掃引）の最悪値 −80 dB 以下、通過帯域 20kHz までの平坦さ ±0.1 dB 以内とし、`AudioResamplerQualityTests` の testFormalStopbandSweep / testFormalPassbandFlatness が合否を固定する。
+
+**なぜその実装なのか。** 同じ測定系での候補比較（§3.1.2）で、正式合格値を満たしたのは Kaiser 96 のみだった（Blackman 96 は阻止帯域の最悪値 −79.10 dB で 0.9 dB 不足）。窓長の延長では改善が頭打ちで（48→64 で +15.0 dB、64→96 で +3.8 dB）、制限要因は窓関数のサイドローブ構造だった。コストは素朴実装で Blackman 48 比 Release 約 3.1 倍だが、上記の優先順位により許容した。係数テーブル化／ポリフェーズ化は将来作業として残す。
+
+**本家との差分。** 本家のリサンプラは Media Foundation の実装であり波形等価性は未検証のまま（従来どおり）。本件は Mac 側の品質仕様の固定であり、本家との差分を新たに生むものではない。
+
+**検証。** 最終形での再測定（qa ツリー、同測定系・同 VM）: 掃引の最悪値 −94.54 dB @23,200Hz（合格値 −80 dB に対し余裕 14.5 dB）、通過平坦さは 6 点全てで |利得| ≤ 0.000031 dB、スポット値も §3.1.2 の実験値と一致。qa ツリーの全件テスト（48 クラス・413 件＝ツリー側の基準件数）を分割実行で完走し 0 失敗（AudioDriftTests・AudioSampleAccuracyTests を含む。ランプ再構成の期待値 1.5456 は Kaiser でも理論値と一致し変更不要だった）。統合後のメインでの全件検証は STATUS を参照。留保: 25Hz 格子の最悪値は真の連続最悪値より数 dB 楽観的な可能性がある（§3.1.2 と同じ）。
+
+**未解決事項。** 係数テーブル化／ポリフェーズ化による高速化（将来作業）。Apple Silicon での Release コスト実測は未実施（コスト比は共有 VM 上の測定）。本家 MFT との波形等価性は本家環境が無いため未検証。
+
+**次の担当へ。** QA24-01 は本件で完了（第5ラウンドで測定系は採用可・品質は条件付き採用可となり、本件で正式形へ固定）。残る音声課題は SOLA の本家パラメータ実測と実装、EnvelopeFollower の Ratio≠1 検証、EX26-02 / 03。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
