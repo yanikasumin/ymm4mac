@@ -11,11 +11,12 @@ import Foundation
 /// ものはその文言を使い、無いもの（IsEnabled / Remark）はプロパティ名
 /// そのままにする。
 ///
-/// 記述子で表現できない複合プロパティ（ブラシ、ノイズ／モザイクの
-/// パラメータオブジェクト、変形マップの Transform、グラデーションの
-/// 色停止点列、メッシュ変形の点列、マスクの図形パラメータ、
-/// モーショントラッキングのパス）は、本家でも入れ子の専用エディタで
-/// 編集する対象であり、単一記述子の対象外として欠落を台帳に記録する。
+/// 本家で入れ子の専用エディタを使う複合プロパティ（ブラシ、ノイズ／
+/// モザイクのパラメータオブジェクト、変形マップの Transform、
+/// グラデーションの色停止点列、メッシュ変形の点列、マスクの図形
+/// パラメータ、モーショントラッキングのパス。計18件）は、記述子体系へ
+/// 1層だけ足した複合種別（`.object` / `.collection`）で対象化する
+/// （構築は `EffectPropertyMetadataComposite.swift`、台帳 FXMETA-COMP）。
 public enum EffectPropertyMetadata {
     /// エフェクト定義の編集可能プロパティを宣言順に返す。
     public static func descriptors(for definition: VideoEffectDefinitionBase) -> [PropertyDescriptor] {
