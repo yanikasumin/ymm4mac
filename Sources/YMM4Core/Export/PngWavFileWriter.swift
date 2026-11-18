@@ -72,6 +72,15 @@ public final class PngWavFileWriter: VideoFileWriting {
         isWavOutputEnabled: Bool = true,
         wavByteLimit: Int = Int(Int32.max)
     ) throws {
+        // 接頭辞は単一のファイル名成分として扱う（R10-01）。パス区切りや
+        // 親ディレクトリ参照を許すと、組み立てたパスが選択フォルダの外を
+        // 指しうるため、ファイル生成の境界であるここで拒否する。
+        guard Self.isValidFileName(fileName) else {
+            throw ExportError(
+                cause: .actionable,
+                message: "ファイル名に使えない文字が含まれています: \(fileName)"
+            )
+        }
         self.directoryPath = directoryPath
         self.fileName = fileName
         self.videoInfo = videoInfo
@@ -85,6 +94,33 @@ public final class PngWavFileWriter: VideoFileWriting {
         } catch {
             throw Self.convertFileError(error, context: "出力フォルダを作成できませんでした")
         }
+        // 既存ファイルの破壊的上書きを防ぐ事前検査（R10-01）。連番ファイルは
+        // 数千枚に及びうるため、書き出しの途中で衝突に気づくのではなく、
+        // 開始前に同名の連番ファイルが残っていないかを確認する。
+        let existing = (try? FileManager.default.contentsOfDirectory(atPath: directoryPath)) ?? []
+        let prefix = fileName + "_"
+        let conflict = existing.filter { name in
+            guard name.hasPrefix(prefix) else { return false }
+            if isPngOutputEnabled && name.hasSuffix(".png") { return true }
+            if isWavOutputEnabled && name.hasSuffix(".wav") { return true }
+            return false
+        }.sorted().first
+        if let conflict {
+            throw ExportError(
+                cause: .actionable,
+                message: "出力先に同名のファイルが既にあります: \(conflict)（フォルダかファイル名を変えてください）"
+            )
+        }
+    }
+
+    /// 接頭辞が単一のファイル名成分として安全か。空白のみ・パス区切り・
+    /// 親ディレクトリ参照・NUL を含むものは不可。
+    public static func isValidFileName(_ fileName: String) -> Bool {
+        if fileName.trimmingCharacters(in: .whitespaces).isEmpty { return false }
+        if fileName == "." || fileName == ".." { return false }
+        if fileName.contains("/") || fileName.contains("\\") { return false }
+        if fileName.contains("\0") { return false }
+        return true
     }
 
     /// 映像フレームを PNG として 1 ファイル書き出す。

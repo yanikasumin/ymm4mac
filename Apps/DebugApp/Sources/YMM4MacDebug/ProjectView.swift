@@ -238,9 +238,11 @@ struct ProjectView: View {
                 .sheet(isPresented: $isExportDialogPresented) {
                     ExportDialogView(
                         timeline: timeline,
-                        defaultPngWavFileName: project.filePath.map {
-                            URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent
-                        } ?? "untitled"
+                        // 接頭辞の初期値は「今開いているファイル」の名前。
+                        // project.filePath は .ymmp 内に保存された値で、
+                        // 開いたファイルと一致するとは限らない（R10-02）。
+                        defaultPngWavFileName: sourceURL?
+                            .deletingPathExtension().lastPathComponent ?? "untitled"
                     ) { request in
                         runExport(timeline: timeline, request: request)
                     }

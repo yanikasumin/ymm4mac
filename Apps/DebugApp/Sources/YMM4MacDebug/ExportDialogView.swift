@@ -59,9 +59,12 @@ struct ExportDialogView: View {
         if format == .pngWav {
             // 本家 PngWav は PNG / WAV のどちらか一方でも出力できる。
             // 両方無効と空の接頭辞は書き出し側が成果物を生まないため
-            // ここで止める。
+            // ここで止める。接頭辞の安全性（単一のファイル名成分か）は
+            // ライター側の検証と同じ述語で判定する（R10-01）。
             if !isPngOutputEnabled && !isWavOutputEnabled { return false }
-            if pngWavFileName.trimmingCharacters(in: .whitespaces).isEmpty { return false }
+            if !PngWavFileWriter.isValidFileName(
+                pngWavFileName.trimmingCharacters(in: .whitespaces)
+            ) { return false }
         }
         return true
     }

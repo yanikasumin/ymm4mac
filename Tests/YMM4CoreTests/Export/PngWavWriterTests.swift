@@ -291,6 +291,45 @@ final class PngWavFileWriterTests: XCTestCase {
         // 1 秒 = 48000 サンプル/チャンネル × 2ch × 4 バイト。
         XCTAssertEqual(Int(dataSize), 48_000 * 2 * 4)
     }
+
+    /// 接頭辞の検証（R10-01）: パス区切り・親ディレクトリ参照・空白のみは
+    /// ファイル生成の境界で拒否する。
+    func testInvalidFileNameIsRejected() {
+        for invalid in ["../other", "a/b", "a\\b", "..", ".", "   ", ""] {
+            XCTAssertThrowsError(
+                try PngWavFileWriter(
+                    directoryPath: directory.path, fileName: invalid,
+                    videoInfo: videoInfo()
+                ),
+                "接頭辞 \(invalid.debugDescription) は拒否されるべき"
+            )
+        }
+        XCTAssertTrue(PngWavFileWriter.isValidFileName("proj"))
+        XCTAssertTrue(PngWavFileWriter.isValidFileName("プロジェクト 1"))
+    }
+
+    /// 既存ファイルの保護（R10-01）: 同名の連番ファイルが残っている出力先は
+    /// 開始前に拒否し、既存ファイルには触れない。有効なストリームの
+    /// 拡張子だけが衝突対象になる。
+    func testExistingSequenceFileIsRefused() throws {
+        let existing = directory.appendingPathComponent("proj_0.png")
+        try Data([1, 2, 3]).write(to: existing)
+
+        XCTAssertThrowsError(
+            try PngWavFileWriter(
+                directoryPath: directory.path, fileName: "proj",
+                videoInfo: videoInfo()
+            )
+        )
+        // WAV のみ有効な場合は PNG の残存は衝突にならない。
+        let wavOnly = try PngWavFileWriter(
+            directoryPath: directory.path, fileName: "proj",
+            videoInfo: videoInfo(), isPngOutputEnabled: false
+        )
+        XCTAssertEqual(wavOnly.supportedStreams, [.audio])
+        // 既存ファイルは無傷。
+        XCTAssertEqual(try Data(contentsOf: existing), Data([1, 2, 3]))
+    }
 }
 
 private final class PatternVideoProvider: VideoFrameProviding {
