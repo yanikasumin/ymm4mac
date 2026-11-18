@@ -4,7 +4,8 @@ import Foundation
 import YMM4Core
 
 /// AVFoundation で音声ファイルを逐次デコードする PCM 供給元
-/// （Issue #54: PCM 供給のストリーミング化）。
+/// （Issue #54: PCM 供給のストリーミング化。Issue #55 で提示
+/// タイムスタンプとトリムの扱いを追加）。
 ///
 /// 本家のファイルソース（`IAudioFileSource`）はプル型のストリーミング
 /// 契約であり、`MFAudioFileSource` は SourceReader を保持して必要な
@@ -17,12 +18,19 @@ import YMM4Core
 ///   サンプルは読み取りバッファの分だけであり、メモリ使用量は素材の
 ///   長さに比例しない。
 /// - シークはリーダーを作り直し（`AVAssetReader` は後方へ戻れない）、
-///   開始時刻を目標位置に置く。返ってくるサンプルバッファは時刻
-///   （PTS）を持つため、バッファの先頭が目標より前にあればその分を
-///   切り捨てて正確な位置へ着地する（本家のプリロールと同じ発想）。
-/// - 素材の開始時刻（トラックの `timeRange.start`）を原点として
-///   フレーム番号を数える。本家 `MFAudioFileSource` も
-///   `streamStartTime` を保持して同じ補正をしている。
+///   目標の 1 秒前（本家 `FFmpegAudioFileSource` のプリロール量）から
+///   読み始めて、返ってくるサンプルバッファの時刻（PTS）で目標位置へ
+///   着地する。目標位置から直接読み始めると、形式によっては
+///   （MP3 で実測）デコーダの遅延補正が外れて内容が提示時刻から
+///   ずれるため、直接開始はしない。目標位置が提示区間の終端以降なら
+///   リーダーを作らず終端として扱う（終端は提示区間から既知であり、
+///   先頭から読み直す理由がない）。
+/// - 論理時刻 0 は素材の提示開始位置（最初の非空セグメントの
+///   提示開始時刻）とする。本家も `streamStartTime`（ストリームの
+///   開始時刻 / 最初のサンプルの提示時刻）を保持して同じ補正を
+///   しており、提示開始オフセットを持つ素材（前方に提示上の
+///   無音区間がある素材）では、その分を差し引いて配置する。
+///   全長も提示区間の長さ（提示終端 − 提示開始）で数える。
 ///
 /// 所有権: リーダーと資産はこの供給元が保持する。破棄時に
 /// `cancelReading` で読み取りを止める。読み取りは単一スレッド前提
@@ -31,36 +39,48 @@ import YMM4Core
 public final class AVFoundationStreamingPCMProvider: PCMProvider {
     /// サンプリングレート（素材のネイティブレート）。
     public let hz: Int
-    /// 全長。トラックの時間範囲から決める（デコード総量からは
-    /// 決めない。ストリーミングでは終端まで読む前に全長が要るため）。
+    /// 全長。提示区間の長さ（提示終端 − 提示開始位置）から決める
+    /// （デコード総量からは決めない。ストリーミングでは終端まで
+    /// 読む前に全長が要るため）。
     public let duration: TimeSpanValue
+
+    /// シーク時のプリロール（秒）。本家 `FFmpegAudioFileSource` は
+    /// 一律 1 秒前から読み直してフレームの提示時刻で着地する。
+    private static let seekPrerollSeconds = 1.0
 
     private let asset: AVURLAsset
     private let track: AVAssetTrack
-    /// トラックの時間範囲（開始時刻が素材内の原点）。
+    /// トラックの時間範囲（リーダーの読み取り範囲の外側の境界）。
     private let timeRange: CMTimeRange
+    /// 提示区間（start = 提示開始位置 = 論理 0、duration = 提示長）。
+    private let presentation: CMTimeRange
 
     private var reader: AVAssetReader?
     private var output: AVAssetReaderTrackOutput?
-    /// デコード済み・未返却のサンプル塊。`startSample` は原点から
-    /// 数えたサンプル位置（フレーム × チャンネル数）。
+    /// デコード済み・未返却のサンプル塊。`startSample` は提示開始
+    /// 位置から数えたサンプル位置（フレーム × チャンネル数）。
     private var chunks: [(startSample: Int, samples: [Float])] = []
     /// 次に返すべきサンプル位置（負値は素材開始前の無音区間）。
     private var nextSample = 0
     private var reachedEnd = false
 
-    /// 資産・トラック・時間範囲・サンプリングレートから生成する。
-    /// メタデータの読み込み（async API の同期橋渡し）は工場側が担い、
-    /// ここでは確定済みの値だけを受け取る。サンプリングレートが
-    /// 確定できない場合は nil（= 開けない。呼び出し側が無音へ倒す）。
-    public init?(asset: AVURLAsset, track: AVAssetTrack, timeRange: CMTimeRange, hz: Int) {
+    /// 資産・トラック・時間範囲・提示区間・サンプリングレートから
+    /// 生成する。メタデータの読み込み（async API の同期橋渡し）は
+    /// 工場側が担い、ここでは確定済みの値だけを受け取る。
+    /// サンプリングレートが確定できない場合は nil（= 開けない。
+    /// 呼び出し側が無音へ倒す）。
+    public init?(
+        asset: AVURLAsset, track: AVAssetTrack, timeRange: CMTimeRange,
+        presentation: CMTimeRange, hz: Int
+    ) {
         guard hz > 0 else { return nil }
         self.asset = asset
         self.track = track
         self.timeRange = timeRange
+        self.presentation = presentation
         self.hz = hz
 
-        let durationSeconds = timeRange.duration.seconds
+        let durationSeconds = presentation.duration.seconds
         if durationSeconds.isFinite, durationSeconds > 0 {
             self.duration = TimeSpanValue(
                 ticks: Int64((durationSeconds * 10_000_000).rounded())
@@ -151,6 +171,26 @@ public final class AVFoundationStreamingPCMProvider: PCMProvider {
     /// 現在位置から読むためのリーダーを用意する。
     private func ensureReader() -> AVAssetReaderTrackOutput? {
         if let output { return output }
+        // 終端判定は要求位置そのもので行う。提示区間の終端は
+        // `duration` と同じ出所で既知であり、要求位置が終端以降なら
+        // リーダーを作らずに終端として扱う。時間範囲を設定しない
+        // リーダーは素材全体を先頭からデコードし、読み取りループが
+        // 提示時刻で全量を捨てることになるため、長い素材では終端外
+        // シーク 1 回で全デコードの負荷がかかる（R6-05）。判定には
+        // プリロール後の開始位置ではなく要求位置を使う。プリロール
+        // 後の位置で判定すると、終端以降の要求でもプリロール分だけ
+        // 前からリーダーが作られてしまう（レビュー第7ラウンドの
+        // 統合条件: #95 の終端判定を #96 の提示時刻モデルへ適応）。
+        let startFrame = max(0, nextSample) / AudioStream.channelCount
+        let requestedTime = CMTimeAdd(
+            presentation.start,
+            CMTime(value: Int64(startFrame), timescale: CMTimeScale(hz))
+        )
+        let endTime = CMTimeAdd(presentation.start, presentation.duration)
+        guard requestedTime < endTime else {
+            reachedEnd = true
+            return nil
+        }
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVLinearPCMBitDepthKey: 32,
@@ -164,15 +204,21 @@ public final class AVFoundationStreamingPCMProvider: PCMProvider {
             reachedEnd = true
             return nil
         }
-        let startFrame = max(0, nextSample) / AudioStream.channelCount
-        let startTime = CMTimeAdd(
-            timeRange.start,
-            CMTime(value: Int64(startFrame), timescale: CMTimeScale(hz))
+        // 読み取り開始位置は、要求位置からプリロール分だけ前
+        // （トラック範囲の先頭より前へは行かない）。要求位置から
+        // 直接読み始めると、形式によってはデコーダの遅延補正が
+        // 外れて内容が提示時刻からずれる（MP3 で実測）。前から
+        // 読んで提示時刻で着地するのが本家の方式である。開始位置は
+        // 要求位置以下にしかならないため、上で要求位置 < 終端が
+        // 確定していれば読み取り範囲は常に対象区間と重なる。
+        let prerollFrames = Int(Self.seekPrerollSeconds * Double(hz))
+        let readerStartFrame = max(0, startFrame - prerollFrames)
+        let readerStartTime = CMTimeAdd(
+            presentation.start,
+            CMTime(value: Int64(readerStartFrame), timescale: CMTimeScale(hz))
         )
-        let endTime = CMTimeAdd(timeRange.start, timeRange.duration)
-        if startTime < endTime {
-            newReader.timeRange = CMTimeRange(start: startTime, end: endTime)
-        }
+        let boundedStart = max(readerStartTime, timeRange.start)
+        newReader.timeRange = CMTimeRange(start: boundedStart, end: endTime)
         newReader.add(newOutput)
         guard newReader.startReading() else {
             reachedEnd = true
@@ -208,7 +254,7 @@ public final class AVFoundationStreamingPCMProvider: PCMProvider {
             }
             guard status == noErr else { continue }
             let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            let frameOffset = (presentationTime - timeRange.start).seconds * Double(hz)
+            let frameOffset = (presentationTime - presentation.start).seconds * Double(hz)
             let startSample = Int(frameOffset.rounded()) * AudioStream.channelCount
             chunks.append((startSample: startSample, samples: samples))
             return true

@@ -22,8 +22,9 @@ public enum PlaybackRateMode: Sendable {
 /// - 音量はポーリングのたびに即時反映する（ミュート時は 0）。
 /// - 速度が変わったらプレイヤーを作り直し、現在位置から再シーク
 ///   して再開する。
-/// - 終端に達したら停止する。リピート有効時は、停止処理の最後に
-///   位置が開始位置へ戻る（再開はしない。一時停止でも同じ）。
+/// - 終端に達したら停止する。リピート有効時は開始位置へ戻り、
+///   通常の再生開始経路（`play`）で再開する。一時停止時は位置が
+///   開始位置へ戻るだけで、再開はしない。
 /// - プレイヤー層のシークは再生中は無効。再生中のシークは
 ///   「一時停止 → シーク」の手順を踏み、設定既定（SeekBehavior =
 ///   Pause）のため再開しない。
@@ -42,7 +43,10 @@ public enum PlaybackRateMode: Sendable {
 ///   音量適用前のソースを測るため、表示値の意味は変わらない。
 /// - 供給は 1 秒単位のチャンクを専用キューで生成し、最大 2 つ先行
 ///   してスケジュールする。状態変更（停止・シーク・作り直し）は
-///   世代カウンタで古いチャンクを無効化する。
+///   世代カウンタで古いチャンクを無効化する。無効化は生成側の
+///   読み取り前に判定し、古い世代は供給元を一切読まない（供給元は
+///   逐次読みのため、シーク後に古い世代が読むと新しい世代の先頭が
+///   その分だけ欠落する）。
 ///
 /// 所有権: 供給元（ミキサーと工場）とエンジン一式はこのクラスが
 /// 保持する。`dispose` で全て解放する。
@@ -83,6 +87,10 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
     public var onPositionChanged: ((TimeSpanValue) -> Void)?
     /// 再生状態が変化したときの通知（メインキュー）。
     public var onPlayingStateChanged: ((Bool) -> Void)?
+    /// 再生開始に失敗したときの通知（メインキュー）。
+    public var onStartFailed: ((PlaybackStartError) -> Void)?
+    /// 直近の再生開始失敗。開始が成功すると nil に戻る。
+    public private(set) var lastStartError: PlaybackStartError?
 
     private var engine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
@@ -235,6 +243,7 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
         endPlayback()
         onPositionChanged = nil
         onPlayingStateChanged = nil
+        onStartFailed = nil
     }
 
     // MARK: - エンジンの構築と停止
@@ -282,9 +291,17 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
         do {
             try audioEngine.start()
         } catch {
+            // 開始失敗は握りつぶさず、型付きの失敗として通知する
+            // （Metal 初期化診断と同じ契約。R6-03）。
             teardownEngine()
+            let failure = PlaybackStartError.engineStartFailed(
+                underlying: String(describing: error)
+            )
+            lastStartError = failure
+            onStartFailed?(failure)
             return
         }
+        lastStartError = nil
         engine = audioEngine
         playerNode = player
         appliedRate = playbackRate
@@ -351,7 +368,10 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
             let expectedGeneration = currentGeneration
             chunkQueue.async { [weak self] in
                 guard let self else { return }
-                let buffer = self.renderChunk(startingAtSamples: chunkStart)
+                let buffer = self.renderChunk(
+                    startingAtSamples: chunkStart,
+                    expectedGeneration: expectedGeneration
+                )
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     guard self.currentGeneration == expectedGeneration,
@@ -384,11 +404,19 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
     /// 生成キューで呼ばれる。供給元は終端以降も無音を返すため、
     /// バッファは常に満杯になる。
     ///
+    /// 世代の確認は供給ロックの保持中に行う。供給元は逐次読みで
+    /// 現在位置から消費するため、シーク後に古い世代のタスクが読むと
+    /// 新しい世代の先頭がその分だけ欠落する。シーク（`seekSource`）
+    /// も同じロックを取るので、ロック保持中の「確認→読み取り」は
+    /// シークに対して不可分になり、古い世代は供給元を一切読まない。
+    ///
     /// バッファ形式は非インターリーブ Float32。AVAudioEngine の
     /// 接続はインターリーブ形式を受け付けない（実機で接続例外を
     /// 確認済み）ため、供給元のインターリーブ列をここで
     /// チャンネル別に振り分ける。
-    private func renderChunk(startingAtSamples start: Int) -> AVAudioPCMBuffer? {
+    private func renderChunk(
+        startingAtSamples start: Int, expectedGeneration: Int
+    ) -> AVAudioPCMBuffer? {
         let hz = timeline.videoInfo.hz
         guard hz > 0 else { return nil }
         guard let format = AVAudioFormat(
@@ -403,6 +431,10 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
             repeating: 0, count: chunkFrames * AudioStream.channelCount
         )
         sourceAccessLock.lock()
+        guard currentGeneration == expectedGeneration else {
+            sourceAccessLock.unlock()
+            return nil
+        }
         source.read(into: &samples, offset: 0, count: samples.count)
         sourceAccessLock.unlock()
         buffer.frameLength = AVAudioFrameCount(chunkFrames)
@@ -454,13 +486,16 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
         // 音量はポーリングのたびに即時反映する（本家どおり）。
         applyVolume(to: engine)
         // 速度が変わっていたら、現在位置から作り直す（本家どおり）。
+        // 世代の更新はシークより先に行う。古い世代のチャンク生成が
+        // シーク後の供給位置を消費しないため（renderChunk の世代
+        // 確認は供給ロック保持中に行われ、シークと不可分）。
         if playbackRate != appliedRate || playbackRateMode != appliedRateMode {
             let current = computePosition() ?? position
             position = current
             startPosition = current
+            bumpGeneration()
             seekSource(toTime: current)
             nextChunkSamplePosition = sourcePositionInSamples(current)
-            bumpGeneration()
             buildEngineAndStart()
             return
         }
@@ -472,9 +507,17 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
         if updated >= maxPosition {
             endPlayback()
             if isRepeatEnabled {
+                // リピート: 開始位置へ戻し、通常の再生開始経路で
+                // 再開する。供給の再シーク、プレイヤーの再構築、
+                // メーターの位置合わせは play の経路に委ねる。
+                // 開始位置が終端そのものの場合、再開しても即座に
+                // 終端へ戻るだけなので再開しない。
                 position = startPosition
                 timeline.currentFrame = currentFrame
                 notifyPosition()
+                if startPosition < maxPosition {
+                    play()
+                }
             }
         }
     }

@@ -158,4 +158,33 @@ if tailOK {
 } else {
     fail("seek near end mismatch (read=\(tailRead))")
 }
+
+// 終端以降へのシークが終端を即座に返すこと（R6-05）。修正前は
+// 時間範囲未設定のリーダーが素材全体を先頭からデコードして
+// 全量を捨てる経路に退化しており、1 時間素材では読み切りと
+// 同程度の時間がかかる。経過時間を実測値として出す。
+provider.seek(toTime: TimeSpanValue(ticks: expectedTicks + 10_000_000))
+let beyondStart = Date()
+var beyondBuffer = [Float](repeating: 0, count: 200)
+let beyondRead = provider.read(into: &beyondBuffer, offset: 0, count: 200)
+let beyondSeconds = Date().timeIntervalSince(beyondStart)
+guard beyondRead == 0 else { fail("seek beyond end returned \(beyondRead)") }
+print("PASS: seek beyond end returns EOF in \(beyondSeconds)s")
+
+// 終端以降の後に先頭へ戻しても通常どおり読めること。
+provider.seek(toTime: .zero)
+var head = [Float](repeating: 0, count: 200)
+let headRead = provider.read(into: &head, offset: 0, count: 200)
+var headOK = headRead == 200
+if headOK {
+    for index in 0..<100 {
+        if Int((head[index * 2] * 32768).rounded()) != index % 32768 { headOK = false }
+        if Int((head[index * 2 + 1] * 32768).rounded()) != (index * 7) % 32768 { headOK = false }
+    }
+}
+if headOK {
+    print("PASS: seek back to start after beyond-end seek")
+} else {
+    fail("seek back to start mismatch (read=\(headRead))")
+}
 print("ALL PASS")

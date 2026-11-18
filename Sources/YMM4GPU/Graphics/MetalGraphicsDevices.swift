@@ -23,12 +23,18 @@ public final class MetalGraphicsDevices {
     let effectPipeline: MTLRenderPipelineState
     /// ガウスぼかしのパス（ブレンドなし。サンプラ経由で読む）。
     let blurPipeline: MTLRenderPipelineState
-    /// モザイク（矩形）のコンピュートカーネル。
+    /// 矩形モザイクの旧コンピュートカーネル。描画経路は Warp の
+    /// mode 12（本家方式の5点サンプル）へ移行済みで、この
+    /// パイプラインは描画には使わない。デバイス初期化の関数
+    /// インベントリとして残す（初期化診断ハーネスが関数名
+    /// `ymm4MosaicKernel` を欠落検出の対象にしているため）。
     let mosaicPipeline: MTLComputePipelineState
     /// ワープ系エフェクトのパス（MAC-0028: アルファマスク・色収差・タイリング）。
     let warpPipeline: MTLRenderPipelineState
     /// ブラシ塗りのパス（BRUSH46: グラデーション・パターン・ビットマップ）。
     let brushPipeline: MTLRenderPipelineState
+    /// グラデーションメッシュのパス（GRADMESH: 頂点色テッセレーション）。
+    let meshPipeline: MTLRenderPipelineState
     /// 合成系エフェクトのパス（MAC-0028: 影・塗り・枠線・複写反転）。
     let compositePipeline: MTLRenderPipelineState
     /// モルフォロジーのコンピュートカーネル（MAC-0028）。
@@ -119,6 +125,8 @@ public final class MetalGraphicsDevices {
         let mosaicFunction = try shaderFunction("ymm4MosaicKernel")
         let warpFunction = try shaderFunction("ymm4WarpFragment")
         let brushFunction = try shaderFunction("ymm4BrushFragment")
+        let meshVertexFunction = try shaderFunction("ymm4MeshVertex")
+        let meshFragmentFunction = try shaderFunction("ymm4MeshFragment")
         let compositeFunction = try shaderFunction("ymm4CompositeFragment")
         let morphologyFunction = try shaderFunction("ymm4MorphologyKernel")
         let gradientFunction = try shaderFunction("ymm4GradientFragment")
@@ -202,6 +210,30 @@ public final class MetalGraphicsDevices {
         mosaicPipeline = try makeComputePipeline(name: "mosaic", function: mosaicFunction)
         warpPipeline = try makeEffectPipeline(name: "warp", fragment: warpFunction)
         brushPipeline = try makeEffectPipeline(name: "brush", fragment: brushFunction)
+        // グラデーションメッシュは頂点バッファ駆動のため専用の
+        // 頂点記述子とパイプラインを使う（合成はしない）。
+        let meshVertexDescriptor = MTLVertexDescriptor()
+        meshVertexDescriptor.attributes[0].format = .float2
+        meshVertexDescriptor.attributes[0].offset = 0
+        meshVertexDescriptor.attributes[0].bufferIndex = 0
+        meshVertexDescriptor.attributes[1].format = .float4
+        meshVertexDescriptor.attributes[1].offset =
+            MemoryLayout<GradientMeshVertex>.offset(of: \.color) ?? 16
+        meshVertexDescriptor.attributes[1].bufferIndex = 0
+        meshVertexDescriptor.layouts[0].stride =
+            MemoryLayout<GradientMeshVertex>.stride
+        let meshDescriptor = MTLRenderPipelineDescriptor()
+        meshDescriptor.vertexFunction = meshVertexFunction
+        meshDescriptor.fragmentFunction = meshFragmentFunction
+        meshDescriptor.vertexDescriptor = meshVertexDescriptor
+        meshDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        do {
+            meshPipeline = try device.makeRenderPipelineState(descriptor: meshDescriptor)
+        } catch {
+            throw MetalInitializationError.pipelineCreationFailed(
+                name: "mesh", underlying: String(describing: error)
+            )
+        }
         compositePipeline = try makeEffectPipeline(
             name: "composite", fragment: compositeFunction
         )
@@ -566,9 +598,11 @@ public final class MetalGraphicsDevices {
             return acc;
         }
 
-        // 矩形モザイク。スレッドがセル1つを担当し、セル内のテクセル平均を
-        // セル全体へ書き戻す。セルの格子は入力の左上（テクセル原点）に
-        // 固定する（本家カスタムシェーダの InputRect 基準に相当）。
+        // 矩形モザイクの旧カーネル（セル内テクセル平均方式）。
+        // 本家方式（5点サンプル平均）への是正で描画経路は Warp の
+        // mode 12 へ移行した。このカーネルはデバイス初期化の関数
+        // インベントリとしてのみ残す（`mosaicPipeline` のコメント
+        // 参照）。
         struct MosaicUniforms {
             float size;
             uint width;
@@ -908,6 +942,45 @@ public final class MetalGraphicsDevices {
                     float2 sampleUV = (samplePoint - uniforms.inputPlane.xy)
                         / uniforms.inputPlane.zw;
                     return input.sample(inputSampler, sampleUV);
+                }
+                case 12: {
+                    // 矩形モザイク: param0.x = セル寸法 (本家の setter
+                    // クランプ済みの値が渡る)。本家カスタムシェーダ
+                    // (Mosaic) の逆アセンブルから抽出した方式で、他の
+                    // 形状と違い「代表点」ではなくセル内の5点サンプル
+                    // の平均を取る。格子は入力平面座標の原点基準で
+                    // floor により決まり (負座標でも床方向)、セルは
+                    // 入力矩形 (InputRect) で切り取られる。サンプル点は
+                    // 切り取られたセルの中心と、1/3・2/3 の4点。
+                    // Size == 1 のときは素通し (本家字面どおり)。
+                    float size = max(uniforms.param0.x, 1.0);
+                    float2 pos = point + uniforms.inputOffset;
+                    float2 rectMin = uniforms.inputPlane.xy;
+                    float2 rectMax = rectMin + uniforms.inputPlane.zw;
+                    if (size == 1.0) {
+                        return input.sample(
+                            inputSampler, (pos - rectMin) / uniforms.inputPlane.zw);
+                    }
+                    float2 cellOrigin = floor(pos / size) * size;
+                    float2 clampedOrigin = max(cellOrigin, rectMin);
+                    float2 extent = min(cellOrigin + size, rectMax) - clampedOrigin;
+                    float2 third = float2(
+                        0.3333333432674408, 0.3333333432674408);
+                    float2 twoThirds = float2(
+                        0.6666666865348816, 0.6666666865348816);
+                    float2 points[5];
+                    points[0] = clampedOrigin + extent * 0.5;
+                    points[1] = clampedOrigin + extent * third;
+                    points[2] = clampedOrigin + extent * float2(third.x, twoThirds.y);
+                    points[3] = clampedOrigin + extent * float2(twoThirds.x, third.y);
+                    points[4] = clampedOrigin + extent * twoThirds;
+                    float4 sum = float4(0.0);
+                    for (int i = 0; i < 5; i++) {
+                        sum += input.sample(
+                            inputSampler,
+                            (points[i] - rectMin) / uniforms.inputPlane.zw);
+                    }
+                    return sum * 0.20000000298023224;
                 }
                 default:
                     return float4(0.0);
@@ -2066,6 +2139,35 @@ public final class MetalGraphicsDevices {
                 }
             }
             return float4(straight.rgb * straight.a, straight.a);
+        }
+
+        // グラデーションメッシュ (GRADMESH): CPU 側でテッセレーション
+        // した頂点色三角形をそのまま描く。頂点色は直色で、書き出し時に
+        // Premultiplied 化する (他のブラシ塗りと同じ規約)。
+        struct MeshVertexIn {
+            float2 position [[attribute(0)]];
+            float4 color [[attribute(1)]];
+        };
+        struct MeshVertexOut {
+            float4 position [[position]];
+            float4 color;
+        };
+        struct MeshUniforms {
+            float2 outputOrigin;
+            float2 outputSize;
+        };
+        vertex MeshVertexOut ymm4MeshVertex(
+            MeshVertexIn in [[stage_in]],
+            constant MeshUniforms &uniforms [[buffer(1)]]
+        ) {
+            MeshVertexOut out;
+            float2 uv = (in.position - uniforms.outputOrigin) / uniforms.outputSize;
+            out.position = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+            out.color = in.color;
+            return out;
+        }
+        fragment float4 ymm4MeshFragment(MeshVertexOut in [[stage_in]]) {
+            return float4(in.color.rgb * in.color.a, in.color.a);
         }
 
         fragment float4 ymm4BrushFragment(

@@ -1,14 +1,21 @@
 import Foundation
 
-/// 映像エフェクト定義のプロパティメタデータ（MAC-0029）。
+/// 映像エフェクト定義のプロパティメタデータ（MAC-0029、FXMETA で全種別化）。
 ///
 /// アイテム側と同じ仕組みで、エフェクト定義のパラメータを記述子化する。
 /// 共通プロパティ（IsEnabled / Remark）は全定義に付き、具象定義ごとに
-/// 固有パラメータの記述を追加する。ここでは型付き定義の代表として
-/// 拡大縮小・不透明度・描画位置を通し、他の定義は同じ形で追加できる。
+/// 固有パラメータの記述を追加する。拡大縮小・不透明度・描画位置は
+/// 本ファイル、残りの具象定義はカテゴリ別ファイルのビルダー
+/// （`specificDescriptors(for:)` 経由）に置く。
 /// 表示名は本家の `Texts` リソース（`ZoomEffect*Name` 等）に根拠がある
 /// ものはその文言を使い、無いもの（IsEnabled / Remark）はプロパティ名
 /// そのままにする。
+///
+/// 記述子で表現できない複合プロパティ（ブラシ、ノイズ／モザイクの
+/// パラメータオブジェクト、変形マップの Transform、グラデーションの
+/// 色停止点列、メッシュ変形の点列、マスクの図形パラメータ、
+/// モーショントラッキングのパス）は、本家でも入れ子の専用エディタで
+/// 編集する対象であり、単一記述子の対象外として欠落を台帳に記録する。
 public enum EffectPropertyMetadata {
     /// エフェクト定義の編集可能プロパティを宣言順に返す。
     public static func descriptors(for definition: VideoEffectDefinitionBase) -> [PropertyDescriptor] {
@@ -71,6 +78,7 @@ public enum EffectPropertyMetadata {
         default:
             break
         }
+        result += specificDescriptors(for: definition)
         return result
     }
 }
