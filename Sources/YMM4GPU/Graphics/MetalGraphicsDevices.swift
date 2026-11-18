@@ -23,12 +23,18 @@ public final class MetalGraphicsDevices {
     let effectPipeline: MTLRenderPipelineState
     /// ガウスぼかしのパス（ブレンドなし。サンプラ経由で読む）。
     let blurPipeline: MTLRenderPipelineState
-    /// モザイク（矩形）のコンピュートカーネル。
+    /// 矩形モザイクの旧コンピュートカーネル。描画経路は Warp の
+    /// mode 12（本家方式の5点サンプル）へ移行済みで、この
+    /// パイプラインは描画には使わない。デバイス初期化の関数
+    /// インベントリとして残す（初期化診断ハーネスが関数名
+    /// `ymm4MosaicKernel` を欠落検出の対象にしているため）。
     let mosaicPipeline: MTLComputePipelineState
     /// ワープ系エフェクトのパス（MAC-0028: アルファマスク・色収差・タイリング）。
     let warpPipeline: MTLRenderPipelineState
     /// ブラシ塗りのパス（BRUSH46: グラデーション・パターン・ビットマップ）。
     let brushPipeline: MTLRenderPipelineState
+    /// グラデーションメッシュのパス（GRADMESH: 頂点色テッセレーション）。
+    let meshPipeline: MTLRenderPipelineState
     /// 合成系エフェクトのパス（MAC-0028: 影・塗り・枠線・複写反転）。
     let compositePipeline: MTLRenderPipelineState
     /// モルフォロジーのコンピュートカーネル（MAC-0028）。
@@ -119,6 +125,8 @@ public final class MetalGraphicsDevices {
         let mosaicFunction = try shaderFunction("ymm4MosaicKernel")
         let warpFunction = try shaderFunction("ymm4WarpFragment")
         let brushFunction = try shaderFunction("ymm4BrushFragment")
+        let meshVertexFunction = try shaderFunction("ymm4MeshVertex")
+        let meshFragmentFunction = try shaderFunction("ymm4MeshFragment")
         let compositeFunction = try shaderFunction("ymm4CompositeFragment")
         let morphologyFunction = try shaderFunction("ymm4MorphologyKernel")
         let gradientFunction = try shaderFunction("ymm4GradientFragment")
@@ -202,6 +210,30 @@ public final class MetalGraphicsDevices {
         mosaicPipeline = try makeComputePipeline(name: "mosaic", function: mosaicFunction)
         warpPipeline = try makeEffectPipeline(name: "warp", fragment: warpFunction)
         brushPipeline = try makeEffectPipeline(name: "brush", fragment: brushFunction)
+        // グラデーションメッシュは頂点バッファ駆動のため専用の
+        // 頂点記述子とパイプラインを使う（合成はしない）。
+        let meshVertexDescriptor = MTLVertexDescriptor()
+        meshVertexDescriptor.attributes[0].format = .float2
+        meshVertexDescriptor.attributes[0].offset = 0
+        meshVertexDescriptor.attributes[0].bufferIndex = 0
+        meshVertexDescriptor.attributes[1].format = .float4
+        meshVertexDescriptor.attributes[1].offset =
+            MemoryLayout<GradientMeshVertex>.offset(of: \.color) ?? 16
+        meshVertexDescriptor.attributes[1].bufferIndex = 0
+        meshVertexDescriptor.layouts[0].stride =
+            MemoryLayout<GradientMeshVertex>.stride
+        let meshDescriptor = MTLRenderPipelineDescriptor()
+        meshDescriptor.vertexFunction = meshVertexFunction
+        meshDescriptor.fragmentFunction = meshFragmentFunction
+        meshDescriptor.vertexDescriptor = meshVertexDescriptor
+        meshDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        do {
+            meshPipeline = try device.makeRenderPipelineState(descriptor: meshDescriptor)
+        } catch {
+            throw MetalInitializationError.pipelineCreationFailed(
+                name: "mesh", underlying: String(describing: error)
+            )
+        }
         compositePipeline = try makeEffectPipeline(
             name: "composite", fragment: compositeFunction
         )
@@ -566,9 +598,11 @@ public final class MetalGraphicsDevices {
             return acc;
         }
 
-        // 矩形モザイク。スレッドがセル1つを担当し、セル内のテクセル平均を
-        // セル全体へ書き戻す。セルの格子は入力の左上（テクセル原点）に
-        // 固定する（本家カスタムシェーダの InputRect 基準に相当）。
+        // 矩形モザイクの旧カーネル（セル内テクセル平均方式）。
+        // 本家方式（5点サンプル平均）への是正で描画経路は Warp の
+        // mode 12 へ移行した。このカーネルはデバイス初期化の関数
+        // インベントリとしてのみ残す（`mosaicPipeline` のコメント
+        // 参照）。
         struct MosaicUniforms {
             float size;
             uint width;
@@ -908,6 +942,45 @@ public final class MetalGraphicsDevices {
                     float2 sampleUV = (samplePoint - uniforms.inputPlane.xy)
                         / uniforms.inputPlane.zw;
                     return input.sample(inputSampler, sampleUV);
+                }
+                case 12: {
+                    // 矩形モザイク: param0.x = セル寸法 (本家の setter
+                    // クランプ済みの値が渡る)。本家カスタムシェーダ
+                    // (Mosaic) の逆アセンブルから抽出した方式で、他の
+                    // 形状と違い「代表点」ではなくセル内の5点サンプル
+                    // の平均を取る。格子は入力平面座標の原点基準で
+                    // floor により決まり (負座標でも床方向)、セルは
+                    // 入力矩形 (InputRect) で切り取られる。サンプル点は
+                    // 切り取られたセルの中心と、1/3・2/3 の4点。
+                    // Size == 1 のときは素通し (本家字面どおり)。
+                    float size = max(uniforms.param0.x, 1.0);
+                    float2 pos = point + uniforms.inputOffset;
+                    float2 rectMin = uniforms.inputPlane.xy;
+                    float2 rectMax = rectMin + uniforms.inputPlane.zw;
+                    if (size == 1.0) {
+                        return input.sample(
+                            inputSampler, (pos - rectMin) / uniforms.inputPlane.zw);
+                    }
+                    float2 cellOrigin = floor(pos / size) * size;
+                    float2 clampedOrigin = max(cellOrigin, rectMin);
+                    float2 extent = min(cellOrigin + size, rectMax) - clampedOrigin;
+                    float2 third = float2(
+                        0.3333333432674408, 0.3333333432674408);
+                    float2 twoThirds = float2(
+                        0.6666666865348816, 0.6666666865348816);
+                    float2 points[5];
+                    points[0] = clampedOrigin + extent * 0.5;
+                    points[1] = clampedOrigin + extent * third;
+                    points[2] = clampedOrigin + extent * float2(third.x, twoThirds.y);
+                    points[3] = clampedOrigin + extent * float2(twoThirds.x, third.y);
+                    points[4] = clampedOrigin + extent * twoThirds;
+                    float4 sum = float4(0.0);
+                    for (int i = 0; i < 5; i++) {
+                        sum += input.sample(
+                            inputSampler,
+                            (points[i] - rectMin) / uniforms.inputPlane.zw);
+                    }
+                    return sum * 0.20000000298023224;
                 }
                 default:
                     return float4(0.0);
@@ -1352,8 +1425,7 @@ public final class MetalGraphicsDevices {
             float padC;
         };
 
-        float ymm4NoiseHash(uint3 cell) {
-            uint4 h = uint4(cell, 0u);
+        float ymm4NoiseHash4(uint4 h) {
             h *= uint4(0xAE3CC725u, 0x9FE72885u, 0xAE36BFB5u, 0x82C1FCADu);
             h ^= h.wxyz ^ (h >> 13u);
             uint s = h.x * 0xAE3CC725u + h.y * 0x9FE72885u
@@ -1361,6 +1433,21 @@ public final class MetalGraphicsDevices {
             s ^= s >> 11u;
             s ^= s * s;
             return float(s) * 2.3283064365386963e-10;
+        }
+
+        float ymm4NoiseHash(uint3 cell) {
+            return ymm4NoiseHash4(uint4(cell, 0u));
+        }
+
+        // セルハッシュ（NOISE7）。入力はシード加算済みの格子座標で、
+        // 負の成分は +999999 で持ち上げる（本家シェーダの実測）。
+        // tag は第4成分（Perlin の勾配成分や Cellular / Voronoi の
+        // 特徴点成分の生成に 0 / 1 / 2 が入る）。
+        float ymm4CellHash(float3 h, uint tag) {
+            if (h.x < 0.0) { h.x += 999999.0; }
+            if (h.y < 0.0) { h.y += 999999.0; }
+            if (h.z < 0.0) { h.z += 999999.0; }
+            return ymm4NoiseHash4(uint4(uint3(h), tag));
         }
 
         float ymm4ValueNoise(float3 p, int seed) {
@@ -1371,11 +1458,7 @@ public final class MetalGraphicsDevices {
             for (int i = 0; i < 8; i++) {
                 float3 corner = float3(
                     float(i & 1), float((i >> 1) & 1), float((i >> 2) & 1));
-                float3 h = cell + float(seed) + corner;
-                if (h.x < 0.0) { h.x += 999999.0; }
-                if (h.y < 0.0) { h.y += 999999.0; }
-                if (h.z < 0.0) { h.z += 999999.0; }
-                values[i] = ymm4NoiseHash(uint3(h));
+                values[i] = ymm4CellHash(cell + float(seed) + corner, 0u);
             }
             float x00 = mix(values[0], values[1], w.x);
             float x10 = mix(values[2], values[3], w.x);
@@ -1468,11 +1551,456 @@ public final class MetalGraphicsDevices {
             return r * r;
         }
 
+        // MARK: - NOISE7（Block / Perlin / Cellular / Voronoi /
+        // Simplex / Marble / Flow）。いずれも本家シェーダの
+        // 逆アセンブルからの抽出で、式と定数は実測どおり。
+        // 既存3種との違い: ワープの第1評価点には
+        // +(19.1, 7.3, 3.7) のオフセットがあり、座標変換には
+        // スケール後に ×(1/64) が入る。オクターブは
+        // 「カウンタが Octaves 以下の間」= Octaves + 1 回評価する。
+        // Z はオクターブの周波数で拡縮しない（XY のみ）。
+
+        // シードハッシュ（本家シェーダ共通の hash3 形）。
+        float3 ymm4NoiseSeedHash(int seed) {
+            float3 sv = fract(float(seed) * float3(
+                0.09730000048875809, 0.10300000011920929,
+                0.1031000018119812));
+            sv += dot(sv.zyx, sv.yxz + 33.33);
+            return fract(sv * float3(
+                sv.y + sv.z, sv.x + sv.z, sv.x + sv.y));
+        }
+
+        // ワープ適用までの点（中心オフセット→ワープ）。
+        float3 ymm4NoiseWarpedPoint(
+            float2 point, constant NoiseUniforms &uniforms
+        ) {
+            float3 p = float3(point, 0.0)
+                - float3(uniforms.x, uniforms.y, uniforms.z);
+            if (uniforms.warpStrength != 0.0) {
+                float3 hash3 = ymm4NoiseSeedHash(uniforms.seed);
+                float3 q = p * uniforms.warpScale * 0.015625
+                    + hash3 * 289.0;
+                float2 w = float2(
+                    ymm4Snoise01(q + float3(19.1, 7.3, 3.7)),
+                    ymm4Snoise01(q + float3(47.2, 31.6, 11.9)));
+                p.xy += uniforms.warpStrength * (w * 2.0 - 1.0);
+            }
+            return p;
+        }
+
+        // スケール（×1/64 込み）と XY 回転。
+        float3 ymm4NoiseTransformed(
+            float3 p, constant NoiseUniforms &uniforms
+        ) {
+            p *= float3(uniforms.scaleX, uniforms.scaleY, uniforms.scaleZ);
+            p *= 0.015625;
+            float cs = cos(uniforms.angle);
+            float sn = sin(uniforms.angle);
+            return float3(
+                p.x * cs - p.y * sn, p.x * sn + p.y * cs, p.z);
+        }
+
+        // FractalMode の整形（NOISE7 用）。モード 0 は生値を
+        // そのまま使う（本家シェーダの movc 選択どおり）。
+        float ymm4NoiseShape(float v, int mode) {
+            if (mode == 0) { return v; }
+            float n = abs(clamp(v, 0.0, 1.0) * 2.0 - 1.0);
+            if (mode == 1) { return n; }
+            float r = 1.0 - n;
+            return r * r;
+        }
+
+        // Block: XY はセル内一定、Z 方向のみフェード補間した
+        // セルハッシュ。
+        float ymm4BlockNoise(
+            float3 rp, constant NoiseUniforms &uniforms
+        ) {
+            float cellZ = floor(rp.z);
+            float fz = rp.z - cellZ;
+            float wz = fz * fz * (3.0 - 2.0 * fz);
+            float sum = 0.0;
+            float ampSum = 0.0;
+            float freq = 1.0;
+            float amp = 1.0;
+            for (int i = 0; i <= uniforms.octaves; i++) {
+                float2 cellXY = floor(rp.xy * freq);
+                float3 base = float3(cellXY, cellZ)
+                    + float(uniforms.seed);
+                float h0 = ymm4CellHash(base, 0u);
+                float h1 = ymm4CellHash(
+                    base + float3(0.0, 0.0, 1.0), 0u);
+                float raw = h0 + wz * (h1 - h0);
+                sum += ymm4NoiseShape(raw, uniforms.fractalMode) * amp;
+                ampSum += amp;
+                freq *= uniforms.lacunarity;
+                amp *= uniforms.gain;
+            }
+            return clamp(sum / ampSum, 0.0, 1.0);
+        }
+
+        // Perlin: 格子点ごとにタグ 0 / 1 / 2 のハッシュから
+        // 勾配（各成分 = ハッシュ × 2^-31 − 1）を作り、隅の
+        // 内積を三次フェードで三線形補間、×0.5 + 0.5。
+        float ymm4PerlinNoise(
+            float3 rp, constant NoiseUniforms &uniforms
+        ) {
+            float cellZ = floor(rp.z);
+            float fz = rp.z - cellZ;
+            float sum = 0.0;
+            float ampSum = 0.0;
+            float freq = 1.0;
+            float amp = 1.0;
+            for (int i = 0; i <= uniforms.octaves; i++) {
+                float2 q = rp.xy * freq;
+                float2 cellXY = floor(q);
+                float3 f = float3(q - cellXY, fz);
+                float3 cell = float3(cellXY, cellZ)
+                    + float(uniforms.seed);
+                float d[8];
+                for (int c = 0; c < 8; c++) {
+                    float3 corner = float3(
+                        float(c & 1), float((c >> 1) & 1),
+                        float((c >> 2) & 1));
+                    float3 g = float3(
+                        ymm4CellHash(cell + corner, 0u),
+                        ymm4CellHash(cell + corner, 1u),
+                        ymm4CellHash(cell + corner, 2u)) * 2.0 - 1.0;
+                    d[c] = dot(g, f - corner);
+                }
+                float3 w = f * f * (3.0 - 2.0 * f);
+                float x00 = d[0] + w.x * (d[1] - d[0]);
+                float x10 = d[2] + w.x * (d[3] - d[2]);
+                float x01 = d[4] + w.x * (d[5] - d[4]);
+                float x11 = d[6] + w.x * (d[7] - d[6]);
+                float y0 = x00 + w.y * (x10 - x00);
+                float y1 = x01 + w.y * (x11 - x01);
+                float raw = (y0 + w.z * (y1 - y0)) * 0.5 + 0.5;
+                sum += ymm4NoiseShape(raw, uniforms.fractalMode) * amp;
+                ampSum += amp;
+                freq *= uniforms.lacunarity;
+                amp *= uniforms.gain;
+            }
+            return clamp(sum / ampSum, 0.0, 1.0);
+        }
+
+        // セル距離（0 = ユークリッド、1 = マンハッタン ×2/3、
+        // それ以外 = チェビシェフ ×1.2）。
+        float ymm4CellDistance(float3 d, int mode) {
+            if (mode == 1) {
+                return (abs(d.x) + abs(d.y) + abs(d.z))
+                    * 0.6666666865348816;
+            }
+            if (mode != 0) {
+                return max(max(abs(d.x), abs(d.y)), abs(d.z))
+                    * 1.2000000476837158;
+            }
+            return length(d);
+        }
+
+        // Cellular: 3×3×3 近傍の特徴点（タグ付きハッシュ）との
+        // 距離の小さい方2つ（初期値はいずれも 1）を追跡し、
+        // OutputMode（0 = F1、1 = F2、2 = F2 − F1）を出す。
+        float ymm4CellularNoise(
+            float3 rp, constant NoiseUniforms &uniforms
+        ) {
+            float cellZ = floor(rp.z);
+            float fz = rp.z - cellZ;
+            float sum = 0.0;
+            float ampSum = 0.0;
+            float freq = 1.0;
+            float amp = 1.0;
+            for (int i = 0; i <= uniforms.octaves; i++) {
+                float2 q = rp.xy * freq;
+                float2 cellXY = floor(q);
+                float3 f = float3(q - cellXY, fz);
+                float3 cell = float3(cellXY, cellZ);
+                float f1 = 1.0;
+                float f2 = 1.0;
+                for (int dz = -1; dz <= 1; dz++) {
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            float3 off = float3(
+                                float(dx), float(dy), float(dz));
+                            float3 cand = cell + off
+                                + float(uniforms.seed);
+                            float3 feature = float3(
+                                ymm4CellHash(cand, 0u),
+                                ymm4CellHash(cand, 1u),
+                                ymm4CellHash(cand, 2u));
+                            float d = ymm4CellDistance(
+                                f - (feature + off),
+                                uniforms.distanceMode);
+                            if (d < f1) {
+                                f2 = f1;
+                                f1 = d;
+                            } else if (d < f2) {
+                                f2 = d;
+                            }
+                        }
+                    }
+                }
+                float raw = uniforms.cellOutput == 1 ? f2
+                    : (uniforms.cellOutput != 0 ? f2 - f1 : f1);
+                sum += ymm4NoiseShape(raw, uniforms.fractalMode) * amp;
+                ampSum += amp;
+                freq *= uniforms.lacunarity;
+                amp *= uniforms.gain;
+            }
+            return clamp(sum / ampSum, 0.0, 1.0);
+        }
+
+        // Voronoi: 走査は Cellular と同じ。F1 / F2 の初期値は
+        // 10。OutputMode 0 = 勝者セルのハッシュ値、
+        // 1 = 1 − saturate(F2 − F1)。
+        float ymm4VoronoiNoise(
+            float3 rp, constant NoiseUniforms &uniforms
+        ) {
+            float cellZ = floor(rp.z);
+            float fz = rp.z - cellZ;
+            float sum = 0.0;
+            float ampSum = 0.0;
+            float freq = 1.0;
+            float amp = 1.0;
+            for (int i = 0; i <= uniforms.octaves; i++) {
+                float2 q = rp.xy * freq;
+                float2 cellXY = floor(q);
+                float3 f = float3(q - cellXY, fz);
+                float3 cell = float3(cellXY, cellZ);
+                float f1 = 10.0;
+                float f2 = 10.0;
+                float winner = 0.0;
+                for (int dz = -1; dz <= 1; dz++) {
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            float3 off = float3(
+                                float(dx), float(dy), float(dz));
+                            float3 cand = cell + off
+                                + float(uniforms.seed);
+                            float3 feature = float3(
+                                ymm4CellHash(cand, 0u),
+                                ymm4CellHash(cand, 1u),
+                                ymm4CellHash(cand, 2u));
+                            float d = ymm4CellDistance(
+                                f - (feature + off),
+                                uniforms.distanceMode);
+                            if (d < f1) {
+                                f2 = f1;
+                                f1 = d;
+                                winner = ymm4CellHash(cand, 0u);
+                            } else if (d < f2) {
+                                f2 = d;
+                            }
+                        }
+                    }
+                }
+                float raw = uniforms.cellOutput != 0
+                    ? 1.0 - clamp(f2 - f1, 0.0, 1.0) : winner;
+                sum += ymm4NoiseShape(raw, uniforms.fractalMode) * amp;
+                ampSum += amp;
+                freq *= uniforms.lacunarity;
+                amp *= uniforms.gain;
+            }
+            return clamp(sum / ampSum, 0.0, 1.0);
+        }
+
+        // Simplex: 評価点へシードハッシュ ×289 のオフセットを
+        // 加えたシンプレックスノイズ（×52.5 + 0.5 形）。
+        float ymm4SimplexNoise(
+            float3 rp, constant NoiseUniforms &uniforms
+        ) {
+            float3 offset = ymm4NoiseSeedHash(uniforms.seed) * 289.0;
+            float sum = 0.0;
+            float ampSum = 0.0;
+            float freq = 1.0;
+            float amp = 1.0;
+            for (int i = 0; i <= uniforms.octaves; i++) {
+                float3 ep = float3(rp.xy * freq, rp.z) + offset;
+                float raw = ymm4Snoise01(ep);
+                sum += ymm4NoiseShape(raw, uniforms.fractalMode) * amp;
+                ampSum += amp;
+                freq *= uniforms.lacunarity;
+                amp *= uniforms.gain;
+            }
+            return clamp(sum / ampSum, 0.0, 1.0);
+        }
+
+        // Marble: 縞位相 = 回転後 x / StripeInterval × 2π。
+        // StripeWarpAmount ≠ 0 のときだけ値ノイズで位相を
+        // 歪ませる（歪み量 = (n×2 − 1) × StripeWarpAmount
+        // × 2π/100）。値は sin(位相) × 0.5 + 0.5。
+        float ymm4MarbleNoise(
+            float3 p, constant NoiseUniforms &uniforms
+        ) {
+            float2 sp = p.xy
+                * float2(uniforms.scaleX, uniforms.scaleY);
+            float cs = cos(uniforms.angle);
+            float sn = sin(uniforms.angle);
+            float rotX = sp.x * cs - sp.y * sn;
+            float rotY = sp.x * sn + sp.y * cs;
+            float phase = rotX / uniforms.stripeInterval
+                * 6.2831854820251465;
+            if (uniforms.stripeWarpAmount != 0.0) {
+                float3 np = float3(
+                    rotX, rotY, p.z * uniforms.scaleZ) * 0.015625;
+                float sum = 0.0;
+                float ampSum = 0.0;
+                float freq = 1.0;
+                float amp = 1.0;
+                for (int i = 0; i <= uniforms.octaves; i++) {
+                    float n = ymm4ValueNoise(
+                        float3(np.xy * freq, np.z), uniforms.seed);
+                    sum += ymm4NoiseShape(n, uniforms.fractalMode)
+                        * amp;
+                    ampSum += amp;
+                    freq *= uniforms.lacunarity;
+                    amp *= uniforms.gain;
+                }
+                float n = sum / ampSum;
+                phase += (n * 2.0 - 1.0)
+                    * uniforms.stripeWarpAmount
+                    * 0.06283185631036758;
+            }
+            return sin(phase) * 0.5 + 0.5;
+        }
+
+        // Flow の permute 連鎖（本家シェーダのレジスタ手順
+        // どおりの転記。mod289 の入力が (ix, ix + sx, ix + 1)
+        // で、加算側が (iy, iy + sy, iy + 1) なのは本家側の
+        // 構成そのまま）。
+        float3 ymm4FlowPermute(
+            float ix, float iy, float sx, float sy
+        ) {
+            float3 t = float3(ix, ix + sx, ix + 1.0);
+            float3 m = ymm4Mod2893(t);
+            float3 a = m * (m * 51.0 + 2.0)
+                + float3(iy, iy + sy, iy + 1.0);
+            a = ymm4Mod2893(a);
+            return ymm4Mod2893(((a * 34.0) + 10.0) * a);
+        }
+
+        // Flow: 2次元の回転勾配ノイズ（psrdnoise 系の本家
+        // 変種）。オクターブごとに勾配場で評価点を移流させる
+        // （移流量 = 勾配 × 10.9、FlowAmount の効きは
+        // 係数 0.13 × flowAmount）。
+        float ymm4FlowNoise(
+            float2 point, constant NoiseUniforms &uniforms
+        ) {
+            float2 p = point - float2(uniforms.x, uniforms.y);
+            if (uniforms.warpStrength != 0.0) {
+                float3 hash3 = ymm4NoiseSeedHash(uniforms.seed);
+                float3 q = float3(
+                    p * uniforms.warpScale * 0.015625, 0.0)
+                    + hash3 * 289.0;
+                float2 w = float2(
+                    ymm4Snoise01(q + float3(19.1, 7.3, 3.7)),
+                    ymm4Snoise01(q + float3(47.2, 31.6, 11.9)));
+                p += uniforms.warpStrength * (w * 2.0 - 1.0);
+            }
+            float2 sp = float2(
+                p.x * uniforms.scaleX, p.y * uniforms.scaleY);
+            float cs = cos(uniforms.angle);
+            float sn = sin(uniforms.angle);
+            float2 rp = float2(
+                sp.x * cs - sp.y * sn, sp.x * sn + sp.y * cs);
+            float3 sv = fract(float(uniforms.seed) * float3(
+                0.1031000018119812, 0.10300000011920929,
+                0.09730000048875809));
+            sv += dot(sv, sv.yzx + 33.33);
+            float2 seedOffset = fract(float2(
+                sv.z * (sv.x + sv.y), sv.y * (sv.z + sv.x))) * 289.0;
+            float2 base = rp * 0.015625 + seedOffset;
+            float tz = uniforms.z * uniforms.scaleZ
+                * 0.15915493667125702;
+            float phaseZ = (tz >= 0.0 ? fract(abs(tz)) : -fract(abs(tz)))
+                * 6.2831854820251465;
+            float flowScale = 0.13 * uniforms.flowAmount;
+            float sum = 0.0;
+            float ampSum = 0.0;
+            float freq = 1.0;
+            float amp = 1.0;
+            float2 adv = float2(0.0, 0.0);
+            for (int i = 0; i <= uniforms.octaves; i++) {
+                float2 q = base * freq + flowScale * adv;
+                float s = q.x + 0.5 * q.y;
+                float ix = floor(s);
+                float iy = floor(q.y);
+                float fx = s - ix;
+                float fy = q.y - iy;
+                float sx = fx >= fy ? 1.0 : 0.0;
+                float sy = 1.0 - sx;
+                float2 d0 = q - float2(ix - 0.5 * iy, iy);
+                float2 d1 = q - float2(
+                    ix + sx - 0.5 * (iy + sy), iy + sy);
+                float2 d2 = q - float2(
+                    ix - 0.5 * iy + 0.5, iy + 1.0);
+                float3 perm = ymm4FlowPermute(ix, iy, sx, sy);
+                float3 ang = perm * 0.07481999695301056 + phaseZ;
+                float2 g0 = float2(cos(ang.x), sin(ang.x));
+                float2 g1 = float2(cos(ang.y), sin(ang.y));
+                float2 g2 = float2(cos(ang.z), sin(ang.z));
+                float3 dots = float3(
+                    dot(g0, d0), dot(g1, d1), dot(g2, d2));
+                float3 fall = max(0.8 - float3(
+                    dot(d0, d0), dot(d1, d1), dot(d2, d2)), 0.0);
+                float3 w4 = fall * fall;
+                w4 = w4 * w4;
+                float raw = dot(w4, dots) * 5.449999809265137 + 0.5;
+                float3 coeff = -8.0 * fall * fall * fall * dots;
+                float2 grad = (coeff.x * d0 + w4.x * g0)
+                    + (coeff.y * d1 + w4.y * g1)
+                    + (coeff.z * d2 + w4.z * g2);
+                grad *= amp;
+                sum += ymm4NoiseShape(raw, uniforms.fractalMode)
+                    * amp;
+                ampSum += amp;
+                adv += grad * 10.899999618530273;
+                freq *= uniforms.lacunarity;
+                amp *= uniforms.gain;
+            }
+            return clamp(sum / ampSum, 0.0, 1.0);
+        }
+
+        // NOISE7 の振り分け（種別コード 3–9）。
+        float ymm4NoiseExtended(
+            float2 point, constant NoiseUniforms &uniforms
+        ) {
+            if (uniforms.noiseType == 9) {
+                return ymm4FlowNoise(point, uniforms);
+            }
+            float3 p = ymm4NoiseWarpedPoint(point, uniforms);
+            if (uniforms.noiseType == 8) {
+                return ymm4MarbleNoise(p, uniforms);
+            }
+            float3 rp = ymm4NoiseTransformed(p, uniforms);
+            if (uniforms.noiseType == 3) {
+                return ymm4BlockNoise(rp, uniforms);
+            }
+            if (uniforms.noiseType == 4) {
+                return ymm4PerlinNoise(rp, uniforms);
+            }
+            if (uniforms.noiseType == 5) {
+                return ymm4CellularNoise(rp, uniforms);
+            }
+            if (uniforms.noiseType == 6) {
+                return ymm4VoronoiNoise(rp, uniforms);
+            }
+            return ymm4SimplexNoise(rp, uniforms);
+        }
+
         fragment float4 ymm4NoiseFragment(
             VertexOut in [[stage_in]],
             constant NoiseUniforms &uniforms [[buffer(0)]]
         ) {
             float2 point = uniforms.outputOrigin + in.uv * uniforms.outputSize;
+            if (uniforms.noiseType >= 3) {
+                // NOISE7（Block / Perlin / Cellular / Voronoi /
+                // Simplex / Marble / Flow）。前段の座標変換が
+                // 既存3種と異なるため専用経路で評価する。
+                float extended = ymm4NoiseExtended(point, uniforms);
+                float extendedResult = ymm4NoisePost(extended, uniforms);
+                return float4(
+                    extendedResult, extendedResult, extendedResult, 1.0);
+            }
             float3 p = float3(point, 0.0)
                 - float3(uniforms.x, uniforms.y, uniforms.z);
             if (uniforms.warpStrength != 0.0) {
@@ -1611,6 +2139,35 @@ public final class MetalGraphicsDevices {
                 }
             }
             return float4(straight.rgb * straight.a, straight.a);
+        }
+
+        // グラデーションメッシュ (GRADMESH): CPU 側でテッセレーション
+        // した頂点色三角形をそのまま描く。頂点色は直色で、書き出し時に
+        // Premultiplied 化する (他のブラシ塗りと同じ規約)。
+        struct MeshVertexIn {
+            float2 position [[attribute(0)]];
+            float4 color [[attribute(1)]];
+        };
+        struct MeshVertexOut {
+            float4 position [[position]];
+            float4 color;
+        };
+        struct MeshUniforms {
+            float2 outputOrigin;
+            float2 outputSize;
+        };
+        vertex MeshVertexOut ymm4MeshVertex(
+            MeshVertexIn in [[stage_in]],
+            constant MeshUniforms &uniforms [[buffer(1)]]
+        ) {
+            MeshVertexOut out;
+            float2 uv = (in.position - uniforms.outputOrigin) / uniforms.outputSize;
+            out.position = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+            out.color = in.color;
+            return out;
+        }
+        fragment float4 ymm4MeshFragment(MeshVertexOut in [[stage_in]]) {
+            return float4(in.color.rgb * in.color.a, in.color.a);
         }
 
         fragment float4 ymm4BrushFragment(

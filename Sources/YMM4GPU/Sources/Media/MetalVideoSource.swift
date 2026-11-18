@@ -57,6 +57,11 @@ private func runAVBlocking<T>(
 /// AVFoundation が扱えないコンテナ（MKV / WebM / TS 等）はこちらでも
 /// 開けず透明へ落ちる。FFmpeg 併用の要否は設計の土台事項のため、
 /// 本件では判断せず差し替え点（このクラスのデコーダ生成部）に留める。
+/// 提示タイムスタンプ（Issue #55）: 論理時刻 0 は素材の提示開始位置
+/// （最初の非空セグメントの提示開始時刻）とし、フレーム取得時に
+/// 提示開始位置を加算して資産タイムラインへ読み替える。本家の
+/// 映像ファイルソースも `streamStartTime`（最初のサンプルの
+/// SampleTime）で同じ補正をし、全長からも差し引く。
 /// 回転は AVAssetImageGenerator の preferredTransform 適用で焼き込む
 /// （本家のデコーダ出力の中心化・回転補正に相当）。SAR（表示幅補正）は
 /// 未対応。配置は画像 Source と同じく中心が原点（端数は 0 方向へ切り捨て）。
@@ -74,8 +79,11 @@ public final class MetalVideoSource: Source {
 
     /// デコーダ（開けなかった場合は nil で、出力は透明に固定される）。
     private var generator: AVAssetImageGenerator?
-    /// デコーダの総尺（ループの剰余と終端フォールバックに使う）。
+    /// 素材の提示長（ループの剰余と終端フォールバックに使う）。
+    /// 提示開始オフセットは含まない論理長（本家の Duration と同じ）。
     private var assetDuration: TimeSpanValue = .zero
+    /// 提示開始位置（秒、資産タイムライン上）。論理時刻への加算分。
+    private var presentationStartSeconds: Double = 0
     /// 1フレームの表示区間の長さ（秒）。キャッシュ判定に使う。
     private var frameDuration: Double = 1.0 / 30.0
     /// 現在保持しているフレームの表示区間 [開始, 終了)（秒）。
@@ -135,17 +143,26 @@ public final class MetalVideoSource: Source {
         frameTexture = nil
         hasFrame = false
         assetDuration = .zero
+        presentationStartSeconds = 0
 
         if let path = item.filePath,
            let url = resolveMediaURL(path: path, baseDirectory: baseDirectory) {
             let assetBox = AVSendableBox(AVURLAsset(url: url))
             // メタデータは async の load API で読む（同期プロパティは
             // macOS 13 以降非推奨）。
-            let metadata = try? runAVBlocking { () async throws -> (duration: Double, frameDuration: Double)? in
+            let metadata = try? runAVBlocking { () async throws -> (duration: Double, frameDuration: Double, start: Double)? in
                 let asset = assetBox.value
-                let duration = try await asset.load(.duration)
-                guard duration.isValid, !duration.isIndefinite,
-                      let track = try await asset.loadTracks(withMediaType: .video).first
+                guard let track = try await asset.loadTracks(withMediaType: .video).first
+                else { return nil }
+                // 提示区間はセグメントの提示配置から決める（音声側の
+                // 工場と同じ規則）。全長は提示長であり、資産全体の
+                // 長さではない（提示開始オフセットを含むため）。
+                let trackRange = try await track.load(.timeRange)
+                let segments = (try? await track.load(.segments)) ?? []
+                let presentation = AVFoundationPCMProviderFactory.presentationRange(
+                    segments: segments, fallback: trackRange
+                )
+                guard presentation.duration.isValid, !presentation.duration.isIndefinite
                 else { return nil }
                 let minDuration = CMTimeGetSeconds(try await track.load(.minFrameDuration))
                 var frameDuration = 1.0 / 30.0
@@ -157,13 +174,17 @@ public final class MetalVideoSource: Source {
                         frameDuration = 1.0 / Double(rate)
                     }
                 }
-                return (CMTimeGetSeconds(duration), frameDuration)
+                return (
+                    CMTimeGetSeconds(presentation.duration), frameDuration,
+                    CMTimeGetSeconds(presentation.start)
+                )
             }
             if let metadata {
                 let imageGenerator = AVAssetImageGenerator(asset: assetBox.value)
                 imageGenerator.appliesPreferredTrackTransform = true
                 generator = imageGenerator
                 assetDuration = TimeSpanValue(seconds: metadata.duration)
+                presentationStartSeconds = metadata.start.isFinite ? metadata.start : 0
                 // 本家 VideoItem.ContentLength はファイルから求めた
                 // Duration そのものである。モデル層の保持値へ反映し、
                 // GetSourceTime（負レート時の基準）が本家と揃うようにする。
@@ -183,20 +204,24 @@ public final class MetalVideoSource: Source {
         ]
     }
 
-    /// 要求時刻のフレームへ進める。現在フレームの区間内なら何もしない。
+    /// 要求時刻（論理秒）のフレームへ進める。現在フレームの区間内なら
+    /// 何もしない。キャッシュ区間は資産タイムラインの絶対秒で保持
+    /// するため、論理時刻は提示開始位置を加算して読み替える。
     private func updateFrame(atSeconds requested: Double) {
         guard let generator else { return }
-        if hasFrame && requested >= currentFrameStart && requested < currentFrameEnd {
+        let absolute = presentationStartSeconds + requested
+        if hasFrame && absolute >= currentFrameStart && absolute < currentFrameEnd {
             return
         }
 
-        // 終端を超えた要求には最終フレームを出す（本家の各デコーダ共通）。
-        // 負の時刻は 0 へ寄せる（本家のシークも負方向は素材先頭で止まる）。
-        let duration = assetDuration.seconds
-        var target = max(0, requested)
+        // 終端（提示終端）を超えた要求には最終フレームを出す（本家の
+        // 各デコーダ共通）。負の論理時刻は論理 0（提示開始位置）へ
+        // 寄せる（本家のシークも負方向は素材先頭で止まる）。
+        let end = presentationStartSeconds + assetDuration.seconds
+        var target = max(presentationStartSeconds, absolute)
         var toleranceBefore = CMTime.zero
-        if target >= duration {
-            target = duration
+        if target >= end {
+            target = end
             toleranceBefore = .positiveInfinity
         }
 

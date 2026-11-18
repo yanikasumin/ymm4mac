@@ -267,7 +267,7 @@ func solidBrushColor(_ brush: Brush?) -> Color? {
 extension MetalEffectProcessor {
     /// 型付きブラシの塗り画像を `outputBounds` 全体へ描く。
     /// 単色ブラシ（呼び出し側の既存経路が担当）と GPU で描けない
-    /// ブラシ（グラデーションメッシュ・ノイズ・生保持）は nil で、
+    /// ブラシ（ノイズ・生保持）は nil で、
     /// 呼び出し側は素通しにする。`patternBounds` は本家がブラシの
     /// Update へ渡す境界（エフェクトごとに異なる）。
     func brushFillImage(

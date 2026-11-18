@@ -143,8 +143,8 @@ public final class MetalShapeSource: Source {
     }
 
     /// 塗りの決定。単色ブラシはその色、GPU で描ける型付きブラシは
-    /// 評価済み仕様、それ以外（グラデーションメッシュ・ノイズ・
-    /// 生保持）は白で代用する（本家の既定ブラシも単色・白）。
+    /// 評価済み仕様、それ以外（ノイズ・生保持）は白で代用する
+    /// （本家の既定ブラシも単色・白）。
     /// 本家がブラシの Update へ渡す境界は図形の境界。
     static func fill(
         for parameter: RectangleShapeParameter,

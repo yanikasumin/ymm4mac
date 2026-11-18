@@ -82,6 +82,18 @@ struct NoiseParameterSet {
     var angle: Animation
     /// Fractal の整形モード（0 = Normal、1 = Turbulence、2 = Ridged）。
     var fractalMode: Int32
+    /// Cellular / Voronoi の距離モード（0 = Euclidean、
+    /// 1 = Manhattan、2 = Chebyshev）。
+    var distanceMode: Int32
+    /// Cellular / Voronoi の出力モード（Cellular: 0 = F1、
+    /// 1 = F2、2 = Difference。Voronoi: 0 = CellValue、1 = Edge）。
+    var cellOutput: Int32
+    /// Marble の縞間隔（既定 64、1–2000）。
+    var stripeInterval: Animation
+    /// Marble の縞の歪み量（既定 100、0–1000）。
+    var stripeWarpAmount: Animation
+    /// Flow の流れ量（既定 100、0–1000。定数へは /100 して渡す）。
+    var flowAmount: Animation
 
     init(json: JSONValue) {
         func parameter(
@@ -135,6 +147,35 @@ struct NoiseParameterSet {
         } else {
             fractalMode = 0
         }
+        func enumValue(_ key: String, names: [String]) -> Int32 {
+            if let name = json.field(key)?.stringValue {
+                return Int32(names.firstIndex(of: name) ?? 0)
+            }
+            if let value = json.field(key)?.intValue {
+                return Int32(value)
+            }
+            return 0
+        }
+        distanceMode = enumValue(
+            "DistanceMode",
+            names: ["Euclidean", "Manhattan", "Chebyshev"])
+        cellOutput = enumValue(
+            "OutputMode", names: ["F1", "F2", "Difference"])
+        // OutputMode の名前は種別ごとに異なる（Cellular:
+        // F1 / F2 / Difference、Voronoi: CellValue / Edge）。
+        if let name = json.field("OutputMode")?.stringValue {
+            switch name {
+            case "CellValue": cellOutput = 0
+            case "Edge": cellOutput = 1
+            default: break
+            }
+        }
+        stripeInterval = parameter(
+            "StripeInterval", defaultValue: 64, minValue: 1, maxValue: 2000)
+        stripeWarpAmount = parameter(
+            "StripeWarpAmount", defaultValue: 100, minValue: 0, maxValue: 1000)
+        flowAmount = parameter(
+            "FlowAmount", defaultValue: 100, minValue: 0, maxValue: 1000)
     }
 }
 
@@ -152,9 +193,10 @@ struct NoiseParameterSet {
 /// IsUniqueSeed のシード基礎値はパラメータの .NET GetHashCode で
 /// 対応付け未確定のため 0 として扱う（差分として記録。
 /// 実プロジェクトの全実例は IsUniqueSeed = false)。
-/// 対応する生成器は Fractal / Random / Curl の3種。それ以外の
-/// NoiseType と、パラメータが無い場合は素通し（本家は生成器が
-/// 作れない場合に全チャンネル白 = 入力そのままになる）。
+/// 生成器は全10種（Fractal / Random / Curl + NOISE7 の
+/// Block / Perlin / Cellular / Voronoi / Simplex / Marble /
+/// Flow）に対応する。パラメータが無い場合は素通し（本家は
+/// 生成器が作れない場合に全チャンネル白 = 入力そのままになる）。
 public final class MetalNoiseProcessor: MetalEffectProcessor {
     private let definition: NoiseEffectDefinition
 
@@ -169,6 +211,13 @@ public final class MetalNoiseProcessor: MetalEffectProcessor {
         case .fractal: noiseType = 0
         case .random: noiseType = 1
         case .curl: noiseType = 2
+        case .block: noiseType = 3
+        case .perlin: noiseType = 4
+        case .cellular: noiseType = 5
+        case .voronoi: noiseType = 6
+        case .simplex: noiseType = 7
+        case .marble: noiseType = 8
+        case .flow: noiseType = 9
         default: return input
         }
         guard let parameter = definition.noiseParameter else { return input }
@@ -268,14 +317,14 @@ public final class MetalNoiseProcessor: MetalEffectProcessor {
             warpStrength: Float(value(parameters.warpStrength)),
             warpScale: Float(max(0.01, value(parameters.warpScale) / 100)),
             fractalMode: parameters.fractalMode,
-            distanceMode: 0,
-            cellOutput: 0,
+            distanceMode: parameters.distanceMode,
+            cellOutput: parameters.cellOutput,
             lacunarity: Float(value(parameters.lacunarity)),
             gain: Float(value(parameters.gain)),
             pad2: 0,
-            stripeInterval: 0,
-            stripeWarpAmount: 0,
-            flowAmount: 0,
+            stripeInterval: Float(value(parameters.stripeInterval)),
+            stripeWarpAmount: Float(value(parameters.stripeWarpAmount)),
+            flowAmount: Float(value(parameters.flowAmount) / 100),
             pad3: 0,
             outputOrigin: SIMD2<Float>(Float(input.bounds.left), Float(input.bounds.top)),
             outputSize: SIMD2<Float>(

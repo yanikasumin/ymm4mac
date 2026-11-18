@@ -47,11 +47,15 @@
 - MAC-0044 — Metal 初期化診断（失敗を握りつぶさない）（Issue #50）
 - MAC-0041 — サウンドレベルメーター（Issue #52）
 - MAC-0042 — 実時間再生（音声マスタークロック）（Issue #52）
+- R6-FIX — レビュー第6ラウンド指摘の処分: リピート再開（R6-01）・開始失敗の通知（R6-03）・チャンク生成の世代競合
 - PR32 — DebugApp フロントエンドの形
 - UI-FORM — フロントエンドの形の完成（レイアウト・ツールバー・メニュー・コンテキストメニュー・ドロップイン等）
 - UI32-01 — レベルメーターの本家構成化と誤記修正
 - W1 — 構造整理 第1単位: テスト基盤の整備とハーネスの git 管理化
 - BRUSH46 — ブラシ基盤: 型付きブラシモデルと GPU 塗り（Issue #46。MAC 番号は PR 時に付番）
+- MOSAICRECT — 矩形モザイクの本家方式化（5点サンプル平均）
+- GRADMESH — グラデーションメッシュブラシの型付き化と GPU 描画
+- NOISE7 — Noise エフェクト残り7種の実処理化（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 - INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
 
@@ -1195,6 +1199,129 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **未解決。** Seed と本家の GetHashCode の対応（対応付け自体が不可能で、散らばりの再現性は本家にも無い）。Delaunay の非凸四角形・境界での本家 winding 判定との等価性（参照実装同士の一致までで、本家実出力との比較は Seed 不定のため実施不能）。矩形の5点平均への是正は別件。
 
+#### TRIM55 — 素材の提示タイムスタンプとトリム（Issue #55）（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** 音声・映像素材の提示開始位置（提示タイムスタンプ）を論理時刻の基準にそろえた。従来の音声供給はトラックの時間範囲の開始を原点にしていたため、提示開始オフセットを持つ素材（前方に提示上の無音区間がある素材）では、オフセット分が無音として前に残り、全長にも混入して配置がずれていた（内部課題 EX26-03 の後半。実測: 開始時刻 +2 秒の MOV で全長が 4.0 秒になり、音が論理フレーム 120001 から始まった）。あわせて、シークの着地方式を本家と同じ「プリロール＋提示時刻での着地」に変えた。目標位置から直接読み始めると、形式によってはデコーダの遅延補正が外れて内容が提示時刻からずれるためである（MP3 で実測: 1.5 秒へ直接シークするとトーン終了境界でトーンが鳴り、0.5 秒では開始が約 500 フレーム遅れた）。
+
+**どこを変更したか。** 改修 `Sources/YMM4GPU/Export/AVFoundationPCMProviderFactory.swift`（トラックのセグメントを読み、提示区間＝最初の非空セグメントの提示開始位置から最後の非空セグメントの提示終端まで、を計算する `presentationRange` を追加。映像側と共有するため internal）。改修 `Sources/YMM4GPU/Export/AVFoundationStreamingPCMProvider.swift`（初期化子が提示区間を受け取り、全長・提示時刻の原点・リーダーの終端をすべて提示区間基準にした。シーク時のリーダーは目標の 1 秒前から作り、提示時刻で着地する）。改修 `Sources/YMM4GPU/Sources/Media/MetalVideoSource.swift`（映像も同じ規則: 提示区間から提示長と提示開始位置を求め、フレーム取得時に提示開始位置を加算して資産タイムラインへ読み替える。全長＝提示長になり、`VideoItem.contentLength` への反映も提示長になった）。新規テスト `Tests/YMM4GPUTests/PresentationTimestampTests.swift`（3 件）。新規ハーネス `Harnesses/trim55-harness`（供給元の実測＋資産診断＋映像診断）。
+
+**本家の仕様（実測した裏取り）。** 本家のファイルソースは音声・映像とも同型の補正をする。`MFAudioFileSource`（YukkuriMovieMaker.Plugin.FileSource.MediaFoundation）は最初のサンプルの `SampleTime` を `streamStartTime` として保持し（ReadFirstSampleTime、負値は 0）、`Duration` から差し引き、シーク時は論理時刻に加算して絶対時刻へ戻す。着地はサンプルの `SampleTime` と比較し、目標より前の部分をバッファ内オフセットで読み飛ばす。プリロールは圧縮音声 300ms、.mts/.ts/.mp3 は 1 秒。`FFmpegAudioFileSource`（同 FFmpeg）はストリームの `start_time` を `streamStartTime` とし（L147–154）、`Duration` はストリームの長さ、シークは 1 秒前から読み直してフレームの `best_effort_timestamp` で着地する（L465–478）。`MFVideoFileSource` も最初のサンプルの SampleTime で同型の補正をする（L206–231、L463）。アイテム側の `AudioItem.ContentLength` はファイルソースの `Duration` そのものである（AudioItem.cs L243–262）。MP3 専用プラグイン（FileSource.Mp3）は未逆コンパイルのため内部は未確認。
+
+**どう実装したか。** AVFoundation の世界で提示開始位置に対応するのは、トラックのセグメント列における最初の非空セグメントの `timeMapping.target.start` である（提示開始オフセットは空セグメントとして表現される。実測で確認）。論理時刻 0 = その位置、全長 = 最後の非空セグメントの提示終端 − 提示開始位置。セグメントが読めない・非空が無い場合は従来どおりトラックの時間範囲へ倒す。シークはリーダーを目標の 1 秒前（提示開始位置とトラック範囲の先頭でクランプ）から作り直し、返るバッファの提示時刻から提示開始位置を差し引いて論理フレームへ数える。着地の丸め規則（最近傍）は MAC-0016 の既存規則のまま変えていない。AAC のエンコーダ遅延（priming）は、編集リストで提示から外れている素材では従来から正しく落ちていた（実測で不変を確認）。編集リストで外れていない素材では提示に含まれるのがコンテナの意味論であり、本家 FFmpeg 経路の実測（ffmpeg デコードとの照合）でも同じ位置になったため、追加の除去はしない。
+
+**本家との差分。** （1）提示開始位置の取得元が「最初のサンプルの提示時刻」ではなく「セグメントの提示配置」である（内部実装の違い。空セグメント区間にも無音バッファが提示時刻付きで返るため、最初のバッファの提示時刻では提示開始位置を特定できないことを実測で確認した）。（2）プリロール量は形式によらず一律 1 秒（本家 FFmpeg 版と同じ割り切り。MF 版は形式依存）。非圧縮素材では不要な分も最大 1 秒分だけ先行デコードするが、着地は提示時刻で決まるため内容は変わらない。（3）映像の提示開始前の区間について、本家は「フレームなし」を返すが、移植側は AVAssetImageGenerator が範囲外でエラーを返すため前フレーム維持／透明に倒れる（見た目の差として残る）。
+
+**検証。** YMM4GPUTests 28 件（新規 3 件を含む）は Mac 実機で個別実行し、総計行付きで 0 失敗を確認。フルスイート 479 件は Mac で並列実行（`swift test --parallel`、ログは Mac `/tmp/trim55-test.log`）し、全 479 件の開始と、失敗・エラー・断言失敗の痕跡 0 件を確認した（SwiftPM の並列モードは総計行を出力しないため、総計は開始件数と失敗痕跡で担保する）。ビルド警告 0。ハーネス実測（素材は「無音 0.5 秒＋440Hz トーン 1.0 秒＋無音 0.5 秒、48kHz」が正解）: WAV（従来素材）は全長 2.0 秒・トーン [24001, 71999]・シーク着地誤差なしで従来どおり。AAC（編集リストで priming を外す M4A）も同値で不変。開始時刻 +2 秒の PCM MOV は、全長 4.0 秒→2.0 秒、トーン開始論理フレーム 120001→24001 に是正。開始時刻付き AAC MP4 は全長 2.0213 秒・トーン開始 25025 で、ffmpeg デコード＋本家の開始時刻意味論と一致。MP3（LAME）は全読み不変のまま、シーク 0.5 秒で無音→トーン、1.5 秒でトーン→ほぼ無音に是正（着地の直接測定でも誤差なし）。映像は AVAssetImageGenerator 単体で、提示オフセット付き MP4 の空セグメント区間がフレームなし（エラー）になることと、実セグメント区間が正しく引けることを確認した。MetalVideoSource 自体の合成経路での実測は未実施。
+
+**次の担当へ。** 解析リポジトリ側の互換マトリクス同期は PR 側の作業。映像の提示開始前区間の見た目（本家はフレームなし、移植は前フレーム維持／透明）は差分として残っている。
+#### R6-05 — ストリーミング音声の終端外シークを終端として扱う（レビュー第6ラウンド指摘 P2 の処分。IMPLEMENTED、Mac 検証済み）
+
+**何を直したか。** `AVFoundationStreamingPCMProvider`（STREAM54）で、素材の終端以降へのシークが全デコードへ退化していた。`ensureReader()` は要求位置の開始時刻が終端より前の場合だけリーダーへ時間範囲を設定し、終端以降では時間範囲未設定のリーダーを開始していた。この場合 `AVAssetReader` は素材全体を先頭からデコードし、読み取りループが提示時刻（PTS）で全量を捨て続けるため、長い素材では終端外シーク 1 回で素材全体のデコード負荷がかかった。戻り値の意味論（終端として 0 件）は従来から成立していたため、利用者から見える不具合ではなく負荷の問題である。
+
+**どこを変更したか。** `Sources/YMM4GPU/Export/AVFoundationStreamingPCMProvider.swift` の `ensureReader()`。開始時刻と終端時刻の計算をリーダー生成より前へ移し、開始時刻が終端時刻以降ならリーダーを作らず `reachedEnd` を立てて nil を返すようにした。範囲内の場合は時間範囲を常に設定する（従来の条件付き設定を無条件化）。終端の定義は従来どおりトラックの時間範囲の終端（`duration` と同じ出所）で、提示区間基準（提示開始＋提示長さで終端を決める考え方）と同型である。テストは `Tests/YMM4GPUTests/StreamingPCMProviderTests.swift` に3件追加し、`Harnesses/stream54-harness` に終端外シークと復帰の確認を追加した。
+
+**本家との差分。** なし（内部の負荷の是正のみ。読み取りの戻り値・着地精度・無音区間の意味論は不変）。
+
+**検証。** Mac 実機でルートパッケージ `swift build` 成功・警告0、`swift build --build-tests` でも警告0。`StreamingPCMProviderTests` は新規3件（終端直前の最終フレームを読んでから終端になる／ちょうど終端へのシークで 0 件／終端以降へのシークで 0 件かつ先頭へ戻して通常どおり読める）を含む10件が全合格。`YMM4GPUTests` 全体は28件・0失敗。stream54 ハーネス（1時間・691,200,044 バイトの WAV）: 全読み 345,600,000 サンプル照合一致、メモリ増加 20 MiB（素材長に比例しない）、終端付近へのシーク着地、終端以降へのシークが約 2 µs で終端を返すこと（全デコードへ退化していないことの実測。同ファイルの全読みは同実行で 92.5 秒）、その後の先頭へのシーク復帰、すべて合格（ALL PASS）。なお新規テストのうち「ちょうど終端」「終端以降」は戻り値の意味論の回帰固定であり、リーダーを作らないこと自体はコード構造とハーネスの経過時間で担保した。
+
+**次の担当へ。** なし（本件は完結）。
+#### TEXT60 — 制御タグ（ルビ・タイミング）とユーザー辞書（Issue #60）（IMPLEMENTED、Mac 検証済み。MAC 番号は PR 時に付番）
+
+**何を実装したか。** テキストアイテム・字幕の制御タグとユーザー辞書を実装した。制御タグは色 `<#色[,装飾色]>`、フォント `<s サイズ[,フォント[,スタイル]]>` と `<@フォント[,スタイル]>`（`<@+B>` 等の増減指定を含む）、位置 `<p X,Y>` と比例版 `<pp X,Y>`、ルビ `<rb 親文字,ルビ[,サイズ%[,X[,Y[,フォント[,スタイル[,前景色[,装飾色]]]]]]]>`、回転 `<rot 角度>`、表示速度 `<r 文字数/秒>`、待ち `<w 秒>` と `<w*倍率>`、消去 `<c 秒>`、字間 `<ls 字間>`。数値には `+=` 等の演算子接頭辞が使え、タグ直前の `\` でエスケープできる。解釈できないタグは状態を戻して文字として残る。ユーザー辞書はアスタリスク（伏せ字）・単語・発音の3リストを持ち、アスタリスクは描画前処理へ、単語・発音は読み変換の前後段の適用部品として実装した。
+
+**本家根拠。** 仕様は逆コンパイル済みコードで確定した: タグ文法と処理は `ControlTagParser.cs`（タグ正規表現、タグ別解析、装飾の統合、文字タイミング計算、区間フィルタ、ルビの装飾切り出し）、処理順は `TextSource.cs` / `JimakuSource.cs`（アスタリスク置換→正規化→タグ解析→タイミング計算→区間フィルタ）、アスタリスクの装飾追従は `TextHelper.ApplyAsterisk`、辞書のデータ形式・既定値・保存先は `UserDictionary.cs` と `KanjiToYomiBase.ConvertAsync`（辞書はプロジェクトファイルではなくアプリ設定として設定ディレクトリ配下の JSON に保存される）。色名表は WPF `Colors` の名前付き色＋本家追加の rebeccapurple。
+
+**どこを変更したか。** 新規 `Sources/YMM4Core/Text/` 配下: `ControlTagParser.swift`（タグ解析・タイミング計算・区間フィルタ・読み上げ用平文変換）、`ControlTagTypes.swift`（演算子・タイミングタグ・ルビ情報・タイミング情報の型）、`TextPreprocessor.swift`（アスタリスク置換と辞書適用）、`WordSet.swift`（置換エントリと .NET 互換の置換文字列展開）、`UserDictionary.swift`（3リストと本家キー名での JSON 往復）、`UserDictionaryDefaults.swift`（既定エントリ 110 件: アスタリスク 2・単語 107・発音 1、本家の並び順どおり）、`NamedColors.swift`（色名表 148 件）。変更: `Sources/YMM4GPU/Sources/Text/MetalTextRasterizer.swift`（前処理を本家の順序へ組み込み、タイミングがある場合の文字単位の表示判定、分割出力の時刻オフセット、横書き非分割でのルビ描画）、`Sources/YMM4GPU/Sources/Text/MetalTextSources.swift`（タグを含むテキストは非分割でも時刻をキャッシュキーに含める）。テスト新規 `Tests/YMM4CoreTests/Text/ControlTagParserTests.swift`（36 件）と `UserDictionaryTests.swift`（15 件）。
+
+**どう実装したか。** 解析器は本家と同じく、タグを取り除いたクリーンテキスト・タグ装飾と既存装飾の統合結果・タイミングタグ・ルビ情報を返す。内部位置は移植側の装飾に合わせてルーン（Unicode スカラ）単位とした（本家は UTF-16 単位。サロゲートペアを含むテキストでは位置がずれる内部差分）。装飾の統合、ルビ範囲の既存装飾の対応づけ、タイミングの区間分割と表示順の並べ替え、区間フィルタでの装飾・ルビ・タイミングの写し直しは本家の規則どおり。ラスタライザは従来の正規化のみだった前処理を本家の5段へ置き換えた。辞書は既定値（アスタリスクは全件無効）で接続し、設定層が無い現状では本家の初期状態と同じ無変換になる。
+
+**本家との差分（ユーザーから見えるもの）。**
+- ルビの描画は横書き・非分割経路のみ。縦書きと文字分割ではルビを描かない（縦書きは従来から CTFrameDraw の一括描画で、文字分割はグリフ単位出力のため）。
+- ルビの配置は親文字範囲の中央上に置く近似で、本家 RubyHelper の詳細なレイアウト（ルビ側の装飾・均等配置）とは異なる。ルビ自体の装飾（rubyDecorations）は解析結果に保持するが描画では未適用。
+- 装飾のオフセット・回転は解析結果に含まれるが描画では未適用（MAC-0014 以来の既存差分の継続）。
+- タイミングがある場合の HideInterval による区間内の段階的な消去は、非分割では省略、分割では順位ベースの項で近似した。
+- ランダム表示順の乱数列は .NET `System.Random` と一致しない（本家は種が GetHashCode 由来で実行ごとに変わるため、一致自体が不可能）。
+- 辞書の編集 UI と設定ファイルへの保存・読み込みは未実装（アプリ設定層が存在しないため、辞書モデルと JSON 往復、適用部品まで）。読み上げ側の辞書適用も、移植に読み変換経路が無いため部品の提供まで。
+- 正規表現は ICU 方言で、.NET 方言との差と 500 ミリ秒のタイムアウト強制は未対応。アスタリスク経路の `${名前}` 展開は番号形式のみ（ICU からグループ名が取得できないため）。
+
+**検証。** Mac 実機（macOS 26.3）でフルパッケージのビルド成功・警告 0。対象テストのみ実行: ControlTagParserTests 36 件・UserDictionaryTests 15 件・回帰として YmmpCodecTests 25 件、計 76 件すべて合格（フルスイートは実行していない）。タグ文字列を含む TextItem の .ymmp 往復で、テキストと装飾が失われないことをテストで確認した。ルビ描画とタイミング表示の目視確認は未実施。
+
+**未解決。** 辞書の設定層接続（編集 UI・保存先）は設定層の新設が前提。縦書き・文字分割でのルビ描画。ルビ配置の本家 RubyHelper との一致検証（本家実出力との比較環境が無い）。
+#### FXMETA — エフェクトプロパティメタデータの全種別化（IMPLEMENTED / VERIFIED）
+
+**何を実装したか。** プロパティエディタが編集 UI を生成するためのメタデータ（`EffectPropertyMetadata`、MAC-0029 で基盤と代表3種のみ実装済み）を、レジストリ登録の内蔵エフェクト全95種に揃えた。従来は拡大縮小・不透明度・描画位置の3種だけが固有パラメータの記述子を持ち、残り92種は共通プロパティ（IsEnabled / Remark）のみだった。今回の追加は固有パラメータ記述子500件（全95種の合計は共通を除き509件）。
+
+**どこを変更したか。** `Sources/YMM4Core/Editing/EffectPropertyMetadata.swift`（本体の振り分けへ `specificDescriptors(for:)` の呼び出しを追加し、冒頭コメントを実態へ更新）、新規 `EffectPropertyMetadataCatalog.swift`（具象定義別の振り分け、列挙型の選択肢一覧、イージング専用経路）、新規カテゴリ別ビルダーファイル5件（`EffectPropertyMetadataDraw.swift` / `EffectPropertyMetadataGPUTransform.swift` / `EffectPropertyMetadataGPUColor.swift` / `EffectPropertyMetadataGPUShadowMask.swift` / `EffectPropertyMetadataGPUInOut.swift`、定義側のファイル編成に対応）、新規テスト `Tests/YMM4CoreTests/Editing/EffectPropertyMetadataTests.swift`（5件）。
+
+**どう実装したか。** 記述子の並びは各定義の保存形式のキー順（`encodeKnownFields` の並び、中間基底のキーは具象側の後に続く。本家ファイルの並びと一致）とした。表示名・グループは本家の各エフェクトクラスの `Display` 属性が指す `Texts` リソースの文言、数値範囲は本家の `Range` 属性（無ければスライダ属性の上下限）、列挙の選択肢は本家の列挙メンバの `Display` 属性の文言を使った。根拠が取れない表示名はプロパティ名そのままにする（従来方針どおり）。`EasingFamily` / `EasingMode` と `BillboardMode` は `HonkeEnum` に適合しないため、保存名への変換を定義層の既存変換（`effectHonkeName`、Billboard は定義の encode と同じ対応表）で行う専用経路をカタログに置いた。Billboard の未知 Mode 名は定義側に原文保持があるため読み取りでは原文を返し、書き込みは既知3値のみを対象とする（未知値を消す公開口が定義側に無いための制約。既知の値を選べば通常どおり反映される）。`TextureEffect.ContentOffset`（本家 `TimeSpan`）は記述子体系に時刻型が無いため、秒の数値として読み書きする（値の意味は同一。tick 単位の保持は定義側が担う）。
+
+**本家との差分。** 本家で `AutoGenerateField` により入れ子の専用エディタを生成する複合プロパティは、単一記述子の対象外とした（18件）: ブラシ（Shadow / InnerShadow / FillBackground / FillForeground / FrameLine の各 Brush、Outline の StrokeBrush、DisplacementMap の Brush）、DisplacementMap / NoiseColorShift / NoiseDisplacementMap の Transform、Noise 系3種の NoiseParameter、Mosaic の MosaicParameter、Mask の ShapeParameter、Gradient の Stops（色停止点列）、MeshDeformation の Points（点列）、MotionTracking の Path。これらは本家でも単一フィールドでは編集しない対象であり、値そのものは定義層で保持されている（MosaicParameter は型付き、その他は生保持）。RepeatOpacity の IsCentering は本家では固定 false・保存対象外（`JsonIgnore`）のダミー上書きであるため対象外とした。本家の旧 API プロパティ（`[Obsolete]`、例: Sepia の Intensity、ChromaKey2 の Threshold、Gradient の ColorFrom / ColorTo）は定義層が保存キーとして持たないため、もともと対象外である。
+
+**検証。** 棚卸しの実数: 定義層は95種、メタデータ既存は3種、今回92種を追加し全95種が揃った。保存キーと本家プロパティの照合では、差分は全て旧 API プロパティ・decode 専用の互換キー（CenterPoint の Mode）・入れ子列挙の宣言として説明が付いた。Animation の既定値・最小・最大は本家 `new Animation(...)` の初期化子と264件照合し、不一致0。Blend の選択肢33件はアイテム側メタデータの既存一覧と集合一致。新規テスト5件（全95種の網羅＝記述子 ID 列と保存キーの一致、ID 一意性、対象外キーの不在、全記述子の書き込み往復、アニメーション既定値の範囲内確認）と既存 PropertyMetadataTests 17件が、Linux と Mac の双方で全合格（計22件・0失敗）。Mac 実機でルートパッケージのビルド成功・警告0。フルスイートは他作業と並行中のため未実施（対象テストのみ実行）。
+
+**未解決。** 対象外とした複合プロパティ18件を編集 UI から扱うには、記述子体系へ入れ子オブジェクト用の種別を足す設計判断が別途必要（現行体系の範囲では未確定）。数値プロパティのうち本家に `Range` もスライダ属性も無いものは範囲なし（無制限）とした。本家の `ShowPropertyEditorWhen`（条件付き表示、3件）に対応する仕組みは記述子体系に無いため、該当プロパティも常時表示の前提で記述した。
+#### R6-FIX — レビュー第6ラウンド指摘の処分: リピート再開（R6-01）・開始失敗の通知（R6-03）・チャンク生成の世代競合（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** 実時間再生（MAC-0042）に対するレビュー第6ラウンドの指摘のうち、再生エンジンに関わる3件を処分した。(1) R6-01（P1・修正必須）: リピート有効時、終端到達で表示位置が開始位置へ戻るだけで再生が再開されなかった不具合の修正。(2) R6-03（P2）: 音声エンジンの起動失敗が握りつぶされていたのを、型付きの失敗として通知し UI へ表示できる形にした。(3) 照合課題: 同ラウンドの打ち切られた初回生成にだけ現れた「旧世代のチャンク生成タスクがシーク後の位置から音声を読み取って消費する」競合の指摘候補を実コードで照合し、実在したため本単位で併せて修正した。
+
+**どこを変更したか。** branch `fix/r6-01-repeat`（開始点 = main `8df38dd`）。`Sources/YMM4GPU/Playback/RealtimePlaybackEngine.swift`（`poll` の終端処理と速度変更経路、`buildEngineAndStart` の失敗処理、`renderChunk` の世代確認、クラス冒頭の仕様コメント）、新規 `Sources/YMM4GPU/Playback/PlaybackStartError.swift`、`Apps/DebugApp/Sources/YMM4MacDebug/ProjectView.swift`（開始失敗の通知配線と読み込み診断タブへの表示）、`Tests/YMM4GPUTests/PlaybackTests.swift`（`RealtimePlaybackRepeatTests` を追加）。
+
+**どう実装したか。**
+- R6-01: `poll` の終端分岐で、停止処理（`endPlayback`）の後に表示位置を開始位置へ戻し、通常の再生開始経路 `play()` を呼ぶ。供給の再シーク、プレイヤーの再構築、メーターの位置合わせ（供給シークに含まれる）はすべて `play` 側の既存経路に委ね、リピート専用の開始処理は作らなかった。開始位置が終端そのものの場合のみ、再開しても即座に終端へ戻るため再開しない。一時停止時に「位置だけが開始位置へ戻る」挙動は従来どおり変更していない。
+- R6-03: 新規の型付きエラー `PlaybackStartError`（`engineStartFailed`、`userMessage` を持つ。`MetalInitializationError` と同じ契約）に `AVAudioEngine.start()` の失敗を載せ、`lastStartError` への保持と `onStartFailed` コールバックでの通知を行う。開始が成功すると `lastStartError` は nil へ戻る。ProjectView は通知を受けて理由文を保持し、読み込み診断タブへ表示する（再生が始まれば消える）。失敗別の個別フォールバックは作っていない。
+- 世代競合: `renderChunk` が期待世代を受け取り、供給ロック（`sourceAccessLock`）の保持中に世代を確認してから読むよう変更した。併せて `poll` の速度変更経路で世代更新（`bumpGeneration`）をシークより先へ移した。
+
+**照合課題の結論（実在した。根拠は実コードの制御フロー）。** 修正前の `renderChunk` は引数 `startingAtSamples` を実際の読み取り位置に使っておらず、供給元の現在位置から無条件に `source.read` していた。世代の確認は生成後のメインキューでのスケジュール判定でしか行われておらず、読み取りによる供給位置の消費は取り消せない。`fillSchedule` が直列の生成キューへ積んだ旧世代タスクが、シーク（一時停止→再生、再生中のシーク、速度変更による作り直し）の後に実行されると、シーク後の位置から1チャンク（1秒）を読み捨て、新しい世代の先頭1秒が欠落する（該当箇所は修正前の `fillSchedule` の async 積み込みと `renderChunk` の無条件読み取り）。修正後は、シーク（`seekSource`）も同じ供給ロックを取るため「確認→読み取り」がシークに対して不可分になり、古い世代は供給元を一切読まない。速度変更経路の世代更新をシークより先へ移したのは、シーク直後に古い世代が割り込む窓を残さないため。
+
+**本家との差分。** リピート再開は本家のリピート再生（`IsRepeatPlayEnabled`）の意味への是正であり、新しい差分は生まない。開始失敗の通知は Mac 側の診断契約（MAC-0021 の「失敗は握りつぶさず通知する」、Issue #50 の Metal 診断と同方針）の再生側への拡張で、本家に相当する表示はない。
+
+**メモリ・並行性。** 世代カウンタと供給ロックは既存のものをそのまま使い、新しいロック・キューは追加していない。`renderChunk` の世代確認は供給ロック保持中に行い、世代ロックは末端の短い区間のみで取得する（ロックの取得順序は従来から変えていない）。開始失敗時は従来どおりエンジン一式を破棄し、失敗の保持は値型1件のみ。
+
+**検証。** Mac 実機（検証コピー ~/ymm4-work/ymm4mac-fix-r601）: ルートパッケージ `swift build` 成功・警告 0。`swift test --filter Playback` は 16 件全合格（新規 `RealtimePlaybackRepeatTests` 2 件を含む）。受入試験は 1 秒の音声付きタイムラインを実再生し、供給プロバイダの読み取り総量が 1 周分（96,000 サンプル）を超えることで 2 周目の出力を確認する方式で、リピート ON では再開と読み取りの継続を、OFF では終端での停止・位置のタイムライン長一致・読み取り総量が 1 周分を超えないことを確認した。切り分けとして、修正前のエンジンへ戻した検証コピーでは ON の試験が失敗した（10.3 秒、2周目の読み取りが観測できず、再生は停止したまま）。OFF の試験は修正前後とも合格。Mac フルスイート（`swift test --parallel`、517 件）は、513 件目まで実行され失敗 0 を確認した時点で Mac への接続が切れ、残り4件（長時間のドリフト試験）は本記録の時点で未確認である（接続回復後に /tmp/r601-full.log で確定させること）。世代競合の修正は、決定的な再現には生成キューの実行順序の制御が要り自動テスト化が困難なため、自動テストなし（コード照合と上記の不可分性の論証で確認）。R6-03 の失敗経路も、`AVAudioEngine.start()` の失敗をテストから強制する手段がないため自動テストなし（型と配線はビルドで確認）。
+
+**次の担当へ。** 本単位の範囲外: R6-02（再生制御と映像合成のメインキュー占有。高負荷時の実測が要る）、R6-04（PngWav の UI 接続）、R6-05（ストリーミングの終端外シーク）、R6-06（クリッピングの GPU 失敗通知）。開始失敗の表示先は当面は読み込み診断タブであり、フロントエンド側でより目立つ表示先が決まれば配線先だけを移す。
+#### MOSAICRECT — 矩形モザイクの本家方式化（5点サンプル平均）（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** 矩形モザイクの色決定方式を、従来の「セル内全テクセルの平均」から本家方式の「セル内5点サンプルの平均」へ是正した。MOSAIC48 で範囲外として記録されていた差分の解消。
+
+**本家根拠。** 本家カスタムシェーダ `Mosaic` の DXBC 逆アセンブル（`mosaic_dis.txt`。C# ラッパ `Mosaic.cs` は Size の設定のみで、範囲は 1–5000 にクランプ）。逆アセンブルから抽出した方式: (1) Size == 1 のときは現在画素をそのままサンプルする。(2) セル格子はシーン座標（入力平面座標）の原点基準で、セル原点 = pos − floormod(pos, Size)（負座標では床方向の剰余）。(3) セルは入力矩形（InputRect）で切り取られる。(4) 色は切り取られたセル内の5点 — 中心 (1/2, 1/2) と (1/3, 1/3), (1/3, 2/3), (2/3, 1/3), (2/3, 2/3) — の線形サンプルの平均（合計 × 0.2）。第2段のイン／アウトモザイクも本家では同じ `Mosaic` カスタム効果を使う（`InOutMosaicEffect.cs` で Size = max(1, イージング値)）ため、共通ヘルパの是正で両方に効く。
+
+**どこを変更したか。** `Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift`（Warp フラグメントへ mode 12 を追加。1/3・2/3 は本家のコンパイル済み定数 float32(1/3) = 0.3333333432674408 等を字面どおり使用）、`Sources/YMM4GPU/Effects/MetalEffectProcessorBase.swift`（`renderRectangleMosaic` をコンピュートカーネルから Warp mode 12 経由へ置き換え、不要になった `RectangleMosaicUniforms` を削除）、`Sources/YMM4GPU/Effects/MetalBlurMosaicProcessors.swift`（差分を記録していたコメントを是正後の説明へ更新）。検証資産として `Harnesses/mosaic48-harness` へ矩形ケースを追加（参照実装 `shader_reference.py` へ `rectangle_points`、期待値生成へ rect16 / rect13 / rect20 / rect1、ハーネスへケース 9.5）。あわせて同ハーネスの `MetalGraphicsDevices()!`（現行の throwing 初期化子と合わずコンパイル不能だった箇所）を `try!` へ修正した。
+
+**残置したもの。** 旧コンピュートカーネル `ymm4MosaicKernel` と `mosaicPipeline` は描画に使われなくなったが、デバイス初期化の関数インベントリとして残した（初期化診断ハーネスが同名関数を欠落検出の対象にしているため）。コード内コメントにその旨を明記した。
+
+**検証。** Mac 実機: ルートパッケージ `swift build` 成功・警告 0。画素ハーネス mosaic48-harness は全ケース PASS で、矩形の新規4ケース（Size 16 = 割り切れる寸法、13 / 20 = 割り切れず端セルの切り取りが効く寸法、1 = 素通し）は参照実装と**全画素一致（不一致 0px）**。参照は DXBC 抽出式の独立実装＋線形サンプルの再現で、サンプル点の位置まで含めて一致した。関連テスト（`--filter "Brush|Mosaic"`）21件全合格。フルスイートは他担当の並行作業のため未実行。
+
+#### GRADMESH — グラデーションメッシュブラシの型付き化と GPU 描画（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** BRUSH46 で生保持のみだったグラデーションメッシュブラシ（本家 `GradientMeshBrushParameter`）を型付きモデル化し、GPU 描画まで実装した。格子点の色を Coons パッチで補間して塗る。
+
+**本家根拠（いずれもデコンパイル済みコード）。** パラメータと既定値: `GradientMeshBrushParameter.cs`（HorizontalCount / VerticalCount 既定 2、CoordinateMode 既定 Relative、Width / Height は Animation 既定 100・範囲 0–100000、ExtendOutside 既定 true、既定点は Red / Gold / RoyalBlue / Cyan で先頭点のみ IsSelected。基底 `ScalableDrawingBrushParameterBase` の Zoom 既定 100 と `DrawingBrushParameterBase` の配置変換フィールドを継承）。点: `GradientMeshPoint.cs`（X / Y と8本のハンドルが Animation、4つのカスタムフラグ、Color、IsSelected）。論理配置とスナップショット: 同ファイルの `GetLogicalPointPositions` / `GetLogicalPointSnapshots`（配置 = −W/2 + W・列/(横点数−1) + 点 X・(W/100)、ハンドルは内向きかつカスタムの方向だけが位置＋ハンドル値・(W/100) を持ち、それ以外は null）。座標変換: `GradientMeshCoordinateHelper.cs`（ToLocal は Relative で境界寸法/100・Pixel で等倍、変換 = ブラシ行列 × 境界中心への平行移動、拡張境界は出力境界の逆変換像）。パッチ構築: `GradientMeshPatchBuilder.cs`（内部点は D2D `D2D1GetGradientMeshInteriorPointsFromCoonsPatch`、非カスタムハンドルは接線（中央差分、端は一方向差分）の 1/3 で導出、ExtendOutside 時は境界を全点位置と使用カスタムハンドルへ拡張し、帯パッチと四隅の双線形パッチで出力境界まで覆う）。描画: `GradientMeshBrushSource.cs`（メッシュをコマンドリストへ描いて Clamp の ImageBrush 化。対象範囲は ±(MaximumBitmapSize/2 − 1)）。
+
+**どこを変更したか。** Core: `Sources/YMM4Core/Model/BrushParameters.swift`（`GradientMeshPointValue` と `GradientMeshBrushParameter` を新設。本家の宣言順で読み書きし、未知キーは追加フィールドとして保持）、`Sources/YMM4Core/Model/Brush.swift`（`BrushParameter.gradientMesh` を追加し、復元・保存・アニメーション走査へ接続）。GPU: 新規 `Sources/YMM4GPU/Effects/GradientMeshGeometry.swift`（スナップショットのローカル化、接線導出、Coons 内部点、拡張パッチ構築、テッセレーション）、`Sources/YMM4GPU/Effects/MetalBrushFill.swift`（`BrushFillSpec` の mode 6 と仕様構築、頂点バッファ描画 `renderMesh`）、`Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift`（頂点色シェーダ `ymm4MeshVertex` / `ymm4MeshFragment` と `meshPipeline` を追加）。
+
+**どう実装したか。** パッチの内部点は D2D 関数の閉形式（境界制御点の線形結合から双線形項を引く形）を再実装し、Coons 曲面の直接評価との一致を数値検証した（ランダムな境界 200 組 × 20 点で最大誤差 2.1e-14）。描画はパッチを CPU 側で一様分割（16×16）してテンソル積三次ベジェで位置を評価し、頂点色の三角形として描く。色は四隅色の (u, v) 双線形補間（パッチが保持する色は四隅のみで、テンソル積の色格子は双線形埋め込みに帰着する）。点数と格子点数が一致しない等の不正なパラメータでは本家どおり透明な塗りになる。保存形式の JSON キーはデコンパイル済みモデルに基づく（実ファイルでの出現は未確認。実ファイル2件には GradientMesh の出現なし）。
+
+**本家との差分。** (1) テッセレーション密度と外周エッジのアンチエイリアス（本家の PatchEdgeMode）は D2D 内部依存のため再現しない。こちらは一様 16 分割で、外周はアンチエイリアスなし。(2) 拡張の対象境界は本家では MaximumBitmapSize の矩形だが、こちらは塗り境界を使う。描画範囲の外側は結果に影響しないため、見える範囲の色は変わらない。(3) 色補間が双線形である点は、D2D の色モデル（四隅色のみ）からの帰結として採ったもので、本家の実出力との画素比較は未実施。
+
+**検証。** Mac 実機: `swift build` 成功・警告 0。Core 単体テスト `BrushParameterTests` 12件全合格（新規: メッシュの往復保存（JSON 一致）と既定値の確認。従来の「生保持のまま」テストは型付き往復へ置き換えた）。GPU 単体テスト新規 `GradientMeshGeometryTests` 5件全合格（既定格子の双線形一致、カスタムハンドル時の中心移動 (0,0) → (4,0) のテンソル積評価一致、拡張の被覆範囲と隅色、変換の適用、不正な点数で空になること）。画素ハーネス brush46-harness は全ケース PASS（新規: 既定メッシュの中心 (140, 148, 124)・左上 (252, 5, 4)・右下 (5, 248, 251) が解析値と一致、W=H=50 での拡張あり／なし、Pixel モード。既存ケース11は「メッシュは描画されない」前提が変わったため、影が不透明度 50% で付く確認へ更新し、実測アルファ 128 で一致）。フルスイートは他担当の並行作業のため未実行（関連フィルタ 21 件は全合格）。
+
+**R7-01 処分（レビュー第7ラウンド、PR 作成後の追補）。** 読み込んだ点数（HorizontalCount / VerticalCount）は保存互換のため無制限に保持されるが、描画側の2箇所（GradientMeshGeometry.build と MetalBrushFill のメッシュ分岐）が点数の乗算を無検証で行っており、外部ファイル由来の極端な値では整数オーバーフローでプロセスが停止し得た。処分: Core の GradientMeshBrushParameter に描画用上限 maximumPointCount = 50（本家 UI の範囲 2〜50 の上限）を置き、両箇所で乗算より前に上限を検証する形にした。保存データの読み書きは従来どおり無制限で、往復で値は失われない。検証は GradientMeshGeometryTests に極端な点数（10億×10億）で空のジオメトリが返るテストを追加して行う。
+#### NOISE7 — Noise エフェクト残り7種の実処理化（IMPLEMENTED、Mac 検証済み。本家との画素一致は DXBC 実行参照との照合範囲）
+
+**何を実装したか。** Noise エフェクト（本家 `YukkuriMovieMaker.Project.Effects.NoiseEffect`）の生成器10種のうち、素通しだった残り7種（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）を実処理にした。既存の Fractal / Random / Curl と合わせて全10種が描画される。パラメータ側は Cellular / Voronoi の DistanceMode・OutputMode、Marble の StripeInterval・StripeWarpAmount、Flow の FlowAmount の読み取りと定数受け渡しを追加した。
+
+**本家根拠。** 描画式と定数は全種とも本家シェーダの DXBC 逆アセンブルから抽出した（作業領域 gpu45-scratch の blocknoise / perlinnoise / cellularnoise / voronoinoise / simplexnoise / marblenoise / flownoise の各逆アセンブル）。パラメータの定数変換は逆コンパイル済み C# の `SetParameterTo` で確認した: DistanceMode / OutputMode は列挙値の int キャスト、Marble の StripeInterval は生 float（Animation 既定 64、範囲 1–2000）、StripeWarpAmount は生値（既定 100、0–1000）、Flow の FlowAmount は値 / 100（既定 100、0–1000）。.ymmp 上の列挙は文字列名で保存される（Cellular の OutputMode は F1 / F2 / Difference、Voronoi は CellValue / Edge）。
+
+**どこを変更したか。** branch `noise7/remaining-types`（base = main 8df38dd）。`Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift`（Noise シェーダへ生成器7種と振り分けを追加。既存3種の経路は無変更）、`Sources/YMM4GPU/Effects/MetalEffectProcessorsNoise.swift`（種別コード 3–9 の割り当て、新規パラメータの読み取り、ユニフォーム受け渡し）。検証資産として `Harnesses/noise7-harness/` を新設し、`Harnesses/README.md` へ登録した。Core は無変更。
+
+**どう実装したか。** 新規7種は既存3種と前段が異なるため、フラグメントシェーダで種別コード 3 以上を専用経路へ分岐し、後段（Threshold / Strength / Levels のポスト処理）は既存の `ymm4NoisePost` を共用した（ポスト処理の式と Levels 条件は逆アセンブルと一致することを確認済みで、変更なし）。本家シェーダから実測した共通規則: (1) オクターブは「カウンタが Octaves 以下の間」= Octaves + 1 回評価する。(2) Z はオクターブの周波数で拡縮しない（XY のみ）。(3) ワープの第1評価点には +(19.1, 7.3, 3.7) のオフセットがある。(4) 座標変換はスケール後に ×(1/64) が入る。(5) FractalMode の整形はモード 0 では生値をそのまま使う。種別固有の要点: Block は XY がセル内一定で Z のみフェード補間したセルハッシュ。Perlin は格子点ごとにタグ 0 / 1 / 2 の整数ハッシュから勾配（各成分 = ハッシュ ×2 − 1、正規化なし）を作り内積を三次フェードで補間する。Cellular は 3×3×3 近傍の特徴点との距離の小さい方2つを追跡し、F1 / F2 の初期値はどちらも 1.0（本家の初期化どおり）。距離は Euclidean は length、Manhattan は ×(2/3)、Chebyshev は ×1.2。Voronoi の F1 / F2 初期値は 10.0 で、CellValue は勝者セルのハッシュ値、Edge は 1 − saturate(F2 − F1)。Simplex は評価点へシードハッシュ ×289 のオフセットを加えた既存の snoise（×52.5 + 0.5 形）。Marble は縞位相 = 回転後 x / StripeInterval × 2π で、StripeWarpAmount ≠ 0 のときだけ値ノイズで位相を歪ませる（歪み量 = (n×2 − 1) × StripeWarpAmount × 2π/100）。Flow は2次元の回転勾配ノイズで、オクターブごとに勾配場で評価点を移流させる。permute の mod289 入力が (ix, ix + sx, ix + 1)、加算側が (iy, iy + sy, iy + 1) という非対称な構成と、第2角のスキューが −0.5×(iy + sy) である点は、逆アセンブルのレジスタ手順どおりに転記した（検証の節参照）。
+
+**Voronoi の決定性について。** モザイクの Voronoi はシードが C# 側の GetHashCode 由来で再現不能だったが、Noise の Voronoi は特徴点・勝者値ともシェーダ内の整数ハッシュ（セル座標 + シード、タグ付き）だけで決まる決定的な処理であり、画素単位の照合が可能だった。実際に照合した（検証の節）。
+
+**検証。** 期待値は、本家シェーダの DXBC を命令単位で実行するインタプリタ（作業領域 noise7-scratch）の出力。インタプリタ自体の妥当性は、既にマージ済みの移植 Fractal との照合ケース（fractal-cross）で担保した: 既存3種の既知の差分（オクターブ回数と ×(1/64)）を補正した条件ではバイト完全一致した。画素ハーネス noise7-harness（32×32、39ケース: 各種別の既定・整形モード・ワープ・角度・オフセット・スケール・色モード・ポスト処理・FlowAmount 変化など）で MetalNoiseProcessor 経由の実描画と比較した結果、37ケースがバイト完全一致（最大差 0）。残り2ケース（vor-cell / vor-manh-cell）は同一の1画素（行26・列5）だけが 1 バイト差（参照 157 に対して 158）で、勝者セルの取り違えではなくバイト境界での float 丸め差である。Flow は初版の転記で2箇所（permute 入力と第2角のスキュー）の読み違いがあり系統的にずれていたが、逆アセンブルのレジスタ手順を追い直して是正し、全ケース一致に至った。Mac 実機（検証コピー ~/ymm4-work/noise7-YMM4Mac）: ルートパッケージ `swift build` 成功・警告 0、対象テスト（GPUEffectRegistryTests / GPUEffectValuePreservationTests / GPUEffectLegacyKeyTests の計30件）0 失敗。Mac フルスイートは本単位では未実施（対象テストとハーネスのみ実行）。本家実機との比較試験は未実施のため IMPLEMENTED 止まり。
+
+**本家との差分・未解決。** (1) 既存3種（Fractal / Random / Curl）には本単位で変更していない差分が実測で確認された: ワープ第1評価点の +(19.1, 7.3, 3.7) オフセット欠落、オクターブ回数が Octaves 回（本家は Octaves + 1 回）、座標変換の ×(1/64) 欠落。是正は既存種の描画結果を変えるため本単位の範囲外とし、別途処分が要る。(2) IsUniqueSeed のシード基礎値（パラメータの GetHashCode 由来）は従来どおり未確定で 0 として扱う（全種共通の既存差分）。(3) Flow の周波数・振幅の更新は逆アセンブルのパックされたレジスタ更新を標準セマンティクスで読むと交差して見える箇所があるが、実測では通常の更新（周波数 ×Lacunarity、振幅 ×Gain）でインタプリタ参照と完全一致したため、通常の更新を採用した。
 #### INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
 
 **何を統合したか。** 並行して実装された10単位を main へ順に統合した。対応は次のとおり。#84 = MAC-0040（VoiceItem 音声供給、#51）、#85 = MAC-0041・0042（実時間再生、#52）、#86 = SOLA53（#53）、#87 = STREAM54（#54）、#88 = MAC-0043（PngWav、#49）、#89 = MAC-0044（Metal 初期化診断、#50）、#90 = GPU45（#45 第1弾）、#91 = BRUSH46（#46）、#92 = TRANSFORM47（#47）、#93 = MOSAIC48（#48）。統合後の main は `8df38dd`。

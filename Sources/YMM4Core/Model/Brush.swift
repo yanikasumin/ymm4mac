@@ -66,9 +66,9 @@ public final class Brush {
 ///
 /// 本家組み込みのパラメータ型は型付きでモデル化し（各型の根拠は
 /// BrushParameters.swift）、それ以外の $type（コミュニティプラグイン等）
-/// は生 JSON のまま保持する。グラデーションメッシュは点とハンドルの
-/// 保存形式が実ファイルで未確認のため、型付き化せず生保持に倒す
-/// （BRUSH46 の設計論点。実装記録参照）。
+/// は生 JSON のまま保持する。グラデーションメッシュは BRUSH46 では
+/// 生保持に倒していたが、GRADMESH で逆コンパイル済みモデルから
+/// 保存形式を確定し型付き化した（実ファイルでの出現は未確認）。
 public enum BrushParameter {
     case solidColor(SolidColorBrushParameter)
     case linearGradient(LinearGradientBrushParameter)
@@ -79,6 +79,7 @@ public enum BrushParameter {
     case gridLine(GridLineBrushParameter)
     case bitmap(BitmapBrushParameter)
     case noise(NoiseBrushParameter)
+    case gradientMesh(GradientMeshBrushParameter)
     case preserved(PreservedObject)
 
     func encodeToJSONValue() -> JSONValue {
@@ -100,6 +101,8 @@ public enum BrushParameter {
         case .bitmap(let parameter):
             return parameter.encodeToJSONValue()
         case .noise(let parameter):
+            return parameter.encodeToJSONValue()
+        case .gradientMesh(let parameter):
             return parameter.encodeToJSONValue()
         case .preserved(let object):
             return object.value
@@ -126,6 +129,8 @@ public enum BrushParameter {
         case .bitmap(let parameter):
             parameter.forEachAnimation(body)
         case .noise(let parameter):
+            parameter.forEachAnimation(body)
+        case .gradientMesh(let parameter):
             parameter.forEachAnimation(body)
         }
     }
@@ -156,6 +161,8 @@ public enum BrushParameter {
             return .bitmap(BitmapBrushParameter.decode(from: object.value))
         case NoiseBrushParameter.typeName:
             return .noise(NoiseBrushParameter.decode(from: object.value))
+        case GradientMeshBrushParameter.typeName:
+            return .gradientMesh(GradientMeshBrushParameter.decode(from: object.value))
         default:
             return .preserved(object)
         }

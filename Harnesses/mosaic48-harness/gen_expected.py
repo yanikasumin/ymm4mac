@@ -61,7 +61,15 @@ def expected_frame(shape, size, seed=0.0):
     for y in range(H):
         for x in range(W):
             pos = (-W / 2.0 + x + 0.5, -H / 2.0 + y + 0.5)
-            if shape == "circle":
+            if shape == "rectangle":
+                points = ref.rectangle_points(pos, size, (-32.0, -32.0, 32.0, 32.0))
+                acc = [0.0, 0.0, 0.0, 0.0]
+                for point in points:
+                    sampled = sample_linear(*point)
+                    for c in range(4):
+                        acc[c] += sampled[c]
+                color = [value / len(points) for value in acc]
+            elif shape == "circle":
                 sp = ref.circle(pos, size)
                 color = [0.0, 0.0, 0.0, 0.0] if sp is None else sample_linear(*sp)
             elif shape == "triangle":
@@ -112,6 +120,12 @@ CASES = [
     # サイズアニメーション検証用 (直線移動 8 -> 24 の両端)
     ("circle8", "circle", 8.0, 0.0),
     ("circle24", "circle", 24.0, 0.0),
+    # 矩形 (MOSAICRECT): 割り切れる寸法・割り切れない寸法 (端セルの
+    # 切り取りが効く)・Size 1 の素通し
+    ("rect16", "rectangle", 16.0, 0.0),
+    ("rect13", "rectangle", 13.0, 0.0),
+    ("rect20", "rectangle", 20.0, 0.0),
+    ("rect1", "rectangle", 1.0, 0.0),
 ]
 
 
