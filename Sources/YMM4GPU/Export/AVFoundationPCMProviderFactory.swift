@@ -31,9 +31,18 @@ private final class AssetBox: @unchecked Sendable {
     }
 }
 
+/// AVAssetTrack を async 側へ渡すための箱（AssetBox と同じ理由）。
+private final class TrackBox: @unchecked Sendable {
+    let track: AVAssetTrack
+
+    init(_ track: AVAssetTrack) {
+        self.track = track
+    }
+}
+
 // MARK: - 音声デコード（AVFoundation）
 
-/// AVFoundation で音声ファイルをデコードする PCM 供給元。
+/// AVFoundation で音声ファイルを開く PCM 供給元の工場。
 ///
 /// 本家 `AudioFileSourceFactory` はプラグイン（MediaFoundation /
 /// FFmpeg）を順に試し、最初に開けたものを採用し、全滅した場合は
@@ -41,11 +50,9 @@ private final class AssetBox: @unchecked Sendable {
 /// ファイルについて nil を返し、呼び出し側（FileAudioStream）が
 /// 無音へ倒すことで同じ意味論になる。
 ///
-/// 実装上の選択: デコードはファイル全体をメモリへ読み切る方式にした
-/// （戻り値は既存の InMemoryPCMProvider）。本家のファイルソースは
-/// ストリーミングだが、供給契約（seek / read）は同じで、シーク時の
-/// 丸めも InMemoryPCMProvider の実測済みの規則に従う。長時間素材での
-/// メモリ使用量は未検証事項として残る。
+/// 供給元は `AVFoundationStreamingPCMProvider`（逐次デコード）であり、
+/// メモリ使用量は素材の長さに比例しない（Issue #54。従来はファイル
+/// 全体をメモリへ読み切る方式だった）。
 /// `audioTrackIndex` は音声トラック列の中の選択として解釈し、
 /// 範囲外なら先頭トラックへ倒す。
 public final class AVFoundationPCMProviderFactory: PCMProviderFactory {
@@ -58,69 +65,46 @@ public final class AVFoundationPCMProviderFactory: PCMProviderFactory {
 
     public func createProvider(filePath: String?, audioTrackIndex: Int) -> PCMProvider? {
         guard let filePath,
-              let url = resolveMediaURL(path: filePath, baseDirectory: baseDirectory),
-              let decoded = Self.decode(url: url, audioTrackIndex: audioTrackIndex)
+              let url = resolveMediaURL(path: filePath, baseDirectory: baseDirectory)
         else { return nil }
-        return InMemoryPCMProvider(samples: decoded.samples, hz: decoded.hz)
-    }
-
-    /// ファイル全体を float32 / 2ch インターリーブへデコードする。
-    /// サンプルレートは素材のネイティブレートを保持し、タイムライン
-    /// Hz への変換は後段のリサンプラ（本家のチェーンと同じ位置）が担う。
-    private static func decode(
-        url: URL, audioTrackIndex: Int
-    ) -> (samples: [Float], hz: Int)? {
         let asset = AVURLAsset(url: url)
         // トラックとリーダーは同一の AVURLAsset インスタンスでなければ
         // ならない（別インスタンスのトラックから作った出力をリーダーへ
         // 追加すると AVFoundation が例外を投げる）。資産は読み取り専用
         // として箱経由で async 側へ渡す。
         let assetBox = AssetBox(asset)
-        guard let tracks = loadSynchronously({
+        guard let tracks = Self.loadSynchronously({
                   try await assetBox.asset.loadTracks(withMediaType: .audio)
               }),
               !tracks.isEmpty
         else { return nil }
         let track = tracks.indices.contains(audioTrackIndex)
             ? tracks[audioTrackIndex] : tracks[0]
+        let trackBox = TrackBox(track)
+        guard let timeRange = Self.loadSynchronously({
+                  try await trackBox.track.load(.timeRange)
+              }),
+              let formats = Self.loadSynchronously({
+                  try await trackBox.track.load(.formatDescriptions)
+              })
+        else { return nil }
+        return AVFoundationStreamingPCMProvider(
+            asset: asset,
+            track: track,
+            timeRange: timeRange,
+            hz: Self.nativeSampleRate(from: formats)
+        )
+    }
 
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
-            AVLinearPCMIsNonInterleaved: false,
-            AVNumberOfChannelsKey: 2,
-        ]
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
-        guard let reader = try? AVAssetReader(asset: asset) else { return nil }
-        reader.add(output)
-        guard reader.startReading() else { return nil }
-
-        var samples: [Float] = []
-        var hz = 0
-        while let sampleBuffer = output.copyNextSampleBuffer() {
-            if hz == 0,
-               let format = CMSampleBufferGetFormatDescription(sampleBuffer),
-               let description = CMAudioFormatDescriptionGetStreamBasicDescription(format) {
-                hz = Int(description.pointee.mSampleRate)
-            }
-            guard let block = CMSampleBufferGetDataBuffer(sampleBuffer) else { continue }
-            let length = CMBlockBufferGetDataLength(block)
-            guard length > 0, length % 4 == 0 else { continue }
-            var raw = [UInt8](repeating: 0, count: length)
-            let status = raw.withUnsafeMutableBytes { destination in
-                CMBlockBufferCopyDataBytes(
-                    block, atOffset: 0, dataLength: length,
-                    destination: destination.baseAddress!
-                )
-            }
-            guard status == noErr else { continue }
-            raw.withUnsafeBytes { source in
-                samples.append(contentsOf: source.bindMemory(to: Float.self))
+    /// トラックのネイティブなサンプリングレート。形式記述から解決し、
+    /// 取れなければ 0（供給元の生成が失敗する）。
+    private static func nativeSampleRate(from formats: [CMFormatDescription]) -> Int {
+        for format in formats {
+            if let basic = CMAudioFormatDescriptionGetStreamBasicDescription(format) {
+                return Int(basic.pointee.mSampleRate)
             }
         }
-        guard reader.status == .completed, hz > 0 else { return nil }
-        return (samples, hz)
+        return 0
     }
 
     /// 同期契約（PCMProviderFactory）から async のメタデータ読み込みを

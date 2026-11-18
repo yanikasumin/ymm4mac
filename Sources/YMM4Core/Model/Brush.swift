@@ -17,9 +17,23 @@ public final class Brush {
     /// モデル化していないプロパティの保存先（読み込み順を保持）。
     public var additionalFields: [(key: String, value: JSONValue)] = []
 
+    /// オブジェクトでない値が読み込まれた場合の生保持（そのまま書き戻す）。
+    /// 本家が生成するファイルでは到達しないが、手編集等で壊れた値が
+    /// 来てもデータを落とさないための保全経路。
+    public var nonObjectRawValue: JSONValue?
+
     public init() {}
 
+    /// パラメータ内の Animation を走査する（キーフレーム文脈の注入用。
+    /// 本家では Brush 自身が Animatable で Parameter を子に持つ）。
+    public func forEachAnimation(_ body: (inout Animation) -> Void) {
+        parameter.forEachAnimation(body)
+    }
+
     func encodeToJSONValue() -> JSONValue {
+        if let nonObjectRawValue {
+            return nonObjectRawValue
+        }
         var fields: [(key: String, value: JSONValue)] = [
             (key: "Type", value: .string(type)),
             (key: "Parameter", value: parameter.encodeToJSONValue()),
@@ -30,7 +44,10 @@ public final class Brush {
 
     static func decode(from value: JSONValue) -> Brush {
         let brush = Brush()
-        guard let fields = value.objectFields else { return brush }
+        guard let fields = value.objectFields else {
+            brush.nonObjectRawValue = value
+            return brush
+        }
         for (key, fieldValue) in fields {
             switch key {
             case "Type":
@@ -47,18 +64,69 @@ public final class Brush {
 
 /// ブラシパラメータ。本家 `IBrushParameter` に対応する。
 ///
-/// 既定プラグインの `SolidColorBrushParameter` だけを型付きでモデル化し、
-/// それ以外の $type は生 JSON のまま保持する。
+/// 本家組み込みのパラメータ型は型付きでモデル化し（各型の根拠は
+/// BrushParameters.swift）、それ以外の $type（コミュニティプラグイン等）
+/// は生 JSON のまま保持する。グラデーションメッシュは点とハンドルの
+/// 保存形式が実ファイルで未確認のため、型付き化せず生保持に倒す
+/// （BRUSH46 の設計論点。実装記録参照）。
 public enum BrushParameter {
     case solidColor(SolidColorBrushParameter)
+    case linearGradient(LinearGradientBrushParameter)
+    case radialGradient(RadialGradientBrushParameter)
+    case checkered(CheckeredBrushParameter)
+    case dot(DotBrushParameter)
+    case stripe(StripeBrushParameter)
+    case gridLine(GridLineBrushParameter)
+    case bitmap(BitmapBrushParameter)
+    case noise(NoiseBrushParameter)
     case preserved(PreservedObject)
 
     func encodeToJSONValue() -> JSONValue {
         switch self {
         case .solidColor(let parameter):
             return parameter.encodeToJSONValue()
+        case .linearGradient(let parameter):
+            return parameter.encodeToJSONValue()
+        case .radialGradient(let parameter):
+            return parameter.encodeToJSONValue()
+        case .checkered(let parameter):
+            return parameter.encodeToJSONValue()
+        case .dot(let parameter):
+            return parameter.encodeToJSONValue()
+        case .stripe(let parameter):
+            return parameter.encodeToJSONValue()
+        case .gridLine(let parameter):
+            return parameter.encodeToJSONValue()
+        case .bitmap(let parameter):
+            return parameter.encodeToJSONValue()
+        case .noise(let parameter):
+            return parameter.encodeToJSONValue()
         case .preserved(let object):
             return object.value
+        }
+    }
+
+    /// パラメータ内の Animation を走査する。
+    public func forEachAnimation(_ body: (inout Animation) -> Void) {
+        switch self {
+        case .solidColor, .preserved:
+            break
+        case .linearGradient(let parameter):
+            parameter.forEachAnimation(body)
+        case .radialGradient(let parameter):
+            parameter.forEachAnimation(body)
+        case .checkered(let parameter):
+            parameter.forEachAnimation(body)
+        case .dot(let parameter):
+            parameter.forEachAnimation(body)
+        case .stripe(let parameter):
+            parameter.forEachAnimation(body)
+        case .gridLine(let parameter):
+            parameter.forEachAnimation(body)
+        case .bitmap(let parameter):
+            parameter.forEachAnimation(body)
+        case .noise(let parameter):
+            parameter.forEachAnimation(body)
         }
     }
 
@@ -69,10 +137,28 @@ public enum BrushParameter {
               object.value.objectFields != nil else {
             return .solidColor(SolidColorBrushParameter())
         }
-        if object.typeName == SolidColorBrushParameter.typeName {
+        switch object.typeName {
+        case SolidColorBrushParameter.typeName:
             return .solidColor(SolidColorBrushParameter.decode(from: object.value))
+        case LinearGradientBrushParameter.typeName:
+            return .linearGradient(LinearGradientBrushParameter.decode(from: object.value))
+        case RadialGradientBrushParameter.typeName:
+            return .radialGradient(RadialGradientBrushParameter.decode(from: object.value))
+        case CheckeredBrushParameter.typeName:
+            return .checkered(CheckeredBrushParameter.decode(from: object.value))
+        case DotBrushParameter.typeName:
+            return .dot(DotBrushParameter.decode(from: object.value))
+        case StripeBrushParameter.typeName:
+            return .stripe(StripeBrushParameter.decode(from: object.value))
+        case GridLineBrushParameter.typeName:
+            return .gridLine(GridLineBrushParameter.decode(from: object.value))
+        case BitmapBrushParameter.typeName:
+            return .bitmap(BitmapBrushParameter.decode(from: object.value))
+        case NoiseBrushParameter.typeName:
+            return .noise(NoiseBrushParameter.decode(from: object.value))
+        default:
+            return .preserved(object)
         }
-        return .preserved(object)
     }
 }
 
