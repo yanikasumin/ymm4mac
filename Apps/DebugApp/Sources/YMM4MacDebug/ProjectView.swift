@@ -1367,8 +1367,13 @@ struct ProjectView: View {
     /// 表示済みのときだけ即時に保存し、未完成なら完成を待ってから
     /// 保存する（シーク直後の旧フレームを誤って保存しない。R11-08）。
     private func saveThumbnail(format: ThumbnailFormat, timeline: Timeline) {
+        // モデルの作り直しが保留されている間は、表示中の画像が古い
+        // 状態（例: 辞書変更の反映前）であり得るため再利用しない
+        // （R18-02 の残存競合への対処。作り直しは 100ms 間引かれる
+        // ことがあり、版数が上がる前でも旧画像を保存しない）。
         if displayedPreviewIdentity == currentPreviewIdentity,
-           displayedPreviewFrame == Int(previewFrame), previewImage != nil {
+           displayedPreviewFrame == Int(previewFrame), previewImage != nil,
+           !previewModelDirty {
             writeThumbnail(format: format, timeline: timeline)
             return
         }

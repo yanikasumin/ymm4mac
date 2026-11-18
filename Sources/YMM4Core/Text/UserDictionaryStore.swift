@@ -1,5 +1,17 @@
 import Foundation
 
+/// 辞書と版数の不変な組（書き出しジョブが開始時点で取得し、その
+/// ジョブのテキスト描画へ渡すための値）。
+public struct UserDictionarySnapshot: Sendable {
+    public var dictionary: UserDictionary
+    public var generation: Int
+
+    public init(dictionary: UserDictionary, generation: Int) {
+        self.dictionary = dictionary
+        self.generation = generation
+    }
+}
+
 /// ユーザー辞書の設定層（TEXT60 の設定層。本家 `UserDictionary` の
 /// 設定シングルトンとしての側面に対応する）。
 ///
@@ -14,18 +26,20 @@ import Foundation
 /// （MetalTextSources のキャッシュキー）がこれを見て、辞書変更後の
 /// 再ラスタライズを判断する。
 ///
-/// 保存の責務分離（R18-03 / R18-04）: `update` はメモリ上の辞書と
-/// 版数を即時に差し替え、ディスクへの永続化だけを 0.3 秒の静穏期間
-/// で集約する（キー入力ごとの同期書き込みを避ける）。保存の成否は
-/// `lastSaveError` と `onSaveResult` で外へ伝え、失敗が成功と区別
-/// できない状態にしない。`save()` は同期保存（確定用）。
+/// 保存の責務分離（R18-03 / R18-04、D19-02）: `update` はメモリ上の
+/// 辞書と版数を即時に差し替え、ディスクへの永続化だけを 0.3 秒の
+/// 静穏期間で集約する（キー入力ごとの同期書き込みを避ける）。保存の
+/// 成否は `lastSaveError` と `onSaveResult` で外へ伝え、失敗が成功と
+/// 区別できない状態にしない。保存の実行経路は専用の直列キュー1本に
+/// 統合されており、集約保存と明示的な保存確定が競合しても、古い
+/// 辞書の書き込みが新しい辞書を後から上書きすることはない（保存は
+/// 実行時点の最新状態を書く）。
 ///
-/// 書き出し中の固定（R18-05）: `pin()` の間、`current` と
-/// `generation` は固定時点の辞書と版数を返し続ける。書き出し側が
-/// 開始時に固定することで、長時間の書き出し中に辞書を編集しても
-/// 出力の前半と後半で辞書が変わらない。固定中にプレビュー側が
-/// 辞書を読む場合も固定された辞書になる（書き出し中は編集結果の
-/// 反映が書き出し終了まで遅れる、という割り切り）。
+/// 書き出し中の辞書の一貫性（R18-05、D19-01）: 書き出し側は開始時に
+/// `snapshot()` で辞書と版数の不変な組を取得し、そのジョブの描画系
+/// へ渡す。ストア自体は固定しないため、プレビューは常に最新の辞書
+/// を読み、複数の書き出しジョブが重なっても各ジョブは自分の開始
+/// 時点の辞書を使う。
 public final class UserDictionaryStore: @unchecked Sendable {
     /// プロセス共有の保存先（本家の設定シングルトンと同じ形）。
     public static let shared = UserDictionaryStore()
@@ -33,17 +47,28 @@ public final class UserDictionaryStore: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: UserDictionary
     private var storedGeneration: Int = 0
-    private var pinned: (dictionary: UserDictionary, generation: Int)?
-    private var pinCount = 0
     private var storedLastSaveError: String?
+    private var storedOnSaveResult: ((Bool) -> Void)?
     private let saveQueue = DispatchQueue(
         label: "jp.ymm4mac.user-dictionary-store.save"
     )
+    private let saveQueueKey = DispatchSpecificKey<Void>()
     private var pendingSave: DispatchWorkItem?
 
     /// 保存結果の通知（成功 true）。編集画面が表示中に失敗を出す
-    /// ために使う。メインスレッド以外から呼ばれることがある。
-    public var onSaveResult: ((Bool) -> Void)?
+    /// ために使う。保存キューから呼ばれることがある。
+    public var onSaveResult: ((Bool) -> Void)? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedOnSaveResult
+        }
+        set {
+            lock.lock()
+            storedOnSaveResult = newValue
+            lock.unlock()
+        }
+    }
 
     /// 保存ファイルの URL。テスト等では差し替えられる。
     public let fileURL: URL
@@ -62,21 +87,30 @@ public final class UserDictionaryStore: @unchecked Sendable {
     public init(fileURL: URL = UserDictionaryStore.defaultFileURL()) {
         self.fileURL = fileURL
         self.stored = UserDictionary()
+        saveQueue.setSpecific(key: saveQueueKey, value: ())
     }
 
-    /// 現在の辞書。固定中は固定時点の辞書。
+    /// 現在の辞書。
     public var current: UserDictionary {
         lock.lock()
         defer { lock.unlock() }
-        return pinned?.dictionary ?? stored
+        return stored
     }
 
-    /// 辞書の版数（起動直後は 0、編集ごとに +1）。固定中は固定時点
-    /// の版数。
+    /// 辞書の版数（起動直後は 0、編集ごとに +1）。
     public var generation: Int {
         lock.lock()
         defer { lock.unlock() }
-        return pinned?.generation ?? storedGeneration
+        return storedGeneration
+    }
+
+    /// 現在の辞書と版数の不変な組（書き出しジョブ用）。
+    public func snapshot() -> UserDictionarySnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return UserDictionarySnapshot(
+            dictionary: stored, generation: storedGeneration
+        )
     }
 
     /// 直近の保存の失敗理由。成功していれば nil。
@@ -108,7 +142,7 @@ public final class UserDictionaryStore: @unchecked Sendable {
         storedGeneration += 1
         pendingSave?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.save()
+            self?.performSave()
         }
         pendingSave = work
         lock.unlock()
@@ -126,17 +160,26 @@ public final class UserDictionaryStore: @unchecked Sendable {
         save()
     }
 
-    /// 現在の辞書を保存ファイルへ同期的に書く。書き込みは一時
-    /// ファイル経由の原子的な置き換えで行う（本家の非原子的な保存で
-    /// ファイルが壊れる欠陥は持ち込まない）。
+    /// 現在の辞書を保存ファイルへ同期的に書く。実行は保存専用の
+    /// 直列キューへ統合されるため、集約保存と競合しない。
     ///
     /// - Returns: 保存できたら true。失敗したら false で、
     ///   `lastSaveError` に理由が残り、`onSaveResult` にも伝わる。
     ///   失敗してもメモリ上の辞書は保たれる（再試行で保存できる）。
     @discardableResult
     public func save() -> Bool {
-        // 保存対象は固定の有無によらず最新の辞書（固定は読み取り側の
-        // 意味論であり、保存を旧辞書へ巻き戻さない）。
+        if DispatchQueue.getSpecific(key: saveQueueKey) != nil {
+            return performSave()
+        }
+        return saveQueue.sync { performSave() }
+    }
+
+    /// 保存の実体。保存キュー上でのみ呼ぶこと。実行時点の最新の
+    /// 辞書を書くため、直列化された順序どおりに最後の状態が残る。
+    /// 書き込みは一時ファイル経由の原子的な置き換えで行う（本家の
+    /// 非原子的な保存でファイルが壊れる欠陥は持ち込まない）。
+    @discardableResult
+    private func performSave() -> Bool {
         lock.lock()
         let text = stored.serializedJSON()
         lock.unlock()
@@ -166,30 +209,9 @@ public final class UserDictionaryStore: @unchecked Sendable {
         }
         lock.lock()
         storedLastSaveError = failureReason
+        let callback = storedOnSaveResult
         lock.unlock()
-        onSaveResult?(succeeded)
+        callback?(succeeded)
         return succeeded
-    }
-
-    /// 現在の辞書と版数を固定する（書き出し開始時）。固定中は
-    /// `update` で辞書が変わっても `current` は固定時点のまま。
-    /// 入れ子に呼ばれた場合は最初の固定が優先される。
-    public func pin() {
-        lock.lock()
-        if pinCount == 0 {
-            pinned = (stored, storedGeneration)
-        }
-        pinCount += 1
-        lock.unlock()
-    }
-
-    /// 固定を解除する（書き出し終了時）。`pin()` と対で呼ぶ。
-    public func unpin() {
-        lock.lock()
-        pinCount = max(0, pinCount - 1)
-        if pinCount == 0 {
-            pinned = nil
-        }
-        lock.unlock()
     }
 }

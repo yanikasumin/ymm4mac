@@ -92,21 +92,37 @@ final class UserDictionaryStoreTests: XCTestCase {
         XCTAssertEqual(store.current, UserDictionary())
     }
 
-    /// 固定中は更新しても現在の辞書と版数が変わらず、解除で現れる
-    /// （R18-05 の書き出し中の固定）。
-    func testPinFreezesCurrentDictionary() {
+    /// 取得済みの組は、その後の更新の影響を受けない（D19-01:
+    /// 書き出しジョブは開始時点の辞書を使い続ける）。ストア側は
+    /// 固定されず、最新の辞書を返し続ける。
+    func testSnapshotIsUnaffectedByLaterUpdates() {
         let store = UserDictionaryStore(fileURL: fileURL)
-        let before = store.current
-        let generationBefore = store.generation
-        store.pin()
+        let snapshot = store.snapshot()
         var edited = UserDictionary()
         edited.wordSets = []
         store.update(edited)
-        XCTAssertEqual(store.current, before)
-        XCTAssertEqual(store.generation, generationBefore)
-        store.unpin()
+        XCTAssertEqual(snapshot.dictionary, UserDictionary())
+        XCTAssertEqual(snapshot.generation, 0)
         XCTAssertEqual(store.current, edited)
-        XCTAssertEqual(store.generation, generationBefore + 1)
+        XCTAssertEqual(store.generation, 1)
+        store.flushPendingSave()
+    }
+
+    /// 集約保存の予約直後に確定保存を呼んでも、最終的にファイルへ
+    /// 残るのは最新の辞書である（D19-02: 保存経路の直列化）。
+    /// 順序を入れ替えた場合も同じ。
+    func testFlushAfterUpdateKeepsLatestDictionary() throws {
+        let store = UserDictionaryStore(fileURL: fileURL)
+        var first = UserDictionary()
+        first.wordSets = []
+        store.update(first)
+        var second = UserDictionary()
+        second.asteriskWordSets = []
+        store.update(second)
+        store.flushPendingSave()
+        let reloaded = UserDictionaryStore(fileURL: fileURL)
+        reloaded.load()
+        XCTAssertEqual(reloaded.current, second)
     }
 
     /// 壊れたファイルは既定辞書へ倒れ、例外にならない。
