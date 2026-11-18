@@ -353,25 +353,31 @@ public extension EffectPropertyMetadata {
                         )
                     },
                     insert: {
+                        // 行数が上限（50）へ丸め込まれた場合は無変更として
+                        // false を返す（R22-117-01）。
+                        let previousVerticalCount = parameter.verticalCount
                         parameter.resizeGrid(
                             horizontal: parameter.horizontalCount,
                             vertical: parameter.verticalCount + 1
                         )
+                        return parameter.verticalCount != previousVerticalCount
                     },
                     remove: { index in
+                        // 最小行数（2行）では削除できない（無変更）。
                         guard parameter.verticalCount > 2,
                               parameter.horizontalCount > 0,
                               parameter.points.indices.contains(index)
-                        else { return }
+                        else { return false }
                         let rowStart = index / parameter.horizontalCount
                             * parameter.horizontalCount
                         guard rowStart + parameter.horizontalCount
                                 <= parameter.points.count
-                        else { return }
+                        else { return false }
                         parameter.points.removeSubrange(
                             rowStart..<(rowStart + parameter.horizontalCount)
                         )
                         parameter.verticalCount -= 1
+                        return true
                     }
                 ),
                 .animation(
@@ -547,12 +553,16 @@ public extension EffectPropertyMetadata {
                     ),
                 ]
             },
-            insert: { set(get() + [GradientStopValue()]) },
+            insert: {
+                set(get() + [GradientStopValue()])
+                return true
+            },
             remove: { index in
                 var stops = get()
-                guard stops.indices.contains(index) else { return }
+                guard stops.indices.contains(index) else { return false }
                 stops.remove(at: index)
                 set(stops)
+                return true
             }
         )
     }
@@ -643,10 +653,14 @@ public extension EffectPropertyMetadata {
                     ),
                 ]
             },
-            insert: { definition.points.append(MeshDeformationPointValue()) },
+            insert: {
+                definition.points.append(MeshDeformationPointValue())
+                return true
+            },
             remove: { index in
-                guard definition.points.indices.contains(index) else { return }
+                guard definition.points.indices.contains(index) else { return false }
                 definition.points.remove(at: index)
+                return true
             }
         )
     }
@@ -674,10 +688,14 @@ public extension EffectPropertyMetadata {
                         guard definition.path.rects.indices.contains(index) else { return [] }
                         return motionTrackingRectChildren(of: definition, index: index, group: group)
                     },
-                    insert: { definition.path.rects.append(MotionTrackingRectValue()) },
+                    insert: {
+                        definition.path.rects.append(MotionTrackingRectValue())
+                        return true
+                    },
                     remove: { index in
-                        guard definition.path.rects.indices.contains(index) else { return }
+                        guard definition.path.rects.indices.contains(index) else { return false }
                         definition.path.rects.remove(at: index)
+                        return true
                     }
                 ),
                 .text(

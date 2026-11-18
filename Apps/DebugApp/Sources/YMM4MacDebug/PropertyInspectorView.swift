@@ -142,6 +142,8 @@ private struct ObjectRowView: View {
 /// 複合コレクションの行。要素ごとに子行をまとめ、要素の追加・削除の
 /// ボタンを付ける。追加・削除は構造の変更なので、この行の再描画を
 /// ローカルの世代カウンタでも促す（親の再生成と二重に効く）。
+/// 状態が実際に変わらなかった操作（要素数の上限・下限で丸め込まれた
+/// 場合）では再描画も編集通知もしない（R22-117-01）。
 private struct CollectionRowView: View {
     let descriptor: PropertyDescriptor
     let animationContext: AnimationEvaluationContext
@@ -156,9 +158,10 @@ private struct CollectionRowView: View {
                     .bold()
                 Spacer()
                 Button("追加") {
-                    descriptor.insertCollectionElement()
-                    revision += 1
-                    onEdited()
+                    if descriptor.insertCollectionElement() {
+                        revision += 1
+                        onEdited()
+                    }
                 }
             }
             ForEach(0..<(descriptor.collectionCount ?? 0), id: \.self) { index in
@@ -169,9 +172,10 @@ private struct CollectionRowView: View {
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button("削除") {
-                            descriptor.removeCollectionElement(at: index)
-                            revision += 1
-                            onEdited()
+                            if descriptor.removeCollectionElement(at: index) {
+                                revision += 1
+                                onEdited()
+                            }
                         }
                     }
                     VStack(alignment: .leading, spacing: 6) {

@@ -75,12 +75,14 @@ public enum PropertyAccess {
     case object(children: () -> [PropertyDescriptor])
     /// 複合コレクション。`elements` は要素1件分の子記述子を返す。
     /// `insert` は既定値の要素を末尾へ追加し、`remove` は指定位置の
-    /// 要素を取り除く。
+    /// 要素を取り除く。どちらも状態が実際に変わった場合にだけ true を
+    /// 返す（要素数の上限・下限で丸め込まれて無変更になった場合や、
+    /// 範囲外の位置を指定された場合は false。R22-117-01）。
     case collection(
         count: () -> Int,
         elements: (Int) -> [PropertyDescriptor],
-        insert: () -> Void,
-        remove: (Int) -> Void
+        insert: () -> Bool,
+        remove: (Int) -> Bool
     )
 }
 
@@ -238,19 +240,19 @@ public struct PropertyDescriptor {
     }
 
     /// 複合コレクションへ既定値の要素を末尾へ追加する。
+    /// 状態が実際に変わった場合にだけ true を返す。
     @discardableResult
     public func insertCollectionElement() -> Bool {
         guard case .collection(_, _, let insert, _) = access else { return false }
-        insert()
-        return true
+        return insert()
     }
 
     /// 複合コレクションの要素を取り除く。
+    /// 状態が実際に変わった場合にだけ true を返す。
     @discardableResult
     public func removeCollectionElement(at index: Int) -> Bool {
         guard case .collection(_, _, _, let remove) = access else { return false }
-        remove(index)
-        return true
+        return remove(index)
     }
 }
 
@@ -347,13 +349,14 @@ extension PropertyDescriptor {
     }
 
     /// 複合コレクション。要素の子記述子・追加・削除は対象の
-    /// 現在の要素列に対して働く。
+    /// 現在の要素列に対して働く。追加・削除は状態が実際に変わった
+    /// 場合にだけ true を返す（`PropertyAccess.collection` の契約）。
     public static func collection(
         id: String, displayName: String, group: String,
         count: @escaping () -> Int,
         elements: @escaping (Int) -> [PropertyDescriptor],
-        insert: @escaping () -> Void,
-        remove: @escaping (Int) -> Void
+        insert: @escaping () -> Bool,
+        remove: @escaping (Int) -> Bool
     ) -> PropertyDescriptor {
         PropertyDescriptor(
             id: id, displayName: displayName, group: group,

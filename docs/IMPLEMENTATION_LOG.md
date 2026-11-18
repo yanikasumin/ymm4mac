@@ -1597,3 +1597,7 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 - **R21-117-03（QA、未特定の失敗と未検証の音声試験）**: 未確定のまま独立した QA 残件として維持する。なお FXMETA 実施時に Mac で継続していたリサンプラ品質試験の単独実行は、クラス名フィルタが0件に一致して終了していた（この Mac ではクラス名フィルタが一致しない場合がある）ため、実質的には未実行だった。方式名フィルタでの再実行を統合確認時に行う。
 
 検証: 対象試験（EffectPropertyMetadataTests / PropertyMetadataTests）は Mac で再実行する。あわせて main（PR #115・#113・#114）を取り込んだ。
+
+#### FXMETA-R22 — 第22ラウンド指摘への処分（PR #117 へ追加）
+
+- **R22-117-01（P2、コレクション挿入/削除が無変更でも成功を報告する）**: `PropertyAccess.collection` の `insert` / `remove` クロージャの戻り値を `Bool` へ変更し、「状態が実際に変わったか」を返す契約にした（`PropertyDescriptor.collection` ファクトリと `insertCollectionElement` / `removeCollectionElement(at:)` も連動）。各ビルダの処分: グラデーションメッシュの Points は行追加が上限50行へ丸め込まれた場合と、最小2行での行削除・範囲外削除で false を返す。グラデーションの Stops、メッシュ変形の Points、モーショントラッキングの Rects は範囲外削除で false を返す（追加と通常の削除は true）。UI（`CollectionRowView`）は true の場合にだけ世代カウンタの増加と `onEdited` 通知を行う。試験はメッシュの最小行数での削除・最大行数での追加が false で状態不変であること、上限・下限までの通常操作が true であること、Stops とメッシュ変形 Points の範囲外削除が false であることを固定した。

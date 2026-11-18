@@ -571,6 +571,106 @@ final class EffectPropertyMetadataTests: XCTestCase {
         XCTAssertEqual(widened[1], "#FFFFFF00")
     }
 
+    /// コレクション操作の成否報告: グラデーションメッシュは最小行数
+    /// （2行）での削除と最大行数（50行）での追加で false を返し、
+    /// 状態が変わらない（R22-117-01）。上限・下限へ到達するまでの
+    /// 通常の追加・削除は true を返し、状態が変わる。
+    func testGradientMeshCollectionReportsNoChangeAtGridLimits() throws {
+        let definition = try decodeDefinition("""
+            {
+              "$type": "YukkuriMovieMaker.Project.Effects.ShadowEffect, YukkuriMovieMaker",
+              "Brush": {
+                "Type": "YukkuriMovieMaker.Plugin.Brush.GradientMeshBrushPlugin, YukkuriMovieMaker",
+                "Parameter": {
+                  "$type": "YukkuriMovieMaker.Brush.GradientMeshBrushParameter, YukkuriMovieMaker",
+                  "HorizontalCount": 2,
+                  "VerticalCount": 2,
+                  "Points": [
+                    { "Color": "#FFFF0000" },
+                    { "Color": "#FF00FF00" },
+                    { "Color": "#FF0000FF" },
+                    { "Color": "#FFFFFF00" }
+                  ]
+                }
+              }
+            }
+            """)
+        let brush = try topDescriptor(definition, "Brush")
+        let points = try childDescriptor(brush, "Points")
+        XCTAssertEqual(points.collectionCount, 4)
+
+        // 最小行数での削除は false で、状態は不変。
+        XCTAssertFalse(points.removeCollectionElement(at: 0))
+        XCTAssertEqual(points.collectionCount, 4)
+        var encoded = VideoEffectRegistry.encode(definition).value
+        var parameterJSON = try XCTUnwrap(
+            encoded.field("Brush")?.field("Parameter")
+        )
+        XCTAssertEqual(parameterJSON.field("VerticalCount")?.doubleValue, 2)
+        let colors = try XCTUnwrap(
+            parameterJSON.field("Points")?.arrayValue
+        ).map { $0.field("Color")?.stringValue }
+        XCTAssertEqual(
+            colors, ["#FFFF0000", "#FF00FF00", "#FF0000FF", "#FFFFFF00"]
+        )
+
+        // 最大行数（50行 = 100点）までの追加は true、到達後の追加は
+        // false で、状態は不変。
+        while (points.collectionCount ?? 0) < 100 {
+            XCTAssertTrue(points.insertCollectionElement())
+        }
+        XCTAssertEqual(points.collectionCount, 100)
+        XCTAssertFalse(points.insertCollectionElement())
+        XCTAssertEqual(points.collectionCount, 100)
+        encoded = VideoEffectRegistry.encode(definition).value
+        parameterJSON = try XCTUnwrap(encoded.field("Brush")?.field("Parameter"))
+        XCTAssertEqual(parameterJSON.field("VerticalCount")?.doubleValue, 50)
+        XCTAssertEqual(
+            parameterJSON.field("Points")?.arrayValue?.count, 100
+        )
+
+        // 最小行数までの削除は true、到達後の削除は false。
+        while (points.collectionCount ?? 0) > 4 {
+            XCTAssertTrue(points.removeCollectionElement(at: 0))
+        }
+        XCTAssertFalse(points.removeCollectionElement(at: 0))
+        XCTAssertEqual(points.collectionCount, 4)
+    }
+
+    /// コレクション操作の成否報告: 範囲外の位置の削除は false を返し、
+    /// 状態が変わらない（色停止点列とメッシュ変形の点列。R22-117-01）。
+    func testCollectionRemoveOutOfRangeReportsNoChange() throws {
+        let gradient = try XCTUnwrap(
+            VideoEffectRegistry.makeEmptyDefinition(
+                typeName: "YukkuriMovieMaker.Project.Effects.GradientEffect, YukkuriMovieMaker"
+            )
+        )
+        let stops = try topDescriptor(gradient, "Stops")
+        XCTAssertEqual(stops.collectionCount, 2)
+        XCTAssertFalse(stops.removeCollectionElement(at: 2))
+        XCTAssertEqual(stops.collectionCount, 2)
+
+        let mesh = try decodeDefinition("""
+            {
+              "$type": "YukkuriMovieMaker.Project.Effects.MeshDeformationEffect, YukkuriMovieMaker",
+              "Points": [
+                {
+                  "X": { "Values": [{ "Value": 0.0 }], "Span": 0.0, "AnimationType": "なし" },
+                  "Y": { "Values": [{ "Value": 0.0 }], "Span": 0.0, "AnimationType": "なし" },
+                  "IsSelected": false
+                }
+              ]
+            }
+            """)
+        let points = try topDescriptor(mesh, "Points")
+        XCTAssertEqual(points.collectionCount, 1)
+        XCTAssertFalse(points.removeCollectionElement(at: 1))
+        XCTAssertEqual(points.collectionCount, 1)
+        // 通常の削除は true を返す（回帰）。
+        XCTAssertTrue(points.removeCollectionElement(at: 0))
+        XCTAssertEqual(points.collectionCount, 0)
+    }
+
     /// 生保持のブラシ形（{Type, Parameter}）: 子は Parameter の中から
     /// 生成され、書き換えは Parameter の中へ届く。
     func testRawBrushParameterWriteThrough() throws {
