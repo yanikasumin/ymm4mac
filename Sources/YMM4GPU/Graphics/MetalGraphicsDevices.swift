@@ -54,33 +54,52 @@ public final class MetalGraphicsDevices {
     private var registry: [ObjectIdentifier: MetalImage] = [:]
     private let registryLock = NSLock()
 
-    /// デバイスと共有資源を生成する。Metal が使えない環境では nil。
-    public init?() {
-        guard let device = MTLCreateSystemDefaultDevice() else { return nil }
+    /// デバイスと共有資源を生成する。
+    public convenience init() throws {
+        try self.init(shaderSource: Self.shaderSource)
+    }
+
+    /// シェーダソースを指定して生成する。通常は `init()` を使う。
+    /// この入口は、初期化失敗の診断（Issue #50）を検証するために
+    /// 壊れたシェーダを人為的に渡せるようにするための差し替え点。
+    ///
+    /// 失敗は握りつぶさず、`MetalInitializationError` として種別と
+    /// 下位のエラー内容を保持して投げる（MAC-0021 の通知契約）。
+    public init(shaderSource: String) throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw MetalInitializationError.deviceUnavailable
+        }
         self.device = device
 
         let library: MTLLibrary
         do {
-            library = try device.makeLibrary(source: Self.shaderSource, options: nil)
+            library = try device.makeLibrary(source: shaderSource, options: nil)
         } catch {
-            return nil
+            throw MetalInitializationError.shaderLibraryFailed(
+                underlying: String(describing: error)
+            )
         }
-        guard let vertexFunction = library.makeFunction(name: "ymm4Vertex"),
-              let texturedFunction = library.makeFunction(name: "ymm4TexturedFragment"),
-              let solidFunction = library.makeFunction(name: "ymm4SolidFragment"),
-              let shapeFunction = library.makeFunction(name: "ymm4ShapeFragment"),
-              let effectFunction = library.makeFunction(name: "ymm4ColorEffectFragment"),
-              let blurFunction = library.makeFunction(name: "ymm4BlurFragment"),
-              let mosaicFunction = library.makeFunction(name: "ymm4MosaicKernel"),
-              let warpFunction = library.makeFunction(name: "ymm4WarpFragment"),
-              let compositeFunction = library.makeFunction(name: "ymm4CompositeFragment"),
-              let morphologyFunction = library.makeFunction(name: "ymm4MorphologyKernel"),
-              let gradientFunction = library.makeFunction(name: "ymm4GradientFragment"),
-              let outlineFunction = library.makeFunction(name: "ymm4OutlineFragment"),
-              let noiseBlendFunction = library.makeFunction(name: "ymm4NoiseBlendFragment"),
-              let halftoneFunction = library.makeFunction(name: "ymm4HalfToneFragment"),
-              let noiseFunction = library.makeFunction(name: "ymm4NoiseFragment")
-        else { return nil }
+        func shaderFunction(_ name: String) throws -> MTLFunction {
+            guard let function = library.makeFunction(name: name) else {
+                throw MetalInitializationError.shaderFunctionMissing(name: name)
+            }
+            return function
+        }
+        let vertexFunction = try shaderFunction("ymm4Vertex")
+        let texturedFunction = try shaderFunction("ymm4TexturedFragment")
+        let solidFunction = try shaderFunction("ymm4SolidFragment")
+        let shapeFunction = try shaderFunction("ymm4ShapeFragment")
+        let effectFunction = try shaderFunction("ymm4ColorEffectFragment")
+        let blurFunction = try shaderFunction("ymm4BlurFragment")
+        let mosaicFunction = try shaderFunction("ymm4MosaicKernel")
+        let warpFunction = try shaderFunction("ymm4WarpFragment")
+        let compositeFunction = try shaderFunction("ymm4CompositeFragment")
+        let morphologyFunction = try shaderFunction("ymm4MorphologyKernel")
+        let gradientFunction = try shaderFunction("ymm4GradientFragment")
+        let outlineFunction = try shaderFunction("ymm4OutlineFragment")
+        let noiseBlendFunction = try shaderFunction("ymm4NoiseBlendFragment")
+        let halftoneFunction = try shaderFunction("ymm4HalfToneFragment")
+        let noiseFunction = try shaderFunction("ymm4NoiseFragment")
 
         let vertexDescriptor = MTLVertexDescriptor()
         vertexDescriptor.attributes[0].format = .float4
@@ -93,7 +112,9 @@ public final class MetalGraphicsDevices {
         // パディングが入るため 24 ではなく 32）。ずらすと頂点が壊れる。
         vertexDescriptor.layouts[0].stride = MemoryLayout<QuadVertex>.stride
 
-        func makePipeline(fragment: MTLFunction) -> MTLRenderPipelineState? {
+        func makePipeline(
+            name: String, fragment: MTLFunction
+        ) throws -> MTLRenderPipelineState {
             let descriptor = MTLRenderPipelineDescriptor()
             descriptor.vertexFunction = vertexFunction
             descriptor.fragmentFunction = fragment
@@ -109,66 +130,83 @@ public final class MetalGraphicsDevices {
             attachment?.sourceAlphaBlendFactor = .one
             attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
             attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-            return try? device.makeRenderPipelineState(descriptor: descriptor)
+            do {
+                return try device.makeRenderPipelineState(descriptor: descriptor)
+            } catch {
+                throw MetalInitializationError.pipelineCreationFailed(
+                    name: name, underlying: String(describing: error)
+                )
+            }
         }
-        guard let textured = makePipeline(fragment: texturedFunction),
-              let solid = makePipeline(fragment: solidFunction),
-              let shape = makePipeline(fragment: shapeFunction)
-        else { return nil }
-        texturedPipeline = textured
-        solidPipeline = solid
-        shapePipeline = shape
+        texturedPipeline = try makePipeline(name: "textured", fragment: texturedFunction)
+        solidPipeline = try makePipeline(name: "solid", fragment: solidFunction)
+        shapePipeline = try makePipeline(name: "shape", fragment: shapeFunction)
 
         // エフェクト系のパスは中間画像への書き込みであり、合成（ブレンド）
         // は行わない。入力を加工した結果で置き換える。
-        func makeEffectPipeline(fragment: MTLFunction) -> MTLRenderPipelineState? {
+        func makeEffectPipeline(
+            name: String, fragment: MTLFunction
+        ) throws -> MTLRenderPipelineState {
             let descriptor = MTLRenderPipelineDescriptor()
             descriptor.vertexFunction = vertexFunction
             descriptor.fragmentFunction = fragment
             descriptor.vertexDescriptor = vertexDescriptor
             descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-            return try? device.makeRenderPipelineState(descriptor: descriptor)
+            do {
+                return try device.makeRenderPipelineState(descriptor: descriptor)
+            } catch {
+                throw MetalInitializationError.pipelineCreationFailed(
+                    name: name, underlying: String(describing: error)
+                )
+            }
         }
-        guard let effect = makeEffectPipeline(fragment: effectFunction),
-              let blur = makeEffectPipeline(fragment: blurFunction),
-              let mosaic = try? device.makeComputePipelineState(function: mosaicFunction),
-              let warp = makeEffectPipeline(fragment: warpFunction),
-              let composite = makeEffectPipeline(fragment: compositeFunction),
-              let morphology = try? device.makeComputePipelineState(function: morphologyFunction),
-              let gradient = makeEffectPipeline(fragment: gradientFunction),
-              let outline = makeEffectPipeline(fragment: outlineFunction),
-              let noiseBlend = makeEffectPipeline(fragment: noiseBlendFunction),
-              let halftone = makeEffectPipeline(fragment: halftoneFunction),
-              let noise = makeEffectPipeline(fragment: noiseFunction)
-        else { return nil }
-        effectPipeline = effect
-        blurPipeline = blur
-        mosaicPipeline = mosaic
-        warpPipeline = warp
-        compositePipeline = composite
-        morphologyPipeline = morphology
-        gradientPipeline = gradient
-        outlinePipeline = outline
-        noiseBlendPipeline = noiseBlend
-        halftonePipeline = halftone
-        noisePipeline = noise
+        func makeComputePipeline(
+            name: String, function: MTLFunction
+        ) throws -> MTLComputePipelineState {
+            do {
+                return try device.makeComputePipelineState(function: function)
+            } catch {
+                throw MetalInitializationError.pipelineCreationFailed(
+                    name: name, underlying: String(describing: error)
+                )
+            }
+        }
+        effectPipeline = try makeEffectPipeline(name: "effect", fragment: effectFunction)
+        blurPipeline = try makeEffectPipeline(name: "blur", fragment: blurFunction)
+        mosaicPipeline = try makeComputePipeline(name: "mosaic", function: mosaicFunction)
+        warpPipeline = try makeEffectPipeline(name: "warp", fragment: warpFunction)
+        compositePipeline = try makeEffectPipeline(
+            name: "composite", fragment: compositeFunction
+        )
+        morphologyPipeline = try makeComputePipeline(
+            name: "morphology", function: morphologyFunction
+        )
+        gradientPipeline = try makeEffectPipeline(name: "gradient", fragment: gradientFunction)
+        outlinePipeline = try makeEffectPipeline(name: "outline", fragment: outlineFunction)
+        noiseBlendPipeline = try makeEffectPipeline(name: "noiseBlend", fragment: noiseBlendFunction)
+        halftonePipeline = try makeEffectPipeline(name: "halftone", fragment: halftoneFunction)
+        noisePipeline = try makeEffectPipeline(name: "noise", fragment: noiseFunction)
 
-        func makeSampler(filter: MTLSamplerMinMagFilter) -> MTLSamplerState? {
+        func makeSampler(
+            name: String, filter: MTLSamplerMinMagFilter
+        ) throws -> MTLSamplerState {
             let descriptor = MTLSamplerDescriptor()
             descriptor.minFilter = filter
             descriptor.magFilter = filter
             descriptor.mipFilter = .notMipmapped
             descriptor.sAddressMode = .clampToEdge
             descriptor.tAddressMode = .clampToEdge
-            return device.makeSamplerState(descriptor: descriptor)
+            guard let sampler = device.makeSamplerState(descriptor: descriptor) else {
+                throw MetalInitializationError.samplerCreationFailed(name: name)
+            }
+            return sampler
         }
-        guard let nearest = makeSampler(filter: .nearest),
-              let linear = makeSampler(filter: .linear)
-        else { return nil }
-        nearestSampler = nearest
-        linearSampler = linear
+        nearestSampler = try makeSampler(name: "nearest", filter: .nearest)
+        linearSampler = try makeSampler(name: "linear", filter: .linear)
 
-        func makeBorderSampler(address: MTLSamplerAddressMode) -> MTLSamplerState? {
+        func makeBorderSampler(
+            name: String, address: MTLSamplerAddressMode
+        ) throws -> MTLSamplerState {
             let descriptor = MTLSamplerDescriptor()
             descriptor.minFilter = .linear
             descriptor.magFilter = .linear
@@ -178,20 +216,22 @@ public final class MetalGraphicsDevices {
             if address == .clampToBorderColor {
                 descriptor.borderColor = .transparentBlack
             }
-            return device.makeSamplerState(descriptor: descriptor)
+            guard let sampler = device.makeSamplerState(descriptor: descriptor) else {
+                throw MetalInitializationError.samplerCreationFailed(name: name)
+            }
+            return sampler
         }
-        guard let border = makeBorderSampler(address: .clampToBorderColor),
-              let mirror = makeBorderSampler(address: .mirrorRepeat)
-        else { return nil }
-        borderSampler = border
-        mirrorSampler = mirror
+        borderSampler = try makeBorderSampler(name: "border", address: .clampToBorderColor)
+        mirrorSampler = try makeBorderSampler(name: "mirror", address: .mirrorRepeat)
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: 1, height: 1, mipmapped: false
         )
         descriptor.usage = [.shaderRead]
         descriptor.storageMode = .shared
-        guard let transparent = device.makeTexture(descriptor: descriptor) else { return nil }
+        guard let transparent = device.makeTexture(descriptor: descriptor) else {
+            throw MetalInitializationError.textureCreationFailed(width: 1, height: 1)
+        }
         var zero: UInt32 = 0
         transparent.replace(
             region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0,

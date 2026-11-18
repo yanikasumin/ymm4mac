@@ -36,6 +36,19 @@ public struct PlaybackRateMap: Sendable {
             10_000_000.0 / Double(fps)
         }
 
+        /// 時刻 tick におけるレート（%）。本家 `Table.GetRate`。
+        ///
+        /// フレーム内はレートが線形に変化するものとして補間する。
+        /// 可変速度の SOLA ピッチ補正（ブロック中央時刻の速度参照）で使う。
+        public func getRate(timeTicks: Int64) -> Double {
+            let frameDuration = frameDurationTicks
+            let frame = min(max(Int((Double(timeTicks) / frameDuration).rounded(.down)), 0), length)
+            let inFrame = Double(timeTicks) - Double(frame) * frameDuration
+            let rateHere = rates[frame]
+            let rateNext = rates[min(frame + 1, length)]
+            return rateHere + (rateNext - rateHere) * inFrame / frameDuration
+        }
+
         /// 時刻 tick における消費 tick。本家 `Table.GetConsumedTicks`。
         ///
         /// フレーム内はレートが線形に変化するものとして台形で積分する。

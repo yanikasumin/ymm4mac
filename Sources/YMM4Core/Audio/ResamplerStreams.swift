@@ -104,8 +104,9 @@ public final class ResamplerStream: AudioEffectProcessorBase {
 /// - シークは位置 × rate を偶数へ切り捨てて入力へ転送。rate = 1 のときは
 ///   そのまま転送し、読み取りも素通し。rate ≦ 0 ではシークも読み取りも
 ///   何もしない（読み取りは 0 を返す）。
-/// - SOLA 方式（本家 `PlaybackRateSolaTimeStretchEffect`）は差し替え点
-///   とし、ここではリサンプリング方式（ピッチも変わる）で代替する。
+/// - SOLA 方式（本家 `PlaybackRateSolaTimeStretchEffect`）は
+///   `SolaTimeStretchStream` が担い、チェーン側が方式で切り替える。
+///   ここはリサンプリング方式（ピッチも変わる）専用。
 public final class PlaybackRateStream: AudioEffectProcessorBase {
     /// 速度倍率（1.0 = 等速）。符号なし（負の速度は Reverse が担う）。
     public let rate: Double
@@ -172,8 +173,9 @@ public final class PlaybackRateStream: AudioEffectProcessorBase {
 /// 本家との差: 尽きる時刻の算出は本家では `PlaybackRateMap` 内の
 /// 専用探索だが、既存の Swift 実装には無いため、ここでは累積 tick の
 /// 走査＋二分探索で近似する（台帳に記録）。SOLA のピッチ補正
-/// （本家 `VariableSolaPitchCorrectionEffect`）は差し替え点とし、
-/// 適用しない。
+/// （本家 `VariableSolaPitchCorrectionEffect`）は後段の
+/// `VariableSolaPitchCorrectionStream` が担い、チェーン側が方式で
+/// 切り替える。
 public final class VariablePlaybackRateStream: AudioEffectProcessorBase {
     /// 速度カーブの積分マップ（既存実装を利用）。
     public let rateMap: PlaybackRateMap
