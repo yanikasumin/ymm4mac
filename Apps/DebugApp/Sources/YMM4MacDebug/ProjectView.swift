@@ -33,10 +33,12 @@ struct ProjectView: View {
     @State private var previewDrag: PreviewDragState?
     @StateObject private var exportState = ExportUIState()
 
-    // MARK: 形の状態（トランスポート・タイムライン帯）
-    // ここにあるのは UI 要素としての状態であり、再生エンジン等の
-    // 実接続は接続フェーズで行う（台帳: UI-FRONTEND-DIFF.md）。
-    /// 再生ボタンの表示状態（再生中かどうか）。エンジンは未接続。
+    // MARK: トランスポートの状態（実時間再生エンジンと同期）
+    /// 実時間再生エンジン（Issue #52 で実接続）。セッションごとに
+    /// resetPreview で作り直す。
+    @State private var playbackEngine: RealtimePlaybackEngine?
+    /// 再生ボタンの表示状態（再生中かどうか）。
+    /// エンジンの状態変化通知で駆動する。
     @State private var isPlayingForm = false
     /// 再生速度（倍率）。本家の速度コンボの選択値。
     @State private var playbackRate: Double = 1.0
@@ -46,9 +48,14 @@ struct ProjectView: View {
     @State private var controlPointVisibility: ControlPointVisibility = .selectedOnly
     /// プレビュー表示倍率（フィット倍率への乗数。1.0 = フィット）。
     @State private var previewDisplayZoom: Double = 1.0
-    /// 音量（0–100%）とミュート。音声出力は未接続。
+    /// 音量（0–100%）とミュート。エンジンへ即時反映される。
     @State private var volume: Double = 100
     @State private var isMuted = false
+    /// レベルメーターの表示値（エンジンのポーリング通知で取り込む）。
+    /// 無信号は本家どおり下限 −60 dB。
+    @State private var peakMeterLeft: LevelMeterValue = .silent
+    @State private var peakMeterRight: LevelMeterValue = .silent
+    @State private var loudnessMeterValue: LevelMeterValue = .silent
     /// タイムラインのズーム（TimelineStripView と共有）。
     @State private var timelineZoomPercent: Double = 100
     /// レイヤー行の高さ（本家 LayerHeight、既定32・下限14）。
@@ -567,19 +574,27 @@ struct ProjectView: View {
     /// プレビュー倍率コンボ、フィット、先頭、前の編集点、前フレーム、
     /// 中央に位置スライダ（残り全幅）、右に 次フレーム、次の編集点、
     /// 末尾、音量スライダ、ミュート。
-    /// 再生エンジンと音声出力は未接続（形のみ。台帳参照）。シーク系と
-    /// 表示倍率は実動する。
+    /// 再生・停止・速度・音量は実時間再生エンジン（Issue #52）に
+    /// 接続済み。シーク系と表示倍率も実動する。
     private func transportBar(timeline: Timeline) -> some View {
         HStack(spacing: 2) {
             transportButton(
                 isPlayingForm ? "pause.fill" : "play.fill",
                 help: isPlayingForm ? "一時停止" : "再生"
             ) {
-                isPlayingForm.toggle()
+                if let playbackEngine {
+                    playbackEngine.togglePlay()
+                } else {
+                    isPlayingForm.toggle()
+                }
             }
             transportButton("stop.fill", help: "停止") {
-                isPlayingForm = false
-                seek(to: 0, timeline: timeline)
+                if let playbackEngine {
+                    playbackEngine.stop()
+                } else {
+                    isPlayingForm = false
+                    seek(to: 0, timeline: timeline)
+                }
             }
 
             // 再生速度（x1.0 以外は赤字＋太字 — 本家の規則）。
@@ -594,10 +609,16 @@ struct ProjectView: View {
             .foregroundStyle(playbackRate == 1.0 ? Color.primary : Color.red)
             .fontWeight(playbackRate == 1.0 ? .regular : .bold)
             .help("再生速度")
+            .onChange(of: playbackRate) { _, newValue in
+                playbackEngine?.playbackRate = newValue
+            }
 
             transportToggle(
                 "repeat", help: "リピート再生", isOn: $isRepeatOn
             )
+            .onChange(of: isRepeatOn) { _, newValue in
+                playbackEngine?.isRepeatEnabled = newValue
+            }
 
             // コントロールポイント表示（本家の3択）。
             Menu {
@@ -647,9 +668,19 @@ struct ProjectView: View {
                 seek(to: Int(previewFrame) - 1, timeline: timeline)
             }
 
-            Slider(value: $previewFrame, in: 0...Double(max(timeline.length, 1)), step: 1)
-                .onChange(of: previewFrame) { _, _ in renderPreview() }
-                .padding(.horizontal, 6)
+            Slider(
+                value: $previewFrame, in: 0...Double(max(timeline.length, 1)),
+                step: 1
+            ) { isEditing in
+                // ドラッグ中はプレビューだけを追従させ、離した時点で
+                // エンジンへシークする（再生中シークは本家どおり
+                // 一時停止してから位置を移す）。
+                if !isEditing {
+                    seek(to: Int(previewFrame), timeline: timeline)
+                }
+            }
+            .onChange(of: previewFrame) { _, _ in renderPreview() }
+            .padding(.horizontal, 6)
 
             transportButton("chevron.forward", help: "次フレーム") {
                 seek(to: Int(previewFrame) + 1, timeline: timeline)
@@ -665,6 +696,9 @@ struct ProjectView: View {
             Slider(value: $volume, in: 0...100)
                 .frame(width: 120)
                 .help("音量")
+                .onChange(of: volume) { _, newValue in
+                    playbackEngine?.volume = newValue
+                }
             Text(isMuted ? "0.0%" : "\(volume, specifier: "%.1f")%")
                 .font(.callout)
                 .monospacedDigit()
@@ -673,6 +707,9 @@ struct ProjectView: View {
                 isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                 help: "ミュート", isOn: $isMuted
             )
+            .onChange(of: isMuted) { _, newValue in
+                playbackEngine?.isMuted = newValue
+            }
         }
         .padding(.horizontal, 6)
     }
@@ -716,8 +753,13 @@ struct ProjectView: View {
 
     /// シーク先を範囲内に丸めてプレビュー位置へ反映する
     /// （再合成はスライダの onChange 経由で行われる）。
+    /// エンジンがある場合はエンジン側も同じ位置へ移す。再生中の
+    /// シークは本家どおり一時停止してから位置を移し、再開しない
+    /// （SeekBehavior の既定 = Pause）。
     private func seek(to frame: Int, timeline: Timeline) {
-        previewFrame = Double(min(max(frame, 0), timeline.length))
+        let clamped = min(max(frame, 0), timeline.length)
+        previewFrame = Double(clamped)
+        playbackEngine?.seek(toFrame: clamped)
     }
 
     /// 編集点 = 全アイテムの開始/終了フレーム（＋両端）。
@@ -908,28 +950,40 @@ struct ProjectView: View {
     /// 表示の切り替えは本家どおりコンテキストメニューから行う
     /// （TimelineView.xaml の TogglePeakMeterVisibility /
     /// ToggleLoudnessMeterVisibility）。
-    /// 音声レベルの供給は再生接続フェーズで行うため、現段階の値は
-    /// 無信号（下限 −60 dB）で固定（台帳参照）。
+    /// 値は再生エンジンのレベルメーターから供給される（Issue #52）。
+    /// ツールチップの書式は本家 SoundLevelMeter の LevelMeterText /
+    /// LoudnessText そのまま。
     private var levelMeters: some View {
         HStack(alignment: .top, spacing: 0) {
             if isLoudnessMeterEnabled {
                 meterColumn(
                     unitLabel: "LKFS",
                     zones: Self.loudnessMeterZones,
-                    barCount: 1,
+                    values: [loudnessMeterValue],
                     barWidth: 20,
-                    helpText: "ラウドネスメーター（-∞ LUFS）")
+                    helpText: String(
+                        format: "%.1fLUFS", loudnessMeterValue.current.peak
+                    ))
             }
             if isPeakMeterEnabled {
                 meterColumn(
                     unitLabel: "dB",
                     zones: Self.peakMeterZones,
-                    barCount: 2,
+                    values: [peakMeterLeft, peakMeterRight],
                     barWidth: 10,
-                    helpText: "ピークメーター（L: -∞ dB / R: -∞ dB）")
+                    helpText: String(
+                        format: "L: %.1fdB\nR: %.1fdB",
+                        peakMeterLeft.current.peak, peakMeterRight.current.peak
+                    ))
             }
         }
         .onHover { isMeterHovering = $0 }
+        .onChange(of: isPeakMeterEnabled) { _, newValue in
+            playbackEngine?.levelMeter.isSoundLevelMeterEnabled = newValue
+        }
+        .onChange(of: isLoudnessMeterEnabled) { _, newValue in
+            playbackEngine?.levelMeter.isLoudnessMeterEnabled = newValue
+        }
         .contextMenu {
             Toggle("ピークメーターを表示", isOn: $isPeakMeterEnabled)
             Toggle("ラウドネスメーターを表示", isOn: $isLoudnessMeterEnabled)
@@ -938,17 +992,23 @@ struct ProjectView: View {
 
     /// メーター1カラム分。バーの上に目盛りの刻みを重ね、右上に単位表記、
     /// ホバー時に目盛り数値（−5…−60）を重ねる（本家 TimelineView の
-    /// 各メーターグリッドの構造）。
+    /// 各メーターグリッドの構造）。バーの本数は values の件数で決まる。
     private func meterColumn(
-        unitLabel: String, zones: MeterZones, barCount: Int,
+        unitLabel: String, zones: MeterZones, values: [LevelMeterValue],
         barWidth: CGFloat, helpText: String
     ) -> some View {
-        let columnWidth = barWidth * CGFloat(barCount)
+        let columnWidth = barWidth * CGFloat(values.count)
         return ZStack(alignment: .top) {
             HStack(spacing: 0) {
-                ForEach(0..<barCount, id: \.self) { _ in
-                    levelMeterBar(zones: zones)
-                        .frame(width: barWidth)
+                ForEach(values.indices, id: \.self) { index in
+                    let value = values[index]
+                    levelMeterBar(
+                        zones: zones,
+                        peak: value.current.peak,
+                        average: value.current.rms,
+                        peakHold: value.hold.peak
+                    )
+                    .frame(width: barWidth)
                 }
             }
             meterTicks
@@ -1001,7 +1061,7 @@ struct ProjectView: View {
     /// 不透明度0.6で下から Peak 位置まで同じ色帯を重ねる。
     /// Average（RMS）は黒線、PeakHold はその値が属する帯の色の線
     /// （本家 VerticalLevelMeter.xaml）。
-    /// 現段階は無信号のため peak / average / peakHold は下限で固定。
+    /// 値はエンジンのレベルメーターの現在値（無信号時は下限 −60 dB）。
     private func levelMeterBar(
         zones: MeterZones, peak: Double = -60, average: Double = -60,
         peakHold: Double = -60
@@ -1215,12 +1275,68 @@ struct ProjectView: View {
             return
         }
         previewBox = box
+        resetPlaybackEngine(timeline: timeline)
         renderPreview()
     }
 
-    private func renderPreview() {
+    /// 実時間再生エンジンをセッションに合わせて作り直す。
+    /// 音声工場の組み立てはアプリ内自動テストと同じ生成パターン
+    /// （実ファイル工場＋ボイス供給リゾルバ＋シーン解決）。
+    private func resetPlaybackEngine(timeline: Timeline) {
+        playbackEngine?.dispose()
+        playbackEngine = nil
+        peakMeterLeft = .silent
+        peakMeterRight = .silent
+        loudnessMeterValue = .silent
+        let pcmProviderFactory = AVFoundationPCMProviderFactory(
+            baseDirectory: baseDirectory
+        )
+        let timelines = project.timelines
+        let factory = AudioSourceFactory(
+            providerFactory: pcmProviderFactory,
+            sceneTimelineResolver: { id in timelines.first { $0.id == id } },
+            voiceProviderResolver: VoicePCMProviderResolver(
+                providerFactory: pcmProviderFactory
+            ).makeResolver()
+        )
+        let levelMeter = SoundLevelMeter()
+        levelMeter.isSoundLevelMeterEnabled = isPeakMeterEnabled
+        levelMeter.isLoudnessMeterEnabled = isLoudnessMeterEnabled
+        let source = PlaybackAudioSource(
+            mixer: TimelineAudioMixer(timeline: timeline, factory: factory),
+            levelMeter: levelMeter
+        )
+        let engine = RealtimePlaybackEngine(timeline: timeline, source: source)
+        engine.volume = volume
+        engine.isMuted = isMuted
+        engine.playbackRate = playbackRate
+        engine.isRepeatEnabled = isRepeatOn
+        engine.onPlayingStateChanged = { isPlaying in
+            isPlayingForm = isPlaying
+            if !isPlaying { syncMeterValues() }
+        }
+        engine.onPositionChanged = { [weak engine] _ in
+            guard let engine else { return }
+            previewFrame = Double(engine.currentFrame)
+            renderPreview(usage: engine.isPlaying ? .playing : .paused)
+            syncMeterValues()
+        }
+        playbackEngine = engine
+    }
+
+    /// エンジンのレベルメーターの現在値を表示用に取り込む。
+    private func syncMeterValues() {
+        guard let meter = playbackEngine?.levelMeter else { return }
+        peakMeterLeft = meter.left
+        peakMeterRight = meter.right
+        loudnessMeterValue = meter.loudness
+    }
+
+    private func renderPreview(usage: TimelineSourceUsage = .paused) {
         guard let previewBox, let timeline else { return }
-        if let image = previewBox.render(frame: Int(previewFrame), timeline: timeline) {
+        if let image = previewBox.render(
+            frame: Int(previewFrame), timeline: timeline, usage: usage
+        ) {
             previewImage = image
             previewError = nil
         } else {

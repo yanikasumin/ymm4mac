@@ -50,13 +50,17 @@ final class PreviewBox {
     }
 
     /// 指定フレームで合成し、読み戻した画像を返す。失敗時は nil。
-    func render(frame: Int, timeline: Timeline) -> CGImage? {
+    /// usage は供給元の使われ方（再生中か停止中か）で、音声付き
+    /// 映像アイテムのフレーム供給方式を切り替える。
+    func render(
+        frame: Int, timeline: Timeline, usage: TimelineSourceUsage = .paused
+    ) -> CGImage? {
         guard !isDisposed else { return nil }
         let videoInfo = timeline.videoInfo
         context.targetSize = PixelSize(width: videoInfo.width, height: videoInfo.height)
         let seconds = FrameTime.time(fromFrame: frame, fps: videoInfo.fps)
         do {
-            try composer.update(time: TimeSpanValue(seconds: seconds), usage: .paused)
+            try composer.update(time: TimeSpanValue(seconds: seconds), usage: usage)
         } catch {
             return nil
         }

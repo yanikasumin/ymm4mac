@@ -1,6 +1,6 @@
 # ymm4mac の実装済みアーキテクチャ
 
-更新: 2026-11-18。反映境界: PR #78（構造整理 W10）まで。状態: モデル層・.ymmp 互換層・描画層（Core 契約＋Metal 実行層）・音声パイプライン・書き出し・エフェクト定義層と Metal 処理器・製品 UI の土台まで実装済み。現行状態の概要は [STATUS.md](STATUS.md)、変更の履歴は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) を参照（この文書は構造の As-built に専念し、進捗や件数は置かない）。
+更新: 2026-11-18。反映境界: PR #78（構造整理 W10）まで＋MAC-0041・0042（実時間再生、PR 化前）。状態: モデル層・.ymmp 互換層・描画層（Core 契約＋Metal 実行層）・音声パイプライン・実時間再生・書き出し・エフェクト定義層と Metal 処理器・製品 UI の土台まで実装済み。現行状態の概要は [STATUS.md](STATUS.md)、変更の履歴は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) を参照（この文書は構造の As-built に専念し、進捗や件数は置かない）。
 
 この文書は **実装されている構造のみ記載するAs-built**。計画・仮説は[解析側のMac設計案](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/02-MAC-DESIGN-PROPOSAL.md)に記載。
 
@@ -120,6 +120,9 @@
                                グループエフェクト → Resampler）
           TimelineAudioMixer.swift タイムライン全体のミックス（レイヤー音量適用、
                                float 加算、リミッターなし）
+          SoundLevelMeter.swift サウンドレベルメーター（本家 SoundLevelMeter の
+                               再現。1/60 秒区間のピーク/RMS 蓄積、減衰・ホールド、
+                               BS.1770-3 の Momentary/ShortTerm。MAC-0041）
         Effects/               映像エフェクト定義層＋DrawDescription 変換型処理器
                                （Foundation のみ。MAC-0018。合成チェーンへの接続は
                                MAC-0019、VoiceItem の字幕エフェクト解決の接続は MAC-0020、
@@ -270,6 +273,14 @@
                                供給元を MetalSourceProvider へ渡す。MAC-0028）
           TimelineExporter.swift TimelineExporter（映像・音声供給と
                                ExportSession の組み立て。MAC-0026）
+        Playback/              実時間再生（音声マスタークロック。MAC-0042）
+          PlaybackAudioSource.swift 再生用の音声供給（本家の供給プロバイダの
+                               再現。ミキサーを 2 秒リングへ 1 秒窓で先読みし、
+                               各窓を SoundLevelMeter へ通す）
+          RealtimePlaybackEngine.swift 再生統括（AVAudioEngine 出力、33ms
+                               ポーリングでプレイヤー消費位置をマスタークロック
+                               としてタイムラインの現在フレームへ同期。速度変更は
+                               現在位置から作り直し）
       Apps/DebugApp/           検証用デバッグアプリ（製品 UI の土台を含む）
         Package.swift          個別パッケージ定義（ルートへパス依存）
         Info.plist             バンドル情報（MAC-0039）
