@@ -20,6 +20,9 @@ import YMM4Core
 ///   開始時刻を目標位置に置く。返ってくるサンプルバッファは時刻
 ///   （PTS）を持つため、バッファの先頭が目標より前にあればその分を
 ///   切り捨てて正確な位置へ着地する（本家のプリロールと同じ発想）。
+///   目標位置が素材の終端以降ならリーダーを作らず終端として扱う
+///   （終端はトラックの時間範囲から既知であり、先頭から読み直す
+///   理由がない）。
 /// - 素材の開始時刻（トラックの `timeRange.start`）を原点として
 ///   フレーム番号を数える。本家 `MFAudioFileSource` も
 ///   `streamStartTime` を保持して同じ補正をしている。
@@ -151,6 +154,22 @@ public final class AVFoundationStreamingPCMProvider: PCMProvider {
     /// 現在位置から読むためのリーダーを用意する。
     private func ensureReader() -> AVAssetReaderTrackOutput? {
         if let output { return output }
+        // 終端はトラックの時間範囲から既知である（`duration` と同じ
+        // 出所）。要求位置が終端以降なら、リーダーを作らずに終端として
+        // 扱う。時間範囲を設定しないリーダーは素材全体を先頭から
+        // デコードし、読み取りループが提示時刻で全量を捨てることに
+        // なるため、長い素材では終端外シーク 1 回で全デコードの
+        // 負荷がかかる（R6-05）。
+        let startFrame = max(0, nextSample) / AudioStream.channelCount
+        let startTime = CMTimeAdd(
+            timeRange.start,
+            CMTime(value: Int64(startFrame), timescale: CMTimeScale(hz))
+        )
+        let endTime = CMTimeAdd(timeRange.start, timeRange.duration)
+        guard startTime < endTime else {
+            reachedEnd = true
+            return nil
+        }
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVLinearPCMBitDepthKey: 32,
@@ -164,15 +183,7 @@ public final class AVFoundationStreamingPCMProvider: PCMProvider {
             reachedEnd = true
             return nil
         }
-        let startFrame = max(0, nextSample) / AudioStream.channelCount
-        let startTime = CMTimeAdd(
-            timeRange.start,
-            CMTime(value: Int64(startFrame), timescale: CMTimeScale(hz))
-        )
-        let endTime = CMTimeAdd(timeRange.start, timeRange.duration)
-        if startTime < endTime {
-            newReader.timeRange = CMTimeRange(start: startTime, end: endTime)
-        }
+        newReader.timeRange = CMTimeRange(start: startTime, end: endTime)
         newReader.add(newOutput)
         guard newReader.startReading() else {
             reachedEnd = true
