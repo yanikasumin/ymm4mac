@@ -1646,3 +1646,17 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 - **R22-116-02（P2、包絡キャッシュ署名の欠落3件）**: 署名が欠いていた (1) 再生速度のベジェ（点列の全成分と2次フラグを文字列化）、(2) 音声処理モード（`playbackRateAudioProcessingMode` の honkeName。SOLA かリサンプリングかでチェーン出力が変わる）、(3) 音声キャッシュの内容、を追加した。(3) はフレームごとの全データハッシュを避け、VoiceItem に世代カウンタ `voiceCacheGeneration`（`voiceCache` の didSet で増加する単調カウンタ、保存対象外）を新設して署名へ含める方式とした。従来のバイト数比較は世代へ置き換えた。あわせて署名関数を `MetalTachieSource.envelopeSignature(of:)`（static）へ変え、試験から直接検証できるようにした。
 
 検証: Mac で対象試験のみ実行（方式名フィルタ）。LipSyncTests の既存11件＋新規2件（異常フレーム数の nil、世代カウンタ）、EnvelopeSignatureTests 新規4件（署名の安定性、ベジェのみ・処理モードのみ・同サイズ差し替えでの署名変化）。結果は PR 本文に記録する。
+
+#### FE-UNDO-CORE — フロントエンド基盤（Undo/Redo）の Core 側新設（IMPLEMENTED、Mac 検証済み）
+
+フロントエンド監査 Round 2 の設計判断（FE-R2-DESIGN.md「Undo/Redo 基盤」）に基づき、履歴の土台だけを `Sources/YMM4Core/Editing/` へ新設した。アプリ層への接続と既存編集操作の移行は次単位で行う（本節の時点では参照元なし）。スナップショット方式は設計判断で不採用が確定しているため採っていない。
+
+- **新設ファイル・型**: `EditCommand.swift`（`EditTargetKey`、`EditCommand` プロトコル、`ValueChangeCommand<Value: Equatable>`、`ActionEditCommand`）、`EditCommandCollector.swift`（`EditCommandCollector`、モジュール内）、`EditTransaction.swift`（`EditTransaction`）、`UndoHistory.swift`（`UndoHistory`）、`EditCoordinator.swift`（`EditCoordinator`）。
+- **コマンドの表現（設計判断と根拠）**: 本家 `UndoRedoPropertyChangedCommand` は「対象インスタンス＋プロパティ名＋旧値/新値」を保持し、Undo/Redo 時にリフレクションで値を戻す。Mac 版 Core にはリフレクション相当が無く、既存の `PropertyAccess` も get/set クロージャ方式のため、対象の同一性は `EditTargetKey`（`ObjectIdentifier`＋プロパティ識別子）で表し、値の適用はコマンドの `apply` クロージャが担う形にした。対象が参照型（`BaseItem` はクラス）であることとも整合する。クロージャは対象を保持する（本家も対象インスタンスを保持する）。値で表せない変更（追加・削除等）は本家 `UndoRedoActionCommand` に対応する `ActionEditCommand`（Undo/Redo クロージャ対）で表す。
+- **本家意味論の再現範囲**（逆コンパイル結果は仕様抽出の参照に留め、写経はしていない）: (1) コマンド収集時の統合 — 空コマンド（旧値=新値）の破棄、同一対象＋値の連鎖がつながる場合だけ統合（`CanConnect`/`Connect` 相当）、統合結果は収集の末尾へ移動、統合結果が空になれば除去（相殺）。(2) 実行順 — Undo は値変更コマンドを逆順→手続き型コマンドを逆順、Redo はその正順。(3) 履歴 — 確定済みトランザクションを1エントリとして蓄積、容量の既定100（本家 `UndoRedoLimit` 既定値）、超過時は最古を破棄、新規確定で Redo を破棄、実質的変更が無い確定はエントリを作らず Redo も破棄しない（本家の空の `Record()` 相当）、Undo/Redo 適用中の確定は記録しない（`isUndoRedoing` 相当の記録抑制）。
+- **変更の捕捉は明示トランザクション方式**（本家の `UndoRedoable` 自動監視は模倣しない）: 変更の適用は呼び出し側が行い、`EditTransaction` へは適用済みの変更をコマンドとして登録する。確定で履歴1エントリ、キャンセルは登録済みコマンドの Undo で開始状態へ巻き戻す。ドラッグ型の逐次変更は収集時の統合により「開始値→最終値」の1エントリにまとまる。同時に有効なトランザクションは1つだけ（本家のコレクタが全体で1つであることに対応）とし、開始時に前のトランザクションが残っていればキャンセル（巻き戻し）して置き換える — 放棄されたドラッグ等で半端な変更を残さないための仕様。
+- **EditCoordinator の範囲**: トランザクションの開始/確定/キャンセル、履歴への登録、Undo/Redo の実行、履歴変更通知の転送だけを統括する薄い層。編集操作の実体は既存の Core 編集操作の責務のまま。対象の実在検証（例: アイテムがタイムラインに残っているか）はアプリ接続の単位で意味を持つため、本単位では入れていない。
+- **変更通知**: Core には一元的な変更通知の仕組みが無い（モデルの伝播は `Timeline.items` や `BaseItem.keyFrames` 等の `didSet` フックが担う）ため、履歴側の通知は `UserDictionaryStore.onSaveResult` の前例と同じクロージャ方式（`UndoHistory.onHistoryChanged`）とし、既存の仕組みと競合させない。
+- **本家との意図的な差異**: (1) 本家の Undo/Redo は非同期コマンドを含むため非同期だが、Mac 版のコマンドは全て同期のため同期 API とした。(2) 本家は履歴が空の Undo/Redo を想定しないが、こちらは `false` を返して安全に倒す。(3) スレッド保護は行わない（モデル全体が UI スレッド前提の設計であることに合わせる。本家コレクタのロックは自動監視が複数経路から発火し得るためのもの）。
+
+検証: Mac で新規テストを方式名フィルタで実行し全合格 — `EditCoordinatorTests` 10件（R2-U01 の往復、R2-U02 の逐次変更の1エントリ化、連鎖しない変更の非統合、統合コマンドの末尾移動と Undo/Redo 適用順、手続き型コマンドの実行順、相殺・同値変更の破棄、キャンセルの巻き戻し、開始による前トランザクションの置き換え、二重確定の無視）、`UndoHistoryTests` 8件（R2-U03 の容量3での最古破棄と既定容量100、R2-U04 の新規確定による Redo 破棄・適用中の記録抑制、無変更確定での Redo 保持、空履歴での false、全消去、履歴変更通知）。関連する既存テストも方式名フィルタで実行し全合格（PropertyMetadataTests 系34件、TimelineEditingTests 20件、いずれも失敗0）。全スイートは回していない。ARCHITECTURE.md は既存の処理経路・所有権に変更が無いため未更新（接続の単位で更新する）。
