@@ -1203,7 +1203,7 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **検証。** 統合中間状態（#85 統合直後）で Mac フルスイート 481 件・0 失敗。統合後の最終状態で 515 件すべてが開始し、失敗・エラーの記録 0（Mac、ログは /tmp/final-merge-test.log、EXIT:0）。brush46・transform47・media4950 の各ハーネスは統合後に全 PASS。
 
-**統合で見つかった追随漏れ。** #50 の初期化子 throws 化に対し、既存ハーネス mac0023・mac0025・mac0027・mac0028・mac0031・mac0033・mac0034・mac0035 が `MetalGraphicsDevices()!` のままで main 上でコンパイル不能だった。本記録の PR で `try!` へ追随させた（mosaic48 ハーネスの同箇所は MOSAICRECT の PR で修正済み）。brush46・transform47 のハーネスは統合時に追随済み。
+**統合で見つかった追随漏れ。** #50 の初期化子 throws 化に対し、既存ハーネス mac0023・mac0025・mac0027・mac0028・mac0031・mac0033・mac0034・mac0035 が `MetalGraphicsDevices()!` のままで main 上でコンパイル不能だった。本記録の PR で `try!` へ追随させ、8件すべてのビルド成功を Mac で確認した。あわせて mac0034 には MetalExportVideoProvider の初期化子 throws 化への未追随（旧来の失敗可能初期化子を前提にした条件バインディング）もあり、同 PR で do-catch 形式へ是正した（mosaic48 ハーネスの初期化子追随は MOSAICRECT の PR で修正済み）。brush46・transform47 のハーネスは統合時に追随済み。
 
 **未解決。** 統合結果のレビュー（第6ラウンド）は条件付き採用可。指摘の処分は R6-FIX の記録を参照。STATUS.md のテキスト描画行（Issue #60 の状態）は TEXT60 の PR 側で更新する。
 

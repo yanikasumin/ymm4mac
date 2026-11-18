@@ -409,9 +409,10 @@ do {
         makeShape(layer: 0, width: 32, height: 32),
         makeImage(layer: 1, clipping: true),
     ]
-    if let provider = MetalExportVideoProvider(
-        timeline: timeline, timelines: [timeline], baseDirectory: workDir
-    ) {
+    do {
+        let provider = try MetalExportVideoProvider(
+            timeline: timeline, timelines: [timeline], baseDirectory: workDir
+        )
         let buffer = ExportVideoFrameBuffer(byteCount: 64 * 64 * 4)
         do {
             try provider.fillFrame(0, into: buffer)
@@ -428,8 +429,8 @@ do {
             check(false, "B5 fillFrame error: \(error)")
         }
         provider.dispose()
-    } else {
-        check(false, "B5 provider created")
+    } catch {
+        check(false, "B5 provider created: \(error)")
     }
 }
 
