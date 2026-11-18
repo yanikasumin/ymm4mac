@@ -230,6 +230,26 @@ extension MetalEffectProcessor {
     }
 }
 
+/// 単色ブラシの色を取り出す。ブラシ保持値（PreservedObject）は
+/// `{ Type, Parameter: { $type, Color } }` の形（実ファイルで確認済み）。
+/// ブラシ自体が無い場合は本家の既定（単色ブラシ・白:
+/// SolidColorBrushParameter の初期色 Colors.White）として扱う。
+/// 単色ブラシでないパラメータ（グラデーション等）は nil を返し、
+/// 呼び出し側は素通しにする。生保持のままのブラシ（輪郭の
+/// StrokeBrush 等、型付きモデルへの移行対象外）用。
+func solidBrushColor(_ brush: PreservedObject?) -> Color? {
+    guard let brush else { return .white }
+    guard let parameter = brush.value.field("Parameter"),
+          let typeName = parameter.field("$type")?.stringValue,
+          typeName.contains("SolidColorBrushParameter")
+    else { return nil }
+    guard let colorText = parameter.field("Color")?.stringValue else {
+        // 色キーが無い場合はパラメータの初期色（白）。
+        return .white
+    }
+    return parseARGBColor(colorText)
+}
+
 /// 単色ブラシの色を取り出す（BRUSH46 で型付きモデルへ移行）。
 /// ブラシ自体が無い場合は本家の既定（単色ブラシ・白:
 /// SolidColorBrushParameter の初期色 Colors.White）として扱う。
