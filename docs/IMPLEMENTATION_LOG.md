@@ -883,6 +883,24 @@
 
 **次の担当へ。** 解析リポジトリ側の互換マトリクス同期は PR 側の作業。プレビュー再生の速度ノード（AVAudioUnitTimePitch / Varispeed）を本処理芯へ寄せるかは設計論点として未確定（本家はプレビューも SoundTouch で、方式既定はタイムストレッチ）。
 
+#### STREAM54 — PCM 供給のストリーミング化（Issue #54）（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** 音声素材のデコードを「ファイル全体をメモリへ読み切る」方式から、必要な分だけ逐次デコードするストリーミング方式へ変えた。対象は `PCMProviderFactory` の実体（書き出し・ラウドネス解析・実時間再生のすべてが読む素材供給）であり、呼び出し側（`FileAudioStream`、ミキサー、書き出し、再生供給元）の変更はない。Issue の応急処置（デコード先配列への reserveCapacity）は、全デコード経路そのものを無くしたため不要になった。
+
+**どこを変更したか。** 新規 `Sources/YMM4GPU/Export/AVFoundationStreamingPCMProvider.swift`（`AVFoundationStreamingPCMProvider`）。改修 `Sources/YMM4GPU/Export/AVFoundationPCMProviderFactory.swift`（全体デコードの静的メソッドを削除し、ストリーミング供給元を返す工場にした。メタデータ＝トラック・時間範囲・形式記述の async 読み込みの同期橋渡しは工場側に集約）。改修 `Sources/YMM4GPU/Export/VoiceAudioProvider.swift`（一時ファイルの所有権の変更、下記）。新規テスト `Tests/YMM4GPUTests/StreamingPCMProviderTests.swift`（7 件）。
+
+**本家の仕様（実測した裏取り）。** 本家のファイルソース契約 `IAudioFileSource`（YukkuriMovieMaker.Plugin.FileSource）は `Duration` / `Hz` / `Seek(TimeSpan)` / `Read(float[], offset, count)` のプル型ストリーミングであり、移植側 `PCMProvider` と同型。実体の一つ `MFAudioFileSource`（YukkuriMovieMaker.Plugin.FileSource.MediaFoundation）は SourceReader を保持して逐次読みし、シーク時はプリロール（圧縮音声 300ms、長いシーク 1 秒）を取って目標位置まで読み飛ばす。また素材の開始時刻 `streamStartTime` を保持し、提示時刻から差し引いて論理位置を数える。
+
+**どう実装したか。** 供給元は `AVAssetReader` ＋ `AVAssetReaderTrackOutput`（出力設定は従来どおり float32 / 2ch / インターリーブ）を保持し、`read` の要求に応じて `copyNextSampleBuffer` でデコードを進める。保持するデコード済みサンプルは読み取りバッファの分だけ。シークはリーダーを作り直し（`AVAssetReader` は後方へ戻れない）、開始時刻を目標位置へ置く。返るバッファの提示時刻（PTS）から絶対フレームを数え、目標より前の部分は切り捨てて着地させる（本家のプリロールと同じ発想）。原点はトラックの時間範囲の開始時刻とし、本家の `streamStartTime` 補正と同じにする。シークの tick → フレーム変換は `InMemoryPCMProvider` と同じ最近傍丸め（MAC-0016 で QA 済みの規則を供給元ごとに変えない）。デコード列に欠落がある区間は無音で埋めて進める（途中で止めると呼び出し側が早期終端と誤認するため。本家も時刻基準で読み進める）。素材開始前の負位置は従来どおり無音として数える。
+
+**メモリ・並行性。** 資産・トラック・リーダーは供給元が所有し、破棄時に `cancelReading` する。読み取りは従来どおり単一スレッド前提（ロックなし。ミキサーのプル読みに直列化される）。VoiceCache の一時ファイルは、供給元が読み取りの間ファイルを開いたままにするため、寿命を供給元の寿命へ結び替えた: `VoicePCMProviderResolver` は即時削除（defer）をやめ、`TemporaryFilePCMProvider`（破棄時に削除する包み）を返す。生成失敗時はその場で削除する。本家でも `voiceFile` はアイテムが保持して破棄で消える構造であり、結び先が違うだけで「使う側が持ち、使い終われば消える」点は同じ。
+
+**本家との差分。** （1）全長（`duration`）はデコード総量ではなくトラックの時間範囲から決める。ストリーミングでは終端まで読む前に全長が要るための内部実装の違いで、通常の素材では一致する。（2）読み取り途中でリーダーが失敗した場合は終端として扱う（従来の全デコードは全体の失敗で供給元自体が nil になった）。（3）圧縮形式のシーク着地は PTS 基準で切り捨てるためサンプル単位で正確だが、本家のプリロール方式（読み飛ばし）と結果が一致するかは本家環境での比較未実施。
+
+**検証。** 新規テスト7件を含む GPU テスト25件・音声テスト20件は Mac 実機で 0 失敗を個別に確認。フルスイート実行ログ（Mac `/tmp/stream54-test.log`）に失敗記録は無いが、総計行の確定は担当終了時点で未記録のため、PR 前の統合検証で取る。ハーネス（1時間・691,200,044 バイトの WAV を生成して実測）: 全読み 345,600,000 サンプルを 0.87 秒で処理し、メモリ増加は 19 MiB でファイル長に比例しないこと、末尾付近へのシークが要求フレームへ着地することを確認（ALL PASS、Mac `/tmp/stream54-harness.log`）。
+
+**次の担当へ。** 解析リポジトリ側の互換マトリクス同期は PR 側の作業。1 時間級素材での実測（ハーネス）は検証欄に記す範囲に留まる。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
