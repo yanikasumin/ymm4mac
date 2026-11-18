@@ -252,3 +252,37 @@ enum BrotliDecompression {
     }
 }
 #endif
+
+/// 立ち絵の口パク包絡の供給を組み立てる（プレビューと書き出しの
+/// 共用）。本家 `TachieSource` と同じく、包絡の入力は声アイテムの
+/// エフェクトチェーンを通した音声（再生速度・ContentOffset を
+/// 反映し、音量制御・エコー・音声エフェクトは除く）を 48kHz で
+/// 用いる。生ファイルの PCM を直接使うと、再生速度やオフセットが
+/// ある場合に包絡の時間位置が本家とずれる（R20-116-01）。
+/// 声が開けない場合は nil を返す（音量は本家のフォールバック値に
+/// なる）。
+public func makeLipSyncEnvelopeProvider(
+    baseDirectory: URL?
+) -> (VoiceItem, Int, Int) -> [Double]? {
+    let pcmProviderFactory = AVFoundationPCMProviderFactory(
+        baseDirectory: baseDirectory
+    )
+    let factory = AudioSourceFactory(
+        providerFactory: pcmProviderFactory,
+        voiceProviderResolver: VoicePCMProviderResolver(
+            providerFactory: pcmProviderFactory
+        ).makeResolver()
+    )
+    return { voice, fps, smooth in
+        var options = AudioChainOptions()
+        options.noVolumeControl = true
+        options.noEcho = true
+        options.noEffect = true
+        guard let stream = factory.effectedStream(
+            for: voice, hz: 48_000, fps: fps, options: options
+        ) else { return nil }
+        return LipSyncEnvelopeCalculator.calculate(
+            stream: stream, fps: fps, smooth: smooth, frameCount: voice.length
+        )
+    }
+}
