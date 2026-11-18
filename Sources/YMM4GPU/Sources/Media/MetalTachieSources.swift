@@ -13,6 +13,18 @@ public enum MetalTachieMouthShape: Sendable {
     case u
     case e
     case o
+
+    /// モデル層の口形からの変換。
+    public init(_ shape: MouthShapeValue) {
+        switch shape {
+        case .silent: self = .silent
+        case .a: self = .a
+        case .i: self = .i
+        case .u: self = .u
+        case .e: self = .e
+        case .o: self = .o
+        }
+    }
 }
 
 /// 顔アイテム1件の説明。本家 TachieFaceDescription に対応する。
@@ -48,13 +60,12 @@ public struct MetalTachieUpdateDescription {
     public var itemParameter: PreservedObject?
     /// 顔アイテム列の説明（ActiveFaces の順）。
     public var faces: [MetalTachieFaceDescription]
-    /// 口パク音量。本家は LipSyncEnvelope の非同期計算結果であり、
-    /// 計算が無い場合のフォールバックは「声の範囲内なら 0、範囲外・
-    /// 声なしなら -1」（本家 ReadVolumeAfterRequiredWait の経路）。
-    /// 包絡計算そのものは差し替え点の先（音声側の基盤）にある。
+    /// 口パク音量。本家は LipSyncEnvelope の計算結果であり、計算が
+    /// 無い場合のフォールバックは「声の範囲内なら 0、範囲外・声なし
+    /// なら -1」（本家 ReadVolumeAfterRequiredWait の経路）。
     public var volume: Double
-    /// 口形。LipSyncFrames はモデル層で生保持のため評価は未実装で、
-    /// 常に .silent（本家の「リップシンク情報なし」の既定と同じ）。
+    /// 口形。声の LipSyncFrames を評価した結果（時系列が無ければ
+    /// 本家の既定どおり .silent）。
     public var mouthShape: MetalTachieMouthShape
 
     public init(
@@ -117,9 +128,9 @@ public struct EmptyTachieRendererFactory: MetalTachieRendererFactory {
 /// 描画器へ渡す（本家 TachieSource.Update の ITachieSource2 経路）。
 /// 出力の公開条件も本家どおり: 描画器の出力の境界の最大辺が 2 未満
 /// なら出力なし（isEmptyOutput）とする。
-/// 口パクの包絡計算（本家 LipSyncEnvelope の非同期基盤）と口形の評価
-/// は未実装であり、音量は本家のフォールバック値、口形は .silent を
-/// 渡す（MetalTachieUpdateDescription の説明を参照）。
+/// 口パク音量は、包絡の供給（volumeEnvelopeProvider）が注入されて
+/// いれば LipSyncEnvelope の計算結果を使い、無ければ本家の
+/// フォールバック値になる。口形は声の LipSyncFrames の評価結果。
 public final class MetalTachieSource: TachieSource {
     /// 現在の声（TimelineComposer が書き込む）。
     public var activeVoice: VoiceItem?
@@ -133,6 +144,14 @@ public final class MetalTachieSource: TachieSource {
     private let item: TachieItem
     private let drawingEffect: MetalDrawingEffect
     private let rendererFactory: any MetalTachieRendererFactory
+    /// 口パク包絡の供給（声・fps・平滑化 → フレームごとの音量）。
+    /// 本家は非同期セッションで計算するが、こちらは同期計算の結果を
+    /// 声ごとにキャッシュする。未注入なら音量はフォールバック値。
+    private let volumeEnvelopeProvider: ((VoiceItem, Int, Int) -> [Double]?)?
+    private var envelopeCache: (
+        voice: ObjectIdentifier, length: Int, fps: Int, smooth: Int,
+        values: [Double]
+    )?
 
     private var renderer: (any MetalTachieRenderer)?
     private var currentTachieType: String?
@@ -143,11 +162,13 @@ public final class MetalTachieSource: TachieSource {
     public init(
         devices: MetalGraphicsDevices,
         item: TachieItem,
-        rendererFactory: (any MetalTachieRendererFactory)? = nil
+        rendererFactory: (any MetalTachieRendererFactory)? = nil,
+        volumeEnvelopeProvider: ((VoiceItem, Int, Int) -> [Double]?)? = nil
     ) {
         self.context = devices.makeContext()
         self.item = item
         self.rendererFactory = rendererFactory ?? EmptyTachieRendererFactory()
+        self.volumeEnvelopeProvider = volumeEnvelopeProvider
         self.drawingEffect = MetalDrawingEffect(context: context)
     }
 
@@ -187,14 +208,29 @@ public final class MetalTachieSource: TachieSource {
             )
         }
 
-        // 音量は本家のフォールバック値（包絡未計算時）: 声の範囲内なら
-        // 0、範囲外・声なしなら -1。
-        let volume: Double
+        // 音量と口形（本家 TachieSource.Update の経路）。音量の既定は
+        // 本家のフォールバック値: 声の範囲内なら 0、範囲外・声なし
+        // なら -1。包絡が計算できればその値で置き換える。口形は声の
+        // LipSyncFrames の評価結果（範囲外・声なし・時系列なしは
+        // .silent）。
+        var volume: Double = -1
+        var mouthShape = MetalTachieMouthShape.silent
         if let voice = activeVoice {
             let voiceFrame = description.timelinePosition.frame - voice.frame
-            volume = (voiceFrame >= 0 && voiceFrame < voice.length) ? 0 : -1
-        } else {
-            volume = -1
+            if voiceFrame >= 0, voiceFrame < voice.length {
+                volume = 0
+                mouthShape = MetalTachieMouthShape(
+                    voice.lipSyncShape(atFrame: voiceFrame, fps: description.fps)
+                )
+                let smooth = item.character?.mouseSmooth ?? 4
+                if smooth > 0, let volumeEnvelopeProvider,
+                   let values = envelopeValues(
+                       for: voice, fps: description.fps, smooth: smooth,
+                       provider: volumeEnvelopeProvider
+                   ), voiceFrame < values.count {
+                    volume = values[voiceFrame]
+                }
+            }
         }
 
         renderer?.update(MetalTachieUpdateDescription(
@@ -203,7 +239,7 @@ public final class MetalTachieSource: TachieSource {
             itemParameter: item.tachieItemParameter,
             faces: faces,
             volume: volume,
-            mouthShape: .silent
+            mouthShape: mouthShape
         ))
 
         // 出力の公開（本家: 出力境界の最大辺が 2 未満なら出力なし）。
@@ -222,6 +258,31 @@ public final class MetalTachieSource: TachieSource {
             }
         }
         outputs = output.map { [$0] } ?? []
+    }
+
+    /// 声の包絡をキャッシュ経由で得る。声の同一性・長さ・fps・
+    /// 平滑化が変わったら計算し直す（本家の署名による再計算条件に
+    /// 相当する簡約形。声の内容差し替えは同一性と長さでは検出でき
+    /// ないため、その場合は Source の作り直しで解消する）。
+    private func envelopeValues(
+        for voice: VoiceItem, fps: Int, smooth: Int,
+        provider: (VoiceItem, Int, Int) -> [Double]?
+    ) -> [Double]? {
+        if let cache = envelopeCache,
+           cache.voice == ObjectIdentifier(voice),
+           cache.length == voice.length,
+           cache.fps == fps, cache.smooth == smooth {
+            return cache.values
+        }
+        guard let values = provider(voice, fps, smooth) else {
+            envelopeCache = nil
+            return nil
+        }
+        envelopeCache = (
+            voice: ObjectIdentifier(voice), length: voice.length,
+            fps: fps, smooth: smooth, values: values
+        )
+        return values
     }
 
     public func dispose() {

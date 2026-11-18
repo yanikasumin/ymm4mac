@@ -252,3 +252,23 @@ enum BrotliDecompression {
     }
 }
 #endif
+
+/// 立ち絵の口パク包絡の供給を組み立てる（プレビューと書き出しの
+/// 共用）。声の PCM を解決し、`LipSyncEnvelopeCalculator` で包絡を
+/// 計算するクロージャを返す。声が開けない場合は nil を返す
+/// （音量は本家のフォールバック値になる）。
+public func makeLipSyncEnvelopeProvider(
+    baseDirectory: URL?
+) -> (VoiceItem, Int, Int) -> [Double]? {
+    let resolver = VoicePCMProviderResolver(
+        providerFactory: AVFoundationPCMProviderFactory(
+            baseDirectory: baseDirectory
+        )
+    )
+    return { voice, fps, smooth in
+        guard let pcm = resolver.provider(for: voice) else { return nil }
+        return LipSyncEnvelopeCalculator.calculate(
+            provider: pcm, fps: fps, smooth: smooth, frameCount: voice.length
+        )
+    }
+}

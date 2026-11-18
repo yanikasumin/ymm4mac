@@ -78,6 +78,11 @@ public struct MetalSourceProvider {
     /// セッションへ届くようにする。未設定なら失敗は報告されない。
     public let diagnostics: RenderDiagnosticsCollector?
 
+    /// 立ち絵の口パク包絡の供給（声・fps・平滑化 → フレームごとの
+    /// 音量）。立ち絵 Source へ伝播する。未設定なら音量は本家の
+    /// フォールバック値になる。
+    public let tachieVolumeEnvelopeProvider: ((VoiceItem, Int, Int) -> [Double]?)?
+
     public init(
         devices: MetalGraphicsDevices,
         baseDirectory: URL? = nil,
@@ -86,7 +91,8 @@ public struct MetalSourceProvider {
         tachieRendererFactory: (any MetalTachieRendererFactory)? = nil,
         timeline: Timeline? = nil,
         effectProvider: (any EffectPairProvider)? = nil,
-        diagnostics: RenderDiagnosticsCollector? = nil
+        diagnostics: RenderDiagnosticsCollector? = nil,
+        tachieVolumeEnvelopeProvider: ((VoiceItem, Int, Int) -> [Double]?)? = nil
     ) {
         self.devices = devices
         self.baseDirectory = baseDirectory
@@ -96,6 +102,7 @@ public struct MetalSourceProvider {
         self.timeline = timeline
         self.effectProvider = effectProvider
         self.diagnostics = diagnostics
+        self.tachieVolumeEnvelopeProvider = tachieVolumeEnvelopeProvider
     }
 
     public func source(for item: BaseItem & VideoItemProperties) -> any Source {
@@ -139,7 +146,8 @@ public struct MetalSourceProvider {
             )
         case let tachieItem as TachieItem:
             return MetalTachieSource(
-                devices: devices, item: tachieItem, rendererFactory: tachieRendererFactory
+                devices: devices, item: tachieItem, rendererFactory: tachieRendererFactory,
+                volumeEnvelopeProvider: tachieVolumeEnvelopeProvider
             )
         case let groupItem as GroupItem where groupItem.isComposite:
             // 合成グループは内部合成を持つ Source を返す。属するタイム
@@ -171,6 +179,7 @@ public struct MetalSourceProvider {
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
         let diagnostics = self.diagnostics
+        let tachieVolumeEnvelopeProvider = self.tachieVolumeEnvelopeProvider
         return { context in
             context.targetSize = PixelSize(
                 width: timeline.videoInfo.width, height: timeline.videoInfo.height
@@ -183,7 +192,8 @@ public struct MetalSourceProvider {
                 tachieRendererFactory: tachieRendererFactory,
                 timeline: timeline,
                 effectProvider: effectProvider,
-                diagnostics: diagnostics
+                diagnostics: diagnostics,
+                tachieVolumeEnvelopeProvider: tachieVolumeEnvelopeProvider
             )
             let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
             return TimelineComposer(
@@ -215,6 +225,7 @@ public struct MetalSourceProvider {
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
         let diagnostics = self.diagnostics
+        let tachieVolumeEnvelopeProvider = self.tachieVolumeEnvelopeProvider
         return { beforeContext, afterContext in
             func makeComposer(
                 context: MetalGraphicsContext, isBefore: Bool
@@ -230,7 +241,8 @@ public struct MetalSourceProvider {
                     tachieRendererFactory: tachieRendererFactory,
                     timeline: timeline,
                     effectProvider: effectProvider,
-                    diagnostics: diagnostics
+                    diagnostics: diagnostics,
+                    tachieVolumeEnvelopeProvider: tachieVolumeEnvelopeProvider
                 )
                 let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
                 return TimelineComposer(
@@ -289,6 +301,7 @@ public struct MetalSourceProvider {
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
         let diagnostics = self.diagnostics
+        let tachieVolumeEnvelopeProvider = self.tachieVolumeEnvelopeProvider
         return { sceneID, context in
             guard let timeline = sceneResolver?(sceneID) else { return nil }
             if parentSceneChain.filter({ $0 == sceneID }).count >= 10 { return nil }
@@ -303,7 +316,8 @@ public struct MetalSourceProvider {
                 tachieRendererFactory: tachieRendererFactory,
                 timeline: timeline,
                 effectProvider: effectProvider,
-                diagnostics: diagnostics
+                diagnostics: diagnostics,
+                tachieVolumeEnvelopeProvider: tachieVolumeEnvelopeProvider
             )
             let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
             return TimelineComposer(
