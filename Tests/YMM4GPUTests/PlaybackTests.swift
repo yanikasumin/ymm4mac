@@ -7,10 +7,9 @@ import YMM4Core
 /// 実時間再生（Issue #52）の検証。
 ///
 /// 供給元（PlaybackAudioSource）はミキサーとメーターの実接続を
-/// 既知 PCM で検証する。エンジン本体は音声デバイスに依存するため、
-/// ここでは位置計算の純粋関数と、停止中の状態遷移（シーク・
-/// クランプ・現在フレーム同期）だけを検証し、実再生の同期精度は
-/// Mac 実機での実測に委ねる（台帳に記録）。
+/// 既知 PCM で検証する。エンジン本体は位置計算の純粋関数と停止中の
+/// 状態遷移を検証し、リピート再開のような実再生の振る舞いは
+/// Mac 実機で実再生して検証する（RealtimePlaybackRepeatTests）。
 final class PlaybackAudioSourceTests: XCTestCase {
 
     private final class MapFactory: PCMProviderFactory {
@@ -198,6 +197,143 @@ final class RealtimePlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.currentFrame, 0)
         XCTAssertEqual(timeline.currentFrame, 0)
         XCTAssertFalse(engine.isPlaying)
+        engine.dispose()
+    }
+}
+
+/// リピート再生の受入試験（レビュー第6ラウンド R6-01）。
+///
+/// 1 秒の音声付きタイムラインを Mac 実機で実再生し、終端到達時の
+/// 振る舞いを観測する。2 周目の音声が出力されたことは、供給側の
+/// 読み取り総量が 1 周分を超えることで確認する（リピート再開は
+/// 供給を再シークして先頭から読み直すため、再開していなければ
+/// 読み取り総量は素材の全長で頭打ちになる）。
+final class RealtimePlaybackRepeatTests: XCTestCase {
+
+    /// 読み取り総量（戻り値の合計）を数えるプロバイダ。
+    private final class CountingProvider: PCMProvider {
+        private let inner: InMemoryPCMProvider
+        private let lock = NSLock()
+        private var total = 0
+
+        init(inner: InMemoryPCMProvider) {
+            self.inner = inner
+        }
+
+        var hz: Int { inner.hz }
+        var duration: TimeSpanValue { inner.duration }
+
+        var totalReadSamples: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return total
+        }
+
+        func seek(toTime time: TimeSpanValue) {
+            inner.seek(toTime: time)
+        }
+
+        func read(into buffer: inout [Float], offset: Int, count: Int) -> Int {
+            let readCount = inner.read(into: &buffer, offset: offset, count: count)
+            lock.lock()
+            total += readCount
+            lock.unlock()
+            return readCount
+        }
+    }
+
+    private final class MapFactory: PCMProviderFactory {
+        var providers: [String: PCMProvider] = [:]
+        func createProvider(filePath: String?, audioTrackIndex: Int) -> PCMProvider? {
+            guard let filePath else { return nil }
+            return providers[filePath]
+        }
+    }
+
+    /// 素材 1 秒分（48kHz × 2ch）のサンプル数 = 1 周の読み取り総量。
+    private let onePassSamples = 96_000
+
+    private func constantAnimation(_ value: Double) -> Animation {
+        Animation(
+            defaultValue: value, minValue: -100_000, maxValue: 100_000,
+            animationType: .none, values: [AnimationValue(value)]
+        )
+    }
+
+    /// 1 秒（30 フレーム @30fps）のタイムラインに 1 秒の定数音声を置く。
+    private func makeEngine() -> (RealtimePlaybackEngine, CountingProvider) {
+        let provider = CountingProvider(inner: InMemoryPCMProvider(
+            samples: [Float](repeating: 0.5, count: onePassSamples),
+            hz: 48_000
+        ))
+        let factory = MapFactory()
+        factory.providers["a"] = provider
+        let item = AudioItem()
+        item.frame = 0
+        item.length = 30
+        item.layer = 0
+        item.filePath = "a"
+        item.volume = constantAnimation(100)
+        item.pan = constantAnimation(0)
+        let timeline = Timeline()
+        var info = VideoInfo()
+        info.fps = 30
+        info.hz = 48_000
+        timeline.videoInfo = info
+        timeline.items = [item]
+        timeline.refreshTimelineLengthAndMaxLayer()
+        let sourceFactory = AudioSourceFactory(providerFactory: factory)
+        let mixer = TimelineAudioMixer(timeline: timeline, factory: sourceFactory)
+        let source = PlaybackAudioSource(mixer: mixer, levelMeter: SoundLevelMeter())
+        let engine = RealtimePlaybackEngine(timeline: timeline, source: source)
+        return (engine, provider)
+    }
+
+    /// メインキューのポーリング（33ms）が進むようランループを回し
+    /// ながら、条件が満たされるまで待つ。
+    private func waitUntil(
+        timeout: TimeInterval, _ condition: () -> Bool
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            let tick = expectation(description: "tick")
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+                tick.fulfill()
+            }
+            wait(for: [tick], timeout: 1)
+        }
+        return condition()
+    }
+
+    func testRepeatRestartsAndReadsSecondLoop() {
+        let (engine, provider) = makeEngine()
+        engine.isRepeatEnabled = true
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+        // 2 周目のチャンク生成で、読み取り総量が 1 周分を超える。
+        let restarted = waitUntil(timeout: 10) {
+            provider.totalReadSamples > self.onePassSamples
+        }
+        XCTAssertTrue(restarted, "リピート再開による2周目の読み取りが観測できない")
+        // 再開後も再生は継続し、表示位置は終端未満へ戻っている。
+        XCTAssertTrue(engine.isPlaying)
+        XCTAssertLessThan(engine.position.seconds, engine.maxPosition.seconds)
+        engine.dispose()
+    }
+
+    func testNoRepeatStopsAtEnd() {
+        let (engine, provider) = makeEngine()
+        engine.isRepeatEnabled = false
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+        let stopped = waitUntil(timeout: 10) { !engine.isPlaying }
+        XCTAssertTrue(stopped, "終端で停止しない")
+        XCTAssertEqual(
+            engine.position.seconds, engine.maxPosition.seconds, accuracy: 1e-9
+        )
+        // 2 周目の読み取りは発生していない（素材全長で頭打ち）。
+        XCTAssertLessThanOrEqual(provider.totalReadSamples, onePassSamples)
         engine.dispose()
     }
 }
