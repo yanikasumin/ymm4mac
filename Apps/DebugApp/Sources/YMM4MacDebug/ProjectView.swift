@@ -52,11 +52,14 @@ struct ProjectView: View {
     /// 位置・現在モデルの画像かを確認するために使う。R11-08）。
     @State private var displayedPreviewIdentity: PreviewRenderWorker.Identity?
     @State private var displayedPreviewFrame: Int?
-    /// 対応画像の完成を待っているサムネイル保存。形式だけでなく
-    /// 要求時点の識別子とフレームを固定して持つ（R12-06）。
+    /// 対応画像の完成を待っているサムネイル保存。形式とフレームを
+    /// 持ち、対象は「現在のモデルでそのフレームが完成した時点」に
+    /// 結び直す。要求時点の識別子へ固定すると、モデルの作り直し
+    /// 保留中に旧モデルの完成通知で旧画像を保存したり、作り直しで
+    /// 要求自体が消えたりする（R12-06 の取消し規則を、モデル変更
+    /// 時は結び直しへ改めたもの。R20-113-01）。
     @State private var pendingThumbnail: (
         format: ThumbnailFormat,
-        identity: PreviewRenderWorker.Identity,
         frame: Int
     )?
     /// 直近の描画で効果の失敗があったか（R6-06 の現在の失敗状態）。
@@ -1285,10 +1288,9 @@ struct ProjectView: View {
             // で、表示済み画像の識別子が現在のものと一致しなくなり、
             // 辞書変更前の画像がサムネイルとして保存される経路と、
             // 古い描画結果が採用される経路の両方が閉じる。保留中の
-            // サムネイル保存も、対象画像が作り直しで変わるため
-            // 取り消す（R12-06 と同じ扱い）。
+            // サムネイル保存は取り消さず、新しいモデルへ結び直す
+            // （R20-113-01）。
             previewModelDirty = true
-            pendingThumbnail = nil
             requestPreviewRender()
         }
     }
@@ -1377,11 +1379,9 @@ struct ProjectView: View {
             writeThumbnail(format: format, timeline: timeline)
             return
         }
-        if let identity = currentPreviewIdentity {
-            pendingThumbnail = (
-                format: format, identity: identity, frame: Int(previewFrame)
-            )
-        }
+        // 識別子へは固定しない。モデルが作り直されても、要求は
+        // 新しいモデルの同じフレームへ結び直される（R20-113-01）。
+        pendingThumbnail = (format: format, frame: Int(previewFrame))
         requestPreviewRender()
     }
 
@@ -2236,16 +2236,17 @@ struct ProjectView: View {
             previewCurrentFailure = !failures.isEmpty
             previewDiagnostics = history
             // サムネイル保存が対応画像を待っている場合はここで進める
-            // （R11-08）。保留は要求時点の識別子とフレームを固定して
-            // 持ち、同じモデルの別フレームが先に完成したら（利用者
-            // が移動したということなので）別フレームを保存せず
-            // 取り消す（R12-06）。
-            if let pending = pendingThumbnail {
-                if pending.identity == identity, pending.frame == frame,
-                   let timeline {
+            // （R11-08）。発火条件は「現在のモデルの画像であり、作り
+            // 直し保留中でなく、フレームが一致すること」。旧モデルの
+            // 完成通知では発火せず待ち続け、現在のモデルで別フレーム
+            // が先に完成したら（利用者が移動したということなので）
+            // 別フレームを保存せず取り消す（R12-06／R20-113-01）。
+            if let pending = pendingThumbnail,
+               identity == currentPreviewIdentity, !previewModelDirty {
+                if pending.frame == frame, let timeline {
                     pendingThumbnail = nil
                     writeThumbnail(format: pending.format, timeline: timeline)
-                } else if pending.identity == identity {
+                } else {
                     pendingThumbnail = nil
                 }
             }
@@ -2333,10 +2334,10 @@ struct ProjectView: View {
         lastPreviewSnapshotAt = Date()
         previewModelDirty = false
         previewModelVersion += 1
-        // モデルが変わると、保留中のサムネイル保存の対象画像は
-        // 二度と完成しない。別モデルの画像を保存せず取り消す
-        // （R12-06）。
-        pendingThumbnail = nil
+        // 保留中のサムネイル保存は取り消さない。対象は新しいモデル
+        // の同じフレームへ結び直され、その完成通知で発火する
+        // （R20-113-01。R12-06 の取消しはモデル変更については
+        // 結び直しへ改めた）。
         // 診断の表示も旧モデルのものを持ち越さない。診断の所有者
         // は描画セッション（モデルごとに作り直される）ため、表示
         // 状態もモデル版数の変更でリセットする（R14-02）。
