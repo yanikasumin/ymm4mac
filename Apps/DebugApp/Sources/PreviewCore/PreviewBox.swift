@@ -23,6 +23,10 @@ public final class PreviewBox: PreviewRenderSession {
     /// プレビューの入口（ProjectView）はこれを表示して、失敗が無言に
     /// ならないようにする（Issue #50）。
     public let initializationFailure: String?
+    /// この描画セッションの診断収集先（R6-06）。内部合成器を含む
+    /// セッション全体の効果へ同じインスタンスを渡し、描画段の失敗を
+    /// 集約する。履歴の所有者はセッション（この PreviewBox）。
+    public let diagnostics = RenderDiagnosticsCollector()
     private let devices: MetalGraphicsDevices?
     private let context: MetalGraphicsContext?
     private let composer: TimelineComposer?
@@ -64,14 +68,17 @@ public final class PreviewBox: PreviewRenderSession {
             sceneResolver: { id in allTimelines.first { $0.id == id } },
             // 合成グループの内部合成は、このタイムラインを再合成する。
             timeline: timeline,
-            effectProvider: effectProvider
+            effectProvider: effectProvider,
+            diagnostics: diagnostics
         )
         self.composer = TimelineComposer(
             scene: TimelineScene(timeline: timeline),
             targetFactory: context,
             sourceProvider: provider.source(for:),
             effectProvider: effectProvider,
-            alphaMaskFactory: MetalAlphaMaskEffectFactory(context: context)
+            alphaMaskFactory: MetalAlphaMaskEffectFactory(
+                context: context, diagnostics: diagnostics
+            )
         )
     }
 

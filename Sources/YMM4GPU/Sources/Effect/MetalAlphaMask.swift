@@ -28,14 +28,20 @@ public final class MetalAlphaMaskEffect: AlphaMaskEffect {
     /// 描画ヘルパ（Metal 処理器の基底が持つ warp パスを再利用する。
     /// 連鎖へは参加しない）。
     private let renderHelper: MetalEffectProcessor
+    /// 失敗の報告先（描画セッションの診断収集先）。未設定なら報告しない。
+    private let diagnostics: RenderDiagnosticsCollector?
     private var input0: ImageReference?
     private var input1: ImageReference?
     private let outputReference = ImageReference(label: "alpha-mask")
     private var isDisposed = false
 
-    public init(context: MetalGraphicsContext) {
+    public init(
+        context: MetalGraphicsContext,
+        diagnostics: RenderDiagnosticsCollector? = nil
+    ) {
         self.context = context
         self.renderHelper = MetalEffectProcessor(context: context)
+        self.diagnostics = diagnostics
     }
 
     /// マスク適用後の出力。実体の登録は入力設定のたびに行われ、
@@ -108,6 +114,14 @@ public final class MetalAlphaMaskEffect: AlphaMaskEffect {
             )
             context.devices.register(outputReference, image: result)
         } catch {
+            // 透明フォールバック自体は維持するが、失敗を無言にしない:
+            // この境界は例外を投げられない（setInput は非 throwing）
+            // ため、型付きの出来事としてセッションの収集先へ報告し、
+            // 表示側が利用者へ知らせる（R6-06）。
+            diagnostics?.record(
+                kind: "alphaMaskWarp",
+                message: "クリッピングのマスク合成に失敗しました: \(error)"
+            )
             registerTransparent(bounds: source.bounds)
         }
     }
@@ -125,16 +139,23 @@ public final class MetalAlphaMaskEffect: AlphaMaskEffect {
 }
 
 /// クリッピングマスクの生成者（本番実装）。合成器の生成経路ごとに、
-/// その合成器が使う文脈へ束縛して生成する。
+/// その合成器が使う文脈へ束縛して生成する。診断収集先は、同じ描画
+/// セッションの全ての生成者が同じインスタンスを共有する（内部
+/// 合成器で発生した失敗も外側のセッションへ届くようにするため）。
 public final class MetalAlphaMaskEffectFactory: AlphaMaskEffectFactory {
     private let context: MetalGraphicsContext
+    private let diagnostics: RenderDiagnosticsCollector?
 
-    public init(context: MetalGraphicsContext) {
+    public init(
+        context: MetalGraphicsContext,
+        diagnostics: RenderDiagnosticsCollector? = nil
+    ) {
         self.context = context
+        self.diagnostics = diagnostics
     }
 
     public func makeAlphaMaskEffect() -> any AlphaMaskEffect {
-        MetalAlphaMaskEffect(context: context)
+        MetalAlphaMaskEffect(context: context, diagnostics: diagnostics)
     }
 }
 #endif

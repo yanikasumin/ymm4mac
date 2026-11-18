@@ -1,11 +1,13 @@
 import CoreGraphics
 import XCTest
 import YMM4Core
+import YMM4GPU
 @testable import PreviewCore
 
 /// 描画時間を門（セマフォ）で制御できる偽セッション。
 private final class FakeSession: PreviewRenderSession {
     var initializationFailure: String?
+    let diagnostics = RenderDiagnosticsCollector()
     /// render はこの門が開くまで待つ（blockRenders が真の間）。
     let gate = DispatchSemaphore(value: 0)
     var blockRenders = false
@@ -19,10 +21,17 @@ private final class FakeSession: PreviewRenderSession {
         return frames
     }
 
+    /// このフレーム集合の描画では診断を記録する。描画中に変更
+    /// しない前提の不変設定（テスト側との競合を作らない。R16-01）。
+    var recordKindOnFrames: Set<Int> = []
+
     func render(frame: Int, timeline: Timeline, usage: TimelineSourceUsage) -> CGImage? {
         lock.lock()
         frames.append(frame)
         lock.unlock()
+        if recordKindOnFrames.contains(frame) {
+            diagnostics.record(kind: "alphaMaskWarp", message: "テスト用の失敗")
+        }
         if blockRenders {
             _ = gate.wait(timeout: .now() + 10)
         }
@@ -96,7 +105,7 @@ final class PreviewRenderWorkerTests: XCTestCase {
         let log = DeliveryLog()
         let delivered = expectation(description: "two deliveries")
         delivered.expectedFulfillmentCount = 2
-        worker.onRenderFailed = { identity, frame in
+        worker.onRenderFailed = { identity, frame, _, _ in
             log.append(identity, frame)
             delivered.fulfill()
         }
@@ -132,7 +141,7 @@ final class PreviewRenderWorkerTests: XCTestCase {
         let log = DeliveryLog()
         let delivered = expectation(description: "two deliveries")
         delivered.expectedFulfillmentCount = 2
-        worker.onRenderFailed = { identity, frame in
+        worker.onRenderFailed = { identity, frame, _, _ in
             log.append(identity, frame)
             delivered.fulfill()
         }
@@ -188,7 +197,7 @@ final class PreviewRenderWorkerTests: XCTestCase {
         let worker = makeWorker(sessions: [sessionA, sessionB])
         let log = DeliveryLog()
         let delivered = expectation(description: "delivery on new model")
-        worker.onRenderFailed = { identity, frame in
+        worker.onRenderFailed = { identity, frame, _, _ in
             log.append(identity, frame)
             delivered.fulfill()
         }
@@ -271,6 +280,50 @@ final class PreviewRenderWorkerTests: XCTestCase {
             }
         }
         XCTAssertEqual(session.renderedFrames, Array(0..<rounds))
+    }
+
+    /// 診断の受け渡し: 失敗を記録した描画では今回分が非空になり、
+    /// 次の正常な描画では空になるが履歴には残る。モデルを切り
+    /// 替えると旧モデルの診断は混入しない（R14 の確認試験）。
+    func testDiagnosticsDeliveryAcrossRendersAndModelSwap() {
+        let sessionA = FakeSession()
+        let sessionB = FakeSession()
+        let worker = makeWorker(sessions: [sessionA, sessionB])
+        var payloads: [(
+            failures: [RenderDiagnosticsCollector.Entry],
+            history: [RenderDiagnosticsCollector.Entry]
+        )] = []
+        let delivered = expectation(description: "three deliveries")
+        delivered.expectedFulfillmentCount = 3
+        worker.onRenderFailed = { _, _, failures, history in
+            payloads.append((failures, history))
+            delivered.fulfill()
+        }
+        let idA = identity(generation: 1, version: 1)
+        let idB = identity(generation: 1, version: 2)
+        worker.setModel(
+            identity: idA, timelines: [], timeline: Timeline(),
+            baseDirectory: nil
+        )
+        sessionA.recordKindOnFrames = [1]
+        worker.request(frame: 1, usage: .paused, identity: idA)
+        waitUntil("A rendered frame 1") { sessionA.renderedFrames == [1] }
+        worker.request(frame: 2, usage: .paused, identity: idA)
+        waitUntil("A rendered frame 2") { sessionA.renderedFrames == [1, 2] }
+        worker.setModel(
+            identity: idB, timelines: [], timeline: Timeline(),
+            baseDirectory: nil
+        )
+        worker.request(frame: 3, usage: .paused, identity: idB)
+
+        wait(for: [delivered], timeout: 5)
+        XCTAssertEqual(payloads.count, 3)
+        XCTAssertEqual(payloads[0].failures.map { $0.kind }, ["alphaMaskWarp"])
+        XCTAssertEqual(payloads[0].history.count, 1)
+        XCTAssertTrue(payloads[1].failures.isEmpty)
+        XCTAssertEqual(payloads[1].history.count, 1)
+        XCTAssertTrue(payloads[2].failures.isEmpty)
+        XCTAssertTrue(payloads[2].history.isEmpty)
     }
 
     /// 初期化失敗の通知には識別子が付き、どのモデルの失敗か

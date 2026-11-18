@@ -59,6 +59,12 @@ struct ProjectView: View {
         identity: PreviewRenderWorker.Identity,
         frame: Int
     )?
+    /// 直近の描画で効果の失敗があったか（R6-06 の現在の失敗状態）。
+    /// 正常な描画が完了すると解消する。
+    @State private var previewCurrentFailure = false
+    /// 描画セッション中に発生した失敗の集約履歴（R6-06）。正常な
+    /// 描画では消えず、セッションの作り直しでリセットする。
+    @State private var previewDiagnostics: [RenderDiagnosticsCollector.Entry] = []
     /// プレビュー上でのドラッグ移動の作業状態（開始時点の評価値と
     /// 開始点を保持し、移動量は常に開始時点からの差分で書き込む）。
     @State private var previewDrag: PreviewDragState?
@@ -565,6 +571,26 @@ struct ProjectView: View {
                 // 映像座標へ逆変換する（レターボックス分は含まない）。
                 previewInteractionLayer(timeline: timeline, scale: scale)
                     .frame(width: fittedWidth, height: fittedHeight)
+
+                // 描画診断の通知（R6-06）。直近の描画で効果の失敗が
+                // あった場合だけ出す。詳細は診断タブの履歴を見る。
+                // 操作の邪魔をしないようヒットテストは無効にする。
+                if previewCurrentFailure {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Text("描画診断: 一部の効果の描画に失敗しました（詳細は下部の診断タブ）")
+                                .font(.caption)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.yellow.opacity(0.9))
+                                .foregroundStyle(.black)
+                            Spacer()
+                        }
+                    }
+                    .frame(width: fittedWidth, height: fittedHeight)
+                    .allowsHitTesting(false)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -2154,6 +2180,8 @@ struct ProjectView: View {
         previewError = nil
         previewSessionKey = nil
         previewModelDirty = true
+        previewCurrentFailure = false
+        previewDiagnostics = []
         guard let timeline else { return }
         previewFrame = Double(timeline.currentFrame)
         // 未保存プロジェクトではセッションキー用に固定の番兵 URL を使う
@@ -2173,7 +2201,7 @@ struct ProjectView: View {
     /// （古いセッション・編集前のモデルの結果は捨てる。それ以外は、
     /// 後続の要求があっても採用する — 第9ラウンドの二段階規則）。
     private func wirePreviewWorker() {
-        previewWorker.onImage = { image, identity, frame in
+        previewWorker.onImage = { image, identity, frame, failures, history in
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
                   identity.version == previewModelVersion
@@ -2187,6 +2215,10 @@ struct ProjectView: View {
             previewError = nil
             displayedPreviewIdentity = identity
             displayedPreviewFrame = frame
+            // 現在の失敗状態はこの描画の結果で更新し、履歴は
+            // セッションの集約で置き換える（R6-06）。
+            previewCurrentFailure = !failures.isEmpty
+            previewDiagnostics = history
             // サムネイル保存が対応画像を待っている場合はここで進める
             // （R11-08）。保留は要求時点の識別子とフレームを固定して
             // 持ち、同じモデルの別フレームが先に完成したら（利用者
@@ -2202,11 +2234,15 @@ struct ProjectView: View {
                 }
             }
         }
-        previewWorker.onRenderFailed = { identity, _ in
+        previewWorker.onRenderFailed = { identity, frame, failures, history in
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
                   identity.version == previewModelVersion
             else { return }
+            // 正常画像と同じ採用条件にそろえる: 停止中は現在位置と
+            // 一致するフレームの失敗だけを採用する（シーク前の失敗
+            // 通知で現在の表示を消さない。R14-03）。
+            if !isPlayingForm, frame != Int(previewFrame) { return }
             previewImage = nil
             displayedPreviewIdentity = nil
             displayedPreviewFrame = nil
@@ -2215,6 +2251,8 @@ struct ProjectView: View {
             previewError = (timeline?.items.isEmpty ?? true)
                 ? nil
                 : "合成に失敗しました（例外または出力なし）"
+            previewCurrentFailure = !failures.isEmpty
+            previewDiagnostics = history
         }
         previewWorker.onModelFailed = { message, identity in
             // 識別子が現在のモデルと一致する場合だけ表示する
@@ -2228,7 +2266,7 @@ struct ProjectView: View {
         }
     }
 
-    /// 現在の識別子（モデルをワーカーへ渡すときに確定する）。
+
     private var currentPreviewIdentity: PreviewRenderWorker.Identity? {
         guard let key = previewSessionKey else { return nil }
         return PreviewRenderWorker.Identity(
@@ -2283,6 +2321,11 @@ struct ProjectView: View {
         // 二度と完成しない。別モデルの画像を保存せず取り消す
         // （R12-06）。
         pendingThumbnail = nil
+        // 診断の表示も旧モデルのものを持ち越さない。診断の所有者
+        // は描画セッション（モデルごとに作り直される）ため、表示
+        // 状態もモデル版数の変更でリセットする（R14-02）。
+        previewCurrentFailure = false
+        previewDiagnostics = []
         guard let identity = currentPreviewIdentity else { return }
         previewWorker.setModel(
             identity: identity, timelines: snapshot.timelines,
@@ -2546,6 +2589,14 @@ struct ProjectView: View {
             if let playbackError {
                 Text("再生開始失敗: \(playbackError)")
                     .font(.callout)
+            }
+            if !previewDiagnostics.isEmpty {
+                Text("描画診断（このセッションで発生した効果の失敗）")
+                    .font(.callout)
+                ForEach(Array(previewDiagnostics.enumerated()), id: \.offset) { _, entry in
+                    Text("\(entry.message)（\(entry.count) 回）")
+                        .font(.caption)
+                }
             }
             if diagnostics.skippedItems.isEmpty && diagnostics.migratedTypeNames.isEmpty {
                 Text("読み飛ばし・型移行なし")

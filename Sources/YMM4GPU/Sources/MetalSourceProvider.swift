@@ -73,6 +73,11 @@ public struct MetalSourceProvider {
     /// 未設定なら内部合成器は Core の型付き供給元を使う。
     public let effectProvider: (any EffectPairProvider)?
 
+    /// 描画セッションの診断収集先（R6-06）。内部合成器の生成者と
+    /// 子供給元へ同じインスタンスを伝播させ、内部で発生した失敗も
+    /// セッションへ届くようにする。未設定なら失敗は報告されない。
+    public let diagnostics: RenderDiagnosticsCollector?
+
     public init(
         devices: MetalGraphicsDevices,
         baseDirectory: URL? = nil,
@@ -80,7 +85,8 @@ public struct MetalSourceProvider {
         parentSceneChain: [UUID] = [],
         tachieRendererFactory: (any MetalTachieRendererFactory)? = nil,
         timeline: Timeline? = nil,
-        effectProvider: (any EffectPairProvider)? = nil
+        effectProvider: (any EffectPairProvider)? = nil,
+        diagnostics: RenderDiagnosticsCollector? = nil
     ) {
         self.devices = devices
         self.baseDirectory = baseDirectory
@@ -89,6 +95,7 @@ public struct MetalSourceProvider {
         self.tachieRendererFactory = tachieRendererFactory
         self.timeline = timeline
         self.effectProvider = effectProvider
+        self.diagnostics = diagnostics
     }
 
     public func source(for item: BaseItem & VideoItemProperties) -> any Source {
@@ -163,6 +170,7 @@ public struct MetalSourceProvider {
         let parentSceneChain = self.parentSceneChain
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
+        let diagnostics = self.diagnostics
         return { context in
             context.targetSize = PixelSize(
                 width: timeline.videoInfo.width, height: timeline.videoInfo.height
@@ -174,7 +182,8 @@ public struct MetalSourceProvider {
                 parentSceneChain: parentSceneChain,
                 tachieRendererFactory: tachieRendererFactory,
                 timeline: timeline,
-                effectProvider: effectProvider
+                effectProvider: effectProvider,
+                diagnostics: diagnostics
             )
             let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
             return TimelineComposer(
@@ -183,7 +192,9 @@ public struct MetalSourceProvider {
                 targetFactory: context,
                 sourceProvider: { item in childProvider.source(for: item) },
                 effectProvider: effectProvider ?? TypedEffectPairProvider(),
-                alphaMaskFactory: MetalAlphaMaskEffectFactory(context: context)
+                alphaMaskFactory: MetalAlphaMaskEffectFactory(
+                    context: context, diagnostics: diagnostics
+                )
             )
         }
     }
@@ -203,6 +214,7 @@ public struct MetalSourceProvider {
         let parentSceneChain = self.parentSceneChain
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
+        let diagnostics = self.diagnostics
         return { beforeContext, afterContext in
             func makeComposer(
                 context: MetalGraphicsContext, isBefore: Bool
@@ -217,7 +229,8 @@ public struct MetalSourceProvider {
                     parentSceneChain: parentSceneChain,
                     tachieRendererFactory: tachieRendererFactory,
                     timeline: timeline,
-                    effectProvider: effectProvider
+                    effectProvider: effectProvider,
+                    diagnostics: diagnostics
                 )
                 let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
                 return TimelineComposer(
@@ -228,7 +241,9 @@ public struct MetalSourceProvider {
                     targetFactory: context,
                     sourceProvider: { child in childProvider.source(for: child) },
                     effectProvider: effectProvider ?? TypedEffectPairProvider(),
-                    alphaMaskFactory: MetalAlphaMaskEffectFactory(context: context)
+                    alphaMaskFactory: MetalAlphaMaskEffectFactory(
+                    context: context, diagnostics: diagnostics
+                )
                 )
             }
             return (
@@ -273,6 +288,7 @@ public struct MetalSourceProvider {
         let parentSceneChain = self.parentSceneChain
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
+        let diagnostics = self.diagnostics
         return { sceneID, context in
             guard let timeline = sceneResolver?(sceneID) else { return nil }
             if parentSceneChain.filter({ $0 == sceneID }).count >= 10 { return nil }
@@ -286,7 +302,8 @@ public struct MetalSourceProvider {
                 parentSceneChain: parentSceneChain + [sceneID],
                 tachieRendererFactory: tachieRendererFactory,
                 timeline: timeline,
-                effectProvider: effectProvider
+                effectProvider: effectProvider,
+                diagnostics: diagnostics
             )
             let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
             return TimelineComposer(
@@ -294,7 +311,9 @@ public struct MetalSourceProvider {
                 targetFactory: context,
                 sourceProvider: { item in childProvider.source(for: item) },
                 effectProvider: effectProvider ?? TypedEffectPairProvider(),
-                alphaMaskFactory: MetalAlphaMaskEffectFactory(context: context)
+                alphaMaskFactory: MetalAlphaMaskEffectFactory(
+                    context: context, diagnostics: diagnostics
+                )
             )
         }
     }
