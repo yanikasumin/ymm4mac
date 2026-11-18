@@ -229,7 +229,8 @@ public struct MetalSourceProvider {
                     parentSceneChain: parentSceneChain,
                     tachieRendererFactory: tachieRendererFactory,
                     timeline: timeline,
-                    effectProvider: effectProvider
+                    effectProvider: effectProvider,
+                    diagnostics: diagnostics
                 )
                 let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
                 return TimelineComposer(

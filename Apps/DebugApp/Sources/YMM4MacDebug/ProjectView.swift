@@ -2234,11 +2234,15 @@ struct ProjectView: View {
                 }
             }
         }
-        previewWorker.onRenderFailed = { identity, _, failures, history in
+        previewWorker.onRenderFailed = { identity, frame, failures, history in
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
                   identity.version == previewModelVersion
             else { return }
+            // 正常画像と同じ採用条件にそろえる: 停止中は現在位置と
+            // 一致するフレームの失敗だけを採用する（シーク前の失敗
+            // 通知で現在の表示を消さない。R14-03）。
+            if !isPlayingForm, frame != Int(previewFrame) { return }
             previewImage = nil
             displayedPreviewIdentity = nil
             displayedPreviewFrame = nil
@@ -2317,6 +2321,11 @@ struct ProjectView: View {
         // 二度と完成しない。別モデルの画像を保存せず取り消す
         // （R12-06）。
         pendingThumbnail = nil
+        // 診断の表示も旧モデルのものを持ち越さない。診断の所有者
+        // は描画セッション（モデルごとに作り直される）ため、表示
+        // 状態もモデル版数の変更でリセットする（R14-02）。
+        previewCurrentFailure = false
+        previewDiagnostics = []
         guard let identity = currentPreviewIdentity else { return }
         previewWorker.setModel(
             identity: identity, timelines: snapshot.timelines,

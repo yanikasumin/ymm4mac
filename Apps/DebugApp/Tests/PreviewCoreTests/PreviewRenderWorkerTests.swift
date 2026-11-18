@@ -21,10 +21,16 @@ private final class FakeSession: PreviewRenderSession {
         return frames
     }
 
+    /// 設定されている間、描画のたびにこの種別の診断を記録する。
+    var recordKindOnRender: String?
+
     func render(frame: Int, timeline: Timeline, usage: TimelineSourceUsage) -> CGImage? {
         lock.lock()
         frames.append(frame)
         lock.unlock()
+        if let recordKindOnRender {
+            diagnostics.record(kind: recordKindOnRender, message: "テスト用の失敗")
+        }
         if blockRenders {
             _ = gate.wait(timeout: .now() + 10)
         }
@@ -273,6 +279,51 @@ final class PreviewRenderWorkerTests: XCTestCase {
             }
         }
         XCTAssertEqual(session.renderedFrames, Array(0..<rounds))
+    }
+
+    /// 診断の受け渡し: 失敗を記録した描画では今回分が非空になり、
+    /// 次の正常な描画では空になるが履歴には残る。モデルを切り
+    /// 替えると旧モデルの診断は混入しない（R14 の確認試験）。
+    func testDiagnosticsDeliveryAcrossRendersAndModelSwap() {
+        let sessionA = FakeSession()
+        let sessionB = FakeSession()
+        let worker = makeWorker(sessions: [sessionA, sessionB])
+        var payloads: [(
+            failures: [RenderDiagnosticsCollector.Entry],
+            history: [RenderDiagnosticsCollector.Entry]
+        )] = []
+        let delivered = expectation(description: "three deliveries")
+        delivered.expectedFulfillmentCount = 3
+        worker.onRenderFailed = { _, _, failures, history in
+            payloads.append((failures, history))
+            delivered.fulfill()
+        }
+        let idA = identity(generation: 1, version: 1)
+        let idB = identity(generation: 1, version: 2)
+        worker.setModel(
+            identity: idA, timelines: [], timeline: Timeline(),
+            baseDirectory: nil
+        )
+        sessionA.recordKindOnRender = "alphaMaskWarp"
+        worker.request(frame: 1, usage: .paused, identity: idA)
+        waitUntil("A rendered frame 1") { sessionA.renderedFrames == [1] }
+        sessionA.recordKindOnRender = nil
+        worker.request(frame: 2, usage: .paused, identity: idA)
+        waitUntil("A rendered frame 2") { sessionA.renderedFrames == [1, 2] }
+        worker.setModel(
+            identity: idB, timelines: [], timeline: Timeline(),
+            baseDirectory: nil
+        )
+        worker.request(frame: 3, usage: .paused, identity: idB)
+
+        wait(for: [delivered], timeout: 5)
+        XCTAssertEqual(payloads.count, 3)
+        XCTAssertEqual(payloads[0].failures.map { $0.kind }, ["alphaMaskWarp"])
+        XCTAssertEqual(payloads[0].history.count, 1)
+        XCTAssertTrue(payloads[1].failures.isEmpty)
+        XCTAssertEqual(payloads[1].history.count, 1)
+        XCTAssertTrue(payloads[2].failures.isEmpty)
+        XCTAssertTrue(payloads[2].history.isEmpty)
     }
 
     /// 初期化失敗の通知には識別子が付き、どのモデルの失敗か
