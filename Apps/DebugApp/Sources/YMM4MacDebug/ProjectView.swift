@@ -40,6 +40,9 @@ struct ProjectView: View {
     /// 再生ボタンの表示状態（再生中かどうか）。
     /// エンジンの状態変化通知で駆動する。
     @State private var isPlayingForm = false
+    /// 直近の再生開始失敗の理由文（エンジンの開始失敗通知で駆動し、
+    /// 診断タブに表示する。R6-03）。
+    @State private var playbackError: String?
     /// 再生速度（倍率）。本家の速度コンボの選択値。
     @State private var playbackRate: Double = 1.0
     /// リピート再生トグル。
@@ -2135,7 +2138,12 @@ struct ProjectView: View {
         engine.isRepeatEnabled = isRepeatOn
         engine.onPlayingStateChanged = { isPlaying in
             isPlayingForm = isPlaying
+            if isPlaying { playbackError = nil }
             if !isPlaying { syncMeterValues() }
+        }
+        engine.onStartFailed = { error in
+            // 開始失敗の理由をそのまま診断タブへ表示する（R6-03）。
+            playbackError = error.userMessage
         }
         engine.onPositionChanged = { [weak engine] _ in
             guard let engine else { return }
@@ -2322,6 +2330,10 @@ struct ProjectView: View {
 
     private var diagnosticsView: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let playbackError {
+                Text("再生開始失敗: \(playbackError)")
+                    .font(.callout)
+            }
             if diagnostics.skippedItems.isEmpty && diagnostics.migratedTypeNames.isEmpty {
                 Text("読み飛ばし・型移行なし")
                     .font(.callout)
