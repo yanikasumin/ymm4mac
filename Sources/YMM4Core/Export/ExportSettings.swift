@@ -95,6 +95,33 @@ public enum ExportRange {
     }
 }
 
+// MARK: - PngWav ライター設定（本家 PngWavFileWriterSettings）
+
+/// PngWav ライターへ明示的に渡す不変の設定スナップショット。
+/// 本家では `PngWavFileWriterSettings` のシングルトンが保持し、
+/// ファイル名は設定 UI を開く副作用でプロジェクト名へ上書きされる
+/// （W6-2.3 と同じ構造）。Mac 版では開始時に呼び出し側が明示的に
+/// 渡す。既定値は本家の設定クラスの初期値どおり。
+public struct PngWavExportSettings: Equatable, Sendable {
+    /// ファイル名の接頭辞。書き出しファイルは `{fileName}_{連番}` に
+    /// なる。既定は本家どおり "untitled"。
+    public var fileName: String
+    /// PNG 連番を書き出すか。既定 true。
+    public var isPngOutputEnabled: Bool
+    /// WAV を書き出すか。既定 true。
+    public var isWavOutputEnabled: Bool
+
+    public init(
+        fileName: String = "untitled",
+        isPngOutputEnabled: Bool = true,
+        isWavOutputEnabled: Bool = true
+    ) {
+        self.fileName = fileName
+        self.isPngOutputEnabled = isPngOutputEnabled
+        self.isWavOutputEnabled = isWavOutputEnabled
+    }
+}
+
 // MARK: - FFmpeg ライター設定（本家 FFmpegVideoFileWriterSettings）
 
 /// 音声ビットレート。本家 `AudioBitRate`（生値は kbps そのもの）。

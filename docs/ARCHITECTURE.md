@@ -173,6 +173,13 @@
                                （BT.709 リミテッド）
           FFmpegProcessWriter.swift 音声・映像の別プロセス＋終了時 mux の本家方式
                                （プロセス起動は差し替え点）
+          PngWavFileWriter.swift PngWav ライター（PNG 連番＋WAV のフォルダ
+                               書き出し。本家 Plugin.FileWriter.PngWav の
+                               仕様再現。MAC-0043）
+          WavFileWriter.swift  WAV（RIFF）逐次書き出し（本家 Commons の
+                               WavFileWriter 相当。サイズ欄は確定時に埋め直す）
+          PNGEncoder.swift     PNG エンコーダ（純粋 Swift 実装。BGRA →
+                               RGBA、96 dpi 宣言、行フィルタ＋DEFLATE）
           LoudnessAnalysis.swift ラウドネス解析の倍率計算
           BS1770LoudnessAnalyzer.swift BS.1770-3 アナライザ（二段ゲーティング）
           DynamicsProcessorStream.swift DynamicsProcessor（Ratio=1 高速経路）

@@ -43,6 +43,7 @@
 - MAC-0038 — デモ版内蔵のデバッグ用全自動テスト
 - MAC-0039 — DebugApp の .app バンドル化
 - MAC-0040 — VoiceItem の音声供給（Issue #51）
+- MAC-0043 — PngWav ライター（PNG 連番＋WAV 書き出し）（Issue #49）
 - PR32 — DebugApp フロントエンドの形
 - UI-FORM — フロントエンドの形の完成（レイアウト・ツールバー・メニュー・コンテキストメニュー・ドロップイン等）
 - UI32-01 — レベルメーターの本家構成化と誤記修正
@@ -858,6 +859,115 @@
 **検証。** Mac 実機（検証コピー ~/ymm4-work/voice51-YMM4Mac）でフルスイート 441 件（既存 432＋新規 9）・失敗 0、ルート＋DebugApp のビルド成功・警告 0（2026-11-18。他担当の検証 2 件と並行実行のため重量級テストに数十分を要した）。Linux でも 432 件・失敗なし。新規テスト `VoiceAudioProviderTests` 9件は Mac 実機で全合格: Brotli 解凍が Google 公式実装で圧縮したフィクスチャ（48kHz/16bit/ステレオ WAV 9644 バイト）とバイト完全一致すること（SHA-256 で照合）、VoiceCache から PCM が供給されサンプル値が元の PCM16 と一致すること、カスタム音声ファイルからの供給、壊れたキャッシュでの無音化、供給なしでの無音、判定・形式推定の単体、ミキサー経由で VoiceItem の音が現れること。**未実施**: .NET の `BrotliStream` が書いた実キャッシュでの検証（本家生成の VoiceCache を持つ実ファイルが手元に無いため。形式は同じ RFC 7932 であり、Google 公式実装の圧縮データで相互運用は実証済み）。実時間再生への供給は Issue #52（再生基盤そのものが未実装）で、同じ `AudioSourceFactory` 経路を使う。
 
 **次の担当へ。** 音声合成エンジンを導入する際は、この resolver の解決順の末尾（エンジン生成）に相当する供給を前段へ追加する形になる。`providerFromTemporaryFile` は factory が全デコード方式である前提で一時ファイルを即削除しているため、ストリーミング方式の factory を導入する場合は所有権の見直しが必要。
+#### MAC-0043 — PngWav ライター（PNG 連番＋WAV 書き出し）（Issue #49）
+
+##### 何を実装したか
+
+本家の3系統目のライターである PngWav（`YukkuriMovieMaker.Plugin.
+FileWriter.PngWav`）を実装した。出力フォルダへ PNG 連番と WAV を
+書き出す。書き出しセッション（ExportSession）から駆動でき、
+TimelineExporter にも実合成経路の入口 `runPngWav` を追加した。
+書き出しダイアログの形式選択 UI への組み込みは本記録の範囲外
+（UI 側の作業単位で扱う）。
+
+##### どこを変更したか
+
+- 新規 `Sources/YMM4Core/Export/PngWavFileWriter.swift`:
+  VideoFileWriting 実装（本家 PngWavFileWriter の再現）
+- 新規 `Sources/YMM4Core/Export/WavFileWriter.swift`:
+  WAV（RIFF）逐次書き出し（本家 Commons の WavFileWriter 相当）
+- 新規 `Sources/YMM4Core/Export/PNGEncoder.swift`:
+  PNG エンコーダ（純粋 Swift 実装）
+- `Sources/YMM4Core/Export/ExportSettings.swift`:
+  `PngWavExportSettings` を追加
+- `Sources/YMM4GPU/Export/TimelineExporter.swift`:
+  `runPngWav(outputDirectory:settings:cancellation:onProgress:)`
+  を追加（run() と同じ契約。全尺・進捗通知つき）
+- 新規 `Tests/YMM4CoreTests/Export/PngWavWriterTests.swift`（9 件）
+- `docs/ARCHITECTURE.md`: Export 配下の3ファイルを行追加
+
+##### どう実装したか
+
+本家仕様の根拠（デコンパイル済みコード）:
+
+- `PngWavFileWriter.cs` コンストラクタ: 引数は出力フォルダ、
+  ファイル名、VideoInfo、PNG 有効フラグ、WAV 有効フラグ。
+  SupportedStreams は2フラグから決まる。無効なストリームへの
+  書き込みは NotImplementedException。
+- 同 WriteVideoCore: PNG は `{FileName}_{index}.png`（index は
+  0 始まり）、WIC で BGRA・Premultiplied・96 dpi・
+  VideoInfo の PixelWidth/PixelHeight でエンコード。
+- 同 WriteAudioCore: WavFileWriter（float・Hz・2ch・depth 32・
+  formatID 3）。`wavWriter == null || 残量 < サンプル数` のとき
+  破棄して `{FileName}_{index}.wav`（0 始まり）を開く。
+  1 回の書き込みを複数ファイルに分割しない。
+- `YukkuriMovieMaker.Commons/WavFileWriter.cs`: 44 バイトの
+  RIFF ヘッダ（fmt 16 バイト、サイズ欄は初期値 0）を書き、
+  Dispose でオフセット 4 = 位置 − 8、オフセット 40 = 位置 − 44
+  に埋め直す。GetRemainingWritableSampleCount は
+  `(int.MaxValue − 現在位置) / depth`（depth はビット数 = 32。
+  本家の式をそのまま踏襲）。
+- `PngWavFileWriterSettings.cs`: FileName 既定値 "untitled"、
+  IsPngOutputEnabled / IsWavOutputEnabled とも既定 true。
+  プラグイン定義は OutputPathMode = Directory。
+  GetVideoConfigView が FileName = プロジェクト名を代入する
+  （UI の副作用）。
+
+Mac 側の設計判断:
+
+- PNG エンコードは WIC の代わりに純粋 Swift のエンコーダ
+  （PNGEncoder）。BGRA → RGBA の並べ替え、premultiplied の
+  画素値はそのまま保持、カラータイプ 6・ビット深度 8、
+  pHYs チャンクで 3780 px/m（= 96 dpi）を宣言する。
+  行フィルタは5種から最小絶対和で選択、圧縮は zlib 形式
+  （固定ハフマン DEFLATE＋LZ77）。画素は可逆で一致する。
+- ファイル系エラーは本家 TryConvertFileException（HRESULT →
+  WarningException）相当として、errno から ExportError へ
+  分類する。文言は既存の FFmpegErrorClassifier と揃えた
+  （容量不足・権限なし・使用中は actionable、それ以外は
+  unresolvable に文脈と下位エラーを保持）。
+- 本家の設定シングルトン＋UI 副作用（FileName への
+  プロジェクト名代入）は再現せず、PngWavExportSettings の
+  値として明示的に渡す（W6-C9 の ExportSettings と同じ方針）。
+- WavFileWriter のバイト上限は引数 `byteLimit`（既定
+  Int32.max = 本家どおり）として差し替え可能にし、分割の
+  テストを小さな上限で検証できるようにした。PngWavFileWriter
+  にも同じ差し替え点（`wavByteLimit`）を持つ。
+- 出力フォルダが無い場合は init で作成する（本家は呼び出し側
+  の前提。実利用上の差異として記録）。
+
+##### 検証
+
+- 単体テスト 9 件（Tests/YMM4CoreTests/Export/
+  PngWavWriterTests.swift）: WAV ヘッダの各フィールドと
+  ペイロードのビット一致、残量式（(2044 − 44) / 32 = 62 等）、
+  supportedStreams の組合せ、無効ストリーム書き込みの例外、
+  PNG の番号付けと独立デコーダ（テスト側実装の CRC-32・
+  inflate・全フィルタ解除・Adler-32 照合）による可逆往復、
+  37×23 グラデーションの往復、WAV 分割（上限 2044 バイトで
+  100 float × 3 回 → 3 ファイルに各 100 float、4 本目は無い）、
+  分割なしの単一ファイル、セッション統合（30 フレーム・
+  fps 30・48 kHz → PNG 30 枚 proj_0.png … proj_29.png、
+  WAV データ 384000 バイト = ちょうど 1.000 秒）。
+- 全スイート: Linux 441 件・失敗 0（従来 432 件 + 新規 9 件）。
+  Mac でも全スイートを実行し、新規 9 件を含む 438 件の完了と
+  失敗 0 を確認した。残り 3 件は長時間かかる音声ドリフト系の
+  既存テスト（本変更と無関係）で、本記録の作成時点ではまだ
+  実行中だった（Mac が他作業と競合し、スイート全体の実行に
+  通常の数倍の時間を要した）。
+- ハーネス Harnesses/media4950-harness（Mac・release）:
+  実合成経路から runPngWav を実行し completed、PNG 30 枚、
+  WAV 1 秒分、PNG を ImageIO でデコード可能（64×64）を確認。
+  同ハーネスで既存の FFmpeg 実エンコード（30 フレーム）も
+  completed し、ffprobe の duration = 1.000000 秒を再確認した。
+
+##### 未解決事項
+
+- 書き出しダイアログでの形式選択（現在は mp4 固定表示）と
+  PngWav の配線は UI 側の作業単位で未実施。本記録の範囲は
+  ライター本体と TimelineExporter の入口まで。
+- PNG の圧縮率は WIC と一致しない（可逆性と dpi 宣言は一致。
+  圧縮方式の差異は仕様上の等価範囲と判断）。
 
 ## 以降の記載テンプレート
 
