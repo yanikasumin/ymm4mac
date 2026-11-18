@@ -8,13 +8,12 @@ import YMM4Core
 /// 追加ボタン（120、AddVoiceMode の選択を重ねた複合ボタン）。
 /// 追加ボタンはセリフが空でないときだけ有効になる。
 ///
-/// 現段階は「形」のみ: 入力とキャラクター選択は実動するが、
-/// 追加ボタンの先（VoiceItem の生成。長さは生成音声から決まる）は
-/// 未接続で、`onAdd` の接続は接続フェーズで行う
-/// （台帳: analysis-notes/UI-FRONTEND-DIFF.md）。
+/// 入力とキャラクター選択は実動し、追加は `onAdd` 経由で
+/// VoiceItem 生成へ接続される（長さは本家では生成音声から決まるが、
+/// 音声供給が未接続の間は呼び出し側が仮置きする。台帳に記録）。
 struct SerifInputView: View {
     let characters: [Character]
-    /// 追加が確定したときの受け口（未接続なら nil）。
+    /// 追加が確定したときの受け口。
     var onAdd: ((_ characterName: String?, _ serif: String, _ seeksAfterAdd: Bool) -> Void)?
 
     @State private var characterName: String = ""
@@ -26,23 +25,23 @@ struct SerifInputView: View {
         HStack(spacing: 6) {
             characterSlot
 
-            TextField("ここにセリフを入力", text: $serif)
+            TextField(UIStrings.Serif.placeholder, text: $serif)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { submitIfPossible() }
 
             // 追加ボタン（モード選択を重ねた複合ボタンの形）。
             HStack(spacing: 2) {
-                Button("追加") { submitIfPossible() }
+                Button(UIStrings.Serif.add) { submitIfPossible() }
                     .disabled(serif.isEmpty)
                 Menu {
-                    Toggle("追加してシーク", isOn: $seeksAfterAdd)
+                    Toggle(UIStrings.Serif.addAndSeek, isOn: $seeksAfterAdd)
                 } label: {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9))
                 }
                 .menuStyle(.borderlessButton)
                 .frame(width: 18)
-                .help("追加モード")
+                .help(UIStrings.Serif.addMode)
             }
             .frame(width: 120, alignment: .trailing)
         }
@@ -58,7 +57,7 @@ struct SerifInputView: View {
     private var characterSlot: some View {
         HStack(spacing: 2) {
             if characters.isEmpty {
-                Text("（キャラクター未登録）")
+                Text(UIStrings.Serif.noCharacters)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -69,7 +68,7 @@ struct SerifInputView: View {
                     }
                 }
                 .labelsHidden()
-                .help("キャラクター")
+                .help(UIStrings.Serif.character)
             }
             Spacer(minLength: 0)
             // キャラクター設定を開くボタン（コンボの隣。本家に実在
@@ -80,7 +79,7 @@ struct SerifInputView: View {
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.borderless)
-            .help("キャラクター設定を開く（未接続）")
+            .help(UIStrings.Serif.openCharacterSettings + UIStrings.Common.unconnectedSuffix)
         }
         .frame(width: 146)
     }

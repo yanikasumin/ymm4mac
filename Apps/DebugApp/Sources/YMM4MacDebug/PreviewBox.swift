@@ -14,19 +14,40 @@ final class PreviewBox {
     }
 
     let key: SessionKey
-    private let devices: MetalGraphicsDevices
-    private let context: MetalGraphicsContext
-    private let composer: TimelineComposer
+    /// Metal 初期化に失敗した場合の、利用者向けの理由文。成功時は nil。
+    /// プレビューの入口（ProjectView）はこれを表示して、失敗が無言に
+    /// ならないようにする（Issue #50）。
+    let initializationFailure: String?
+    private let devices: MetalGraphicsDevices?
+    private let context: MetalGraphicsContext?
+    private let composer: TimelineComposer?
     private var isDisposed = false
 
-    init?(key: SessionKey, timeline: Timeline, timelines: [Timeline]? = nil, baseDirectory: URL?) {
-        guard let devices = MetalGraphicsDevices() else { return nil }
+    init(key: SessionKey, timeline: Timeline, timelines: [Timeline]? = nil, baseDirectory: URL?) {
         self.key = key
+        let devices: MetalGraphicsDevices
+        do {
+            devices = try MetalGraphicsDevices()
+        } catch let error as MetalInitializationError {
+            initializationFailure = error.userMessage
+            self.devices = nil
+            self.context = nil
+            self.composer = nil
+            return
+        } catch {
+            initializationFailure = "Metal の初期化に失敗しました（\(error)）"
+            self.devices = nil
+            self.context = nil
+            self.composer = nil
+            return
+        }
+        initializationFailure = nil
         self.devices = devices
         let videoInfo = timeline.videoInfo
-        self.context = devices.makeContext(
+        let context = devices.makeContext(
             targetSize: PixelSize(width: videoInfo.width, height: videoInfo.height)
         )
+        self.context = context
         // シーン参照はプロジェクト全体のタイムライン列から解決する。
         let allTimelines = timelines ?? [timeline]
         // GPU 処理系エフェクトは Metal 処理器で描画する。供給元は外側と
@@ -50,12 +71,10 @@ final class PreviewBox {
     }
 
     /// 指定フレームで合成し、読み戻した画像を返す。失敗時は nil。
-    /// usage は供給元の使われ方（再生中か停止中か）で、音声付き
-    /// 映像アイテムのフレーム供給方式を切り替える。
     func render(
         frame: Int, timeline: Timeline, usage: TimelineSourceUsage = .paused
     ) -> CGImage? {
-        guard !isDisposed else { return nil }
+        guard !isDisposed, let devices, let context, let composer else { return nil }
         let videoInfo = timeline.videoInfo
         context.targetSize = PixelSize(width: videoInfo.width, height: videoInfo.height)
         let seconds = FrameTime.time(fromFrame: frame, fps: videoInfo.fps)
@@ -71,7 +90,7 @@ final class PreviewBox {
     func dispose() {
         guard !isDisposed else { return }
         isDisposed = true
-        composer.dispose()
+        composer?.dispose()
     }
 
     deinit {

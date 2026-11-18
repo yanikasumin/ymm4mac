@@ -176,6 +176,13 @@
                                （BT.709 リミテッド）
           FFmpegProcessWriter.swift 音声・映像の別プロセス＋終了時 mux の本家方式
                                （プロセス起動は差し替え点）
+          PngWavFileWriter.swift PngWav ライター（PNG 連番＋WAV のフォルダ
+                               書き出し。本家 Plugin.FileWriter.PngWav の
+                               仕様再現。MAC-0043）
+          WavFileWriter.swift  WAV（RIFF）逐次書き出し（本家 Commons の
+                               WavFileWriter 相当。サイズ欄は確定時に埋め直す）
+          PNGEncoder.swift     PNG エンコーダ（純粋 Swift 実装。BGRA →
+                               RGBA、96 dpi 宣言、行フィルタ＋DEFLATE）
           LoudnessAnalysis.swift ラウドネス解析の倍率計算
           BS1770LoudnessAnalyzer.swift BS.1770-3 アナライザ（二段ゲーティング）
           DynamicsProcessorStream.swift DynamicsProcessor（Ratio=1 高速経路）
@@ -185,6 +192,10 @@
           MetalGraphicsDevices.swift MetalGraphicsDevices（デバイス共有・
                                登録表・共有資源、readBGRA によるバイト列
                                読み戻しを含む）、シェーダ一式、CGImage 読み戻し
+          MetalInitializationError.swift Metal 初期化失敗の型（種別と
+                               下位エラーを保持し、利用者向け理由文を持つ。
+                               初期化は throws になり、失敗は握りつぶさない。
+                               MAC-0044）
           MetalImage.swift     MetalImage（ImageReference の実体。境界と
                                テクスチャ平面範囲 texturePlaneRect /
                                planeOffset を分けて持つ。MAC-0027）

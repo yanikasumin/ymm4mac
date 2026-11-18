@@ -42,16 +42,18 @@ public final class TimelineExporter {
     /// 音声解析の結果（書き出し前に確定する。表示・検証用）。
     public var analysisResult: LoudnessAnalysisResult { audioProvider.analysisResult }
 
-    public init?(
+    /// Metal 初期化に失敗した場合は `MetalInitializationError` を投げる
+    /// （Issue #50: 失敗を無言で握りつぶさず、理由を入口で表示する）。
+    public init(
         timeline: Timeline,
         timelines: [Timeline],
         baseDirectory: URL?,
         loudness: LoudnessNormalizationSettings = LoudnessNormalizationSettings(),
         compressor: CompressorSettings = CompressorSettings()
-    ) {
-        guard let videoProvider = MetalExportVideoProvider(
+    ) throws {
+        let videoProvider = try MetalExportVideoProvider(
             timeline: timeline, timelines: timelines, baseDirectory: baseDirectory
-        ) else { return nil }
+        )
         self.timeline = timeline
         self.videoProvider = videoProvider
         let pcmProviderFactory = AVFoundationPCMProviderFactory(baseDirectory: baseDirectory)
@@ -94,6 +96,45 @@ public final class TimelineExporter {
         return session.run(
             configuration: ExportSession.Configuration(
                 outputPath: outputPath,
+                videoInfo: timeline.videoInfo,
+                frameRange: range
+            ),
+            videoProvider: videoProvider,
+            audioProvider: audioProvider,
+            isCancelled: { cancellation?.isCancelled ?? false }
+        )
+    }
+
+    /// PngWav 形式（PNG 連番＋WAV）で書き出す。出力先は単一ファイル
+    /// ではなくフォルダであり、セッション設定の outputPath には
+    /// そのフォルダパスを渡す（付随ファイル生成フックは使わない）。
+    /// writer の生成失敗（フォルダを作成できない等）は例外として投げ、
+    /// それ以降の結果は ExportOutcome で返す（`run` と同じ契約）。
+    public func runPngWav(
+        outputDirectory: String,
+        settings: PngWavExportSettings = PngWavExportSettings(),
+        cancellation: TimelineExportCancellation? = nil,
+        onProgress: ((Int, Int) -> Void)? = nil
+    ) throws -> ExportOutcome {
+        let range = ExportRange.normalized(
+            from: 0, to: timeline.length, timelineLength: timeline.length
+        )
+        let writer = try PngWavFileWriter(
+            directoryPath: outputDirectory,
+            fileName: settings.fileName,
+            videoInfo: timeline.videoInfo,
+            isPngOutputEnabled: settings.isPngOutputEnabled,
+            isWavOutputEnabled: settings.isWavOutputEnabled
+        )
+        if let onProgress {
+            videoProvider.onFrameRendered = { frame in
+                onProgress(frame - range.lowerBound + 1, range.count)
+            }
+        }
+        let session = ExportSession(writer: writer)
+        return session.run(
+            configuration: ExportSession.Configuration(
+                outputPath: outputDirectory,
                 videoInfo: timeline.videoInfo,
                 frameRange: range
             ),

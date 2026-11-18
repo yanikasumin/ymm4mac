@@ -43,9 +43,12 @@
 - MAC-0038 — デモ版内蔵のデバッグ用全自動テスト
 - MAC-0039 — DebugApp の .app バンドル化
 - MAC-0040 — VoiceItem の音声供給（Issue #51）
+- MAC-0043 — PngWav ライター（PNG 連番＋WAV 書き出し）（Issue #49）
+- MAC-0044 — Metal 初期化診断（失敗を握りつぶさない）（Issue #50）
 - MAC-0041 — サウンドレベルメーター（Issue #52）
 - MAC-0042 — 実時間再生（音声マスタークロック）（Issue #52）
 - PR32 — DebugApp フロントエンドの形
+- UI-FORM — フロントエンドの形の完成（レイアウト・ツールバー・メニュー・コンテキストメニュー・ドロップイン等）
 - UI32-01 — レベルメーターの本家構成化と誤記修正
 - W1 — 構造整理 第1単位: テスト基盤の整備とハーネスの git 管理化
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
@@ -825,6 +828,25 @@
 - **検証**: Linux で影響範囲のテストを実行し全合格（対象6クラス計55件・0失敗。内訳: AudioPipeline 20件、AudioDrift 7件、AudioSampleAccuracy 11件、CompositeGroup 5件、EffectWiring 4件、ExportAudioProvider 8件。これに AudioResamplerQualityTests 9件・0失敗を加え、合計64件・全合格）。Mac 実機でルート＋DebugApp のビルド成功・警告0、取り込んだハーネス9件をリポジトリ内配置から実行し従来値どおり全合格（mac0023 = 25、mac0025 = 18、mac0026 = 19、mac0027 = 15、mac0028 = 90、mac0031 = IoU 1.000、mac0033 = 通常ケース2件・失敗ケースは既定 SKIP、mac0034 = 25、mac0035 = 27）。全自動テストの release レポート比較では、整理前（MAC-0039 時点のレポート）と整理後で合成 p95 が 5.19 ms → 4.89 ms、リサンプラ実時間比が 2.90 / 2.95 → 3.12 / 3.12 と同等であることを確認した（測定の正本はレポートファイル）。
 - **件数訂正（2026-11-18）**: 本項の当初記載（66件）と PR #69 本文の当初記載（計86件とその内訳）は、実測の裏付けのない誤記であったため、上記の実測値（対象6クラス計55件＋AudioResamplerQualityTests 9件＝合計64件・全合格）に訂正した。結論（全合格・Mac ビルド警告0・ハーネス値・全自動テスト比較）に変更はない。
 
+#### UI-FORM — フロントエンドの形の完成（IMPLEMENTED、Mac 検証済み。目視未確認）
+
+- **レイアウト（Issue #37/#38）**: ProjectView の構成を本家 DefaultLayout に合わせた。左カラムは「プレビュー＋トランスポート（初期高さ 400、6px スプリッタで調整可）」の下にタイムラインが残り高さを取り、右カラムは幅 400 で全高。デバッグ機能（書き出し・診断・往復チェック・ログ）は製品レイアウトから外し、ステータスバーの下に折りたたみドロワーとして分離した（既定は閉）。
+- **レイヤー行（Issue #39/#40）**: 行高 32・ラベル幅 80 は従来から本家一致。serif 行との重なりは、固定高レイアウトを廃してタイムライン領域を残り高さにし、ストリップ全体を構造的にクリップすることで解消方向にした（根本原因の切り分けは未実施。目視確認待ち）。
+- **ツールバー（Issue #41）**: 5種（ズーム／アイテム追加／編集／プロジェクト／フィードバック）をアイコン化し、ツールチップは本家 Command.TextWithShortcut の形（名称＋ショートカット併記）にした。アイテム追加は13種ボタン＋テンプレート／最近のドロップダウン、編集は波形・グリッドの SplitButton とメーターのドロップダウンを含む。取り消し／やり直し／切り取り・コピー・貼り付けはバックエンド（履歴・クリップボード）が無いため無効表示。
+- **ホイールズーム（Issue #42）**: 目盛り帯の上でのスクロールを本家 TimelineScaleViewModel どおり ×1.125／×0.875 刻みにした（NSEvent のローカル監視で目盛り矩形内だけ消費）。
+- **メニュー実体化**: ファイル（新規／開く／追加／動画の設定／動画出力／サムネイル出力／コピー保存）、編集（現在位置で分割／アイテム操作／タイムライン操作）、レイアウト（既定に戻す）、ヘルプ（本家と同じ外部リンク）を接続。接続先の無い項目（テンプレート適用・バックアップ復元・Exo出力・字幕インポート・ツールウィンドウ群・ボイス操作・整列ほか）は無効表示にし、理由は各所のコメントに残した。
+- **レイヤー追加／削除**: ラベルの右クリックメニューと ⋯ メニューから挿入／削除／上下移動／全表示／他を非表示／設定リセットを接続（アイテムと LayerSetting の番号付け替えを含む）。
+- **プレビューハンドル**: 選択アイテムの四隅（拡大率）と辺中点（回転角）のドラッグを実装。書き込みは PropertyDescriptor 経由で先頭値／定数値の規則に従う。
+- **serif 行 → VoiceItem**: 追加で VoiceItem を生成し、キャラクター・セリフ・再生ヘッド位置を設定。「追加してシーク」も接続。長さは音声供給（Issue #51）が未接続のため1秒の仮置き。
+- **コンテキストメニュー**: キャンバス背景／目盛り／アイテム上／レイヤーラベル／シーンタブを追加。本家は右クリック位置を対象にするが SwiftUI では位置が取れないため、再生ヘッド位置とクリック対象で代替（差異として記録）。レイヤーの切り取り／コピー／貼り付けはクリップボードが無いため未収録。
+- **ドロップイン**: タイムラインへファイルをドロップすると、本家の判定順（動画→音声→画像）と拡張子集合で分類してアイテム化する（長さは仮置き）。単一の .ymmp はプロジェクトとして開く。字幕ファイルの分岐は未実装。
+- **エフェクト追加ポップアップ**: 登録済み定義95種を検索＋分類リストから選んで追加するポップアップと、各行の削除を EffectInspectorView に実装。表示名・カテゴリ・検索キーワードは本家定義クラスの [VideoEffect] 属性と Texts リソースから全95件を実測抽出して収録した（カテゴリは本家8種: アニメーション／カメラ／加工／合成／装飾／登場退場／配置／描画）。検索は表示名＋キーワードへの部分一致で、入力中はカテゴリより優先（本家 FilteredEffects の規則。かな種の無視だけは Foundation に対応が無く未対応）。本家の「仮挿入＋閉じたら確定／取り消し」とお気に入り・最近使った項目は、保存先が無いため未実装（選択即追加に簡略化）。
+- **アニメーション種別メニュー**: PropertyDescriptor に種別セッターを追加（値は保持し種別のみ変更）し、標準10種＋イージング10グループ×8（通常／補間）のメニューをアニメーション行へ実装。
+- **文字列テーブル**: UIStrings を新設し、アプリメニュー・ツールバー・コンテキストメニュー等の表示文字列を集約（多言語化の前提）。一部画面には未移行の直書きが残る。
+- **Core 変更**: PropertyMetadata のアニメーションアクセスに種別セッターを追加、VideoEffectRegistry に空の定義を作る makeEmptyDefinition を追加。いずれも既存の振る舞いは不変。
+- **照合監査での是正（本家コード実測に基づく）**: トランスポート行の高さを本家 PreviewView.xaml の操作行どおり 24 にし、速度コンボ幅 60・倍率コンボ幅 80・音量 TextBoxSlider 幅 150（ミュート→音量の並び）へ合わせた。レイヤー行高の増減は本家 SizeUpLayer／SizeDownLayer どおり ±1・下限14・上限なしに是正。タイムラインズームは下限 0.01・拡大上限 4000（ZoomIn／ZoomOutTimeline コマンド）、スライダは TimelineView.xaml 572 の TextBoxSlider（全幅120・数値欄41・範囲 0.1–150）＋ TimelineLogScaleConverter の対数変換式をそのまま実装した（ホイール拡大の上限だけは安全のためコマンド上限 4000 を流用）。アイテム追加・セリフ追加・ドロップの配置レイヤーは本家 GetCurrentLayer()（表示中ビューポートの最上段 = Viewport.Top / LayerHeight）に統一した。セリフ行は MinHeight 26（列幅 146／120 は従来から一致）。
+- **根拠が取れず未確認のまま残した値**: エフェクト追加ポップアップの初期サイズ（本家はリサイズ可＋設定に保持で固定寸法なし）、シー��タブ行の高さ 24、プレビュースプリッタのクランプ範囲（120–900）、プレビューハンドルの割当て（隅=拡大率・辺中点=回転角は本家 XAML に直接の根拠がない独自の割当て）。
+- **検証**: Mac 実機でルート＋DebugApp の debug／release ビルド成功・警告0、全テスト 432 件・0 失敗（変更前と同数・回帰なし）。見た目の最終確認は未実施（目視未確認）。
 #### MAC-0040 — VoiceItem の音声供給（Issue #51）（IMPLEMENTED、Mac 検証済み。ただし .NET 実キャッシュでの検証は未実施）
 
 **何を実装したか。** VoiceItem は字幕が出ても音声が無音だった（MAC-0026 で残した未解決）。プロジェクトに既に存在する音声 — .ymmp 内の `VoiceCache` と、カスタム音声ファイル — を書き出しと音声ミックスの両経路へ供給する接続を実装した。音声合成エンジンそのものは Mac 版に無いため、エンジン生成は対象外（下記「本家との差分」）。
@@ -840,6 +862,195 @@
 **検証。** Mac 実機（検証コピー ~/ymm4-work/voice51-YMM4Mac）でフルスイート 441 件（既存 432＋新規 9）・失敗 0、ルート＋DebugApp のビルド成功・警告 0（2026-11-18。他担当の検証 2 件と並行実行のため重量級テストに数十分を要した）。Linux でも 432 件・失敗なし。新規テスト `VoiceAudioProviderTests` 9件は Mac 実機で全合格: Brotli 解凍が Google 公式実装で圧縮したフィクスチャ（48kHz/16bit/ステレオ WAV 9644 バイト）とバイト完全一致すること（SHA-256 で照合）、VoiceCache から PCM が供給されサンプル値が元の PCM16 と一致すること、カスタム音声ファイルからの供給、壊れたキャッシュでの無音化、供給なしでの無音、判定・形式推定の単体、ミキサー経由で VoiceItem の音が現れること。**未実施**: .NET の `BrotliStream` が書いた実キャッシュでの検証（本家生成の VoiceCache を持つ実ファイルが手元に無いため。形式は同じ RFC 7932 であり、Google 公式実装の圧縮データで相互運用は実証済み）。実時間再生への供給は Issue #52（再生基盤そのものが未実装）で、同じ `AudioSourceFactory` 経路を使う。
 
 **次の担当へ。** 音声合成エンジンを導入する際は、この resolver の解決順の末尾（エンジン生成）に相当する供給を前段へ追加する形になる。`providerFromTemporaryFile` は factory が全デコード方式である前提で一時ファイルを即削除しているため、ストリーミング方式の factory を導入する場合は所有権の見直しが必要。
+#### MAC-0043 — PngWav ライター（PNG 連番＋WAV 書き出し）（Issue #49）
+
+##### 何を実装したか
+
+本家の3系統目のライターである PngWav（`YukkuriMovieMaker.Plugin.
+FileWriter.PngWav`）を実装した。出力フォルダへ PNG 連番と WAV を
+書き出す。書き出しセッション（ExportSession）から駆動でき、
+TimelineExporter にも実合成経路の入口 `runPngWav` を追加した。
+書き出しダイアログの形式選択 UI への組み込みは本記録の範囲外
+（UI 側の作業単位で扱う）。
+
+##### どこを変更したか
+
+- 新規 `Sources/YMM4Core/Export/PngWavFileWriter.swift`:
+  VideoFileWriting 実装（本家 PngWavFileWriter の再現）
+- 新規 `Sources/YMM4Core/Export/WavFileWriter.swift`:
+  WAV（RIFF）逐次書き出し（本家 Commons の WavFileWriter 相当）
+- 新規 `Sources/YMM4Core/Export/PNGEncoder.swift`:
+  PNG エンコーダ（純粋 Swift 実装）
+- `Sources/YMM4Core/Export/ExportSettings.swift`:
+  `PngWavExportSettings` を追加
+- `Sources/YMM4GPU/Export/TimelineExporter.swift`:
+  `runPngWav(outputDirectory:settings:cancellation:onProgress:)`
+  を追加（run() と同じ契約。全尺・進捗通知つき）
+- 新規 `Tests/YMM4CoreTests/Export/PngWavWriterTests.swift`（9 件）
+- `docs/ARCHITECTURE.md`: Export 配下の3ファイルを行追加
+
+##### どう実装したか
+
+本家仕様の根拠（デコンパイル済みコード）:
+
+- `PngWavFileWriter.cs` コンストラクタ: 引数は出力フォルダ、
+  ファイル名、VideoInfo、PNG 有効フラグ、WAV 有効フラグ。
+  SupportedStreams は2フラグから決まる。無効なストリームへの
+  書き込みは NotImplementedException。
+- 同 WriteVideoCore: PNG は `{FileName}_{index}.png`（index は
+  0 始まり）、WIC で BGRA・Premultiplied・96 dpi・
+  VideoInfo の PixelWidth/PixelHeight でエンコード。
+- 同 WriteAudioCore: WavFileWriter（float・Hz・2ch・depth 32・
+  formatID 3）。`wavWriter == null || 残量 < サンプル数` のとき
+  破棄して `{FileName}_{index}.wav`（0 始まり）を開く。
+  1 回の書き込みを複数ファイルに分割しない。
+- `YukkuriMovieMaker.Commons/WavFileWriter.cs`: 44 バイトの
+  RIFF ヘッダ（fmt 16 バイト、サイズ欄は初期値 0）を書き、
+  Dispose でオフセット 4 = 位置 − 8、オフセット 40 = 位置 − 44
+  に埋め直す。GetRemainingWritableSampleCount は
+  `(int.MaxValue − 現在位置) / depth`（depth はビット数 = 32。
+  本家の式をそのまま踏襲）。
+- `PngWavFileWriterSettings.cs`: FileName 既定値 "untitled"、
+  IsPngOutputEnabled / IsWavOutputEnabled とも既定 true。
+  プラグイン定義は OutputPathMode = Directory。
+  GetVideoConfigView が FileName = プロジェクト名を代入する
+  （UI の副作用）。
+
+Mac 側の設計判断:
+
+- PNG エンコードは WIC の代わりに純粋 Swift のエンコーダ
+  （PNGEncoder）。BGRA → RGBA の並べ替え、premultiplied の
+  画素値はそのまま保持、カラータイプ 6・ビット深度 8、
+  pHYs チャンクで 3780 px/m（= 96 dpi）を宣言する。
+  行フィルタは5種から最小絶対和で選択、圧縮は zlib 形式
+  （固定ハフマン DEFLATE＋LZ77）。画素は可逆で一致する。
+- ファイル系エラーは本家 TryConvertFileException（HRESULT →
+  WarningException）相当として、errno から ExportError へ
+  分類する。文言は既存の FFmpegErrorClassifier と揃えた
+  （容量不足・権限なし・使用中は actionable、それ以外は
+  unresolvable に文脈と下位エラーを保持）。
+- 本家の設定シングルトン＋UI 副作用（FileName への
+  プロジェクト名代入）は再現せず、PngWavExportSettings の
+  値として明示的に渡す（W6-C9 の ExportSettings と同じ方針）。
+- WavFileWriter のバイト上限は引数 `byteLimit`（既定
+  Int32.max = 本家どおり）として差し替え可能にし、分割の
+  テストを小さな上限で検証できるようにした。PngWavFileWriter
+  にも同じ差し替え点（`wavByteLimit`）を持つ。
+- 出力フォルダが無い場合は init で作成する（本家は呼び出し側
+  の前提。実利用上の差異として記録）。
+
+##### 検証
+
+- 単体テスト 9 件（Tests/YMM4CoreTests/Export/
+  PngWavWriterTests.swift）: WAV ヘッダの各フィールドと
+  ペイロードのビット一致、残量式（(2044 − 44) / 32 = 62 等）、
+  supportedStreams の組合せ、無効ストリーム書き込みの例外、
+  PNG の番号付けと独立デコーダ（テスト側実装の CRC-32・
+  inflate・全フィルタ解除・Adler-32 照合）による可逆往復、
+  37×23 グラデーションの往復、WAV 分割（上限 2044 バイトで
+  100 float × 3 回 → 3 ファイルに各 100 float、4 本目は無い）、
+  分割なしの単一ファイル、セッション統合（30 フレーム・
+  fps 30・48 kHz → PNG 30 枚 proj_0.png … proj_29.png、
+  WAV データ 384000 バイト = ちょうど 1.000 秒）。
+- 全スイート: Linux 441 件・失敗 0（従来 432 件 + 新規 9 件）。
+  Mac でも全スイートを実行し、新規 9 件を含む 438 件の完了と
+  失敗 0 を確認した。残り 3 件は長時間かかる音声ドリフト系の
+  既存テスト（本変更と無関係）で、本記録の作成時点ではまだ
+  実行中だった（Mac が他作業と競合し、スイート全体の実行に
+  通常の数倍の時間を要した）。
+- ハーネス Harnesses/media4950-harness（Mac・release）:
+  実合成経路から runPngWav を実行し completed、PNG 30 枚、
+  WAV 1 秒分、PNG を ImageIO でデコード可能（64×64）を確認。
+  同ハーネスで既存の FFmpeg 実エンコード（30 フレーム）も
+  completed し、ffprobe の duration = 1.000000 秒を再確認した。
+
+##### 未解決事項
+
+- 書き出しダイアログでの形式選択（現在は mp4 固定表示）と
+  PngWav の配線は UI 側の作業単位で未実施。本記録の範囲は
+  ライター本体と TimelineExporter の入口まで。
+- PNG の圧縮率は WIC と一致しない（可逆性と dpi 宣言は一致。
+  圧縮方式の差異は仕様上の等価範囲と判断）。
+
+#### MAC-0044 — Metal 初期化診断（失敗を握りつぶさない）（Issue #50）
+
+##### 何を実装したか
+
+`MetalGraphicsDevices` の初期化が失敗しても理由が残らなかった
+問題（監査 AUD-06）を解消した。初期化を failable init から
+throws へ変え、失敗の種別と下位エラーを保持する型
+`MetalInitializationError` を新設。プレビューと書き出しの
+入口で利用者向けの理由文を表示し、自動テストのレポートにも
+理由を記録する。種別ごとのフォールバックは作らない（Issue の
+方針どおり）。
+
+##### どこを変更したか
+
+- 新規 `Sources/YMM4GPU/Graphics/MetalInitializationError.swift`:
+  種別（deviceUnavailable / shaderLibraryFailed /
+  shaderFunctionMissing / pipelineCreationFailed /
+  samplerCreationFailed / textureCreationFailed）、
+  利用者向け理由文 `userMessage`、種別＋下位エラーの
+  `description`
+- `Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift`:
+  `init?()` を `init() throws` へ。全ての nil 返し・try? を
+  対応する種別の throw に置換。シェーダソースを引数で受ける
+  初期化子 `init(shaderSource:)` を差し替え点として分離
+  （失敗の人為的誘発に使う）
+- `Sources/YMM4GPU/Export/MetalExportVideoProvider.swift` /
+  `TimelineExporter.swift`: init を throws に伝播
+- DebugApp `Export/ExportJob.swift`: MetalInitializationError
+  を捕捉し、状態表示に理由文を含める
+- DebugApp `Preview/PreviewBox.swift`: 非 failable 化し、
+  失敗時は `initializationFailure` に理由文を保持。
+  `Views/ProjectView.swift` がそれをプレビューエラーとして表示
+- DebugApp `AutoTest/AutoTestRunner.swift`: CompositionSession
+  が失敗理由を保持し、合成計測と書き出し計測の双方で
+  レポートに理由を記録する
+
+##### どう実装したか
+
+- 本家相当の既存契約: GPU 層の失敗検出は MAC-0021 で
+  MetalRenderError（close() から throw）に統一済み。本件は
+  その入口側（初期化）で同じ原則を適用したもの。
+- 初期化の段階ごとに種別を割り当てた: デバイス取得不可、
+  シェーダライブラリのコンパイル失敗（MTLLibrary のエラーを
+  文字列で保持）、シェーダ関数の不足（関数名を保持。検査順は
+  従来どおり）、パイプライン生成失敗（対象名＋下位エラー）、
+  サンプラ生成失敗（対象名）、透明テクスチャ生成失敗
+  （寸法を保持）。
+- 表示文言は種別ごとに固定の日本語文＋保持した名前・寸法を
+  埋め込む形とし、経路（プレビュー／書き出し／自動テスト）
+  ごとに別文言を作らない。
+- 失敗の再現は、壊れたシェーダソースと関数を欠いた
+  シェーダソースを `init(shaderSource:)` に渡すことで行う
+  （本番経路と同じ初期化を通る）。
+
+##### 検証
+
+- ハーネス Harnesses/media4950-harness（Mac・release）:
+  正常初期化（Apple M2 で成功）、壊れたシェーダ →
+  shaderLibraryFailed（理由文「GPU シェーダの初期化に
+  失敗しました」、description に MTLLibraryErrorDomain の
+  コンパイルエラーを保持）、ymm4MosaicKernel だけを欠く
+  シェーダ → shaderFunctionMissing（理由文に不足関数名を
+  含む）を実測で確認。全 11 件 PASS。
+- Mac ビルド: ルートパッケージ・DebugApp とも警告・エラー 0
+  （debug）。全テストは Linux 441 件・失敗 0。Mac でも
+  全スイートを実行し 438 件の完了と失敗 0 を確認した
+  （残り 3 件は MAC-0043 の検証項に記した長時間の既存
+  テストで、本記録の作成時点では実行中）。
+- DebugApp の自動テスト（MAC-0039 の方式、一時バンドルから
+  実行）で AutoTestRunner の変更経路を実行した。終了コード 0、
+  レポートの合成・書き出しとも error なし・書き出しは
+  completed で、Metal 初期化エラーは記録されなかった。
+
+##### 未解決事項
+
+- 理由文の画面表示そのもの（GUI のスクリーンショット等）は
+  未検証。検証したのは、初期化失敗が種別と理由文を伴って
+  入口まで伝播することと、表示先への配線がコンパイルと
+  自動テスト実行を通ることまで。
 
 #### MAC-0041 — サウンドレベルメーター（Issue #52 の前提部品）（IMPLEMENTED、Mac / Linux 検証済み）
 

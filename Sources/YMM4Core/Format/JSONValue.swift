@@ -113,6 +113,32 @@ public extension JSONValue {
         return fields.first(where: { $0.key == key })?.value
     }
 
+    /// 入れ子の深さの上限（パーサと保存時の検査で共用）。
+    ///
+    /// 実ファイルの最大深度の実測は11（検証済みの実プロジェクト2件が
+    /// 10、サンプルが11）。その20倍以上の余裕を持たせつつ、再帰処理の
+    /// スタック消費が実用範囲に収まる値として256とする。これを超える
+    /// 入力は壊れた／細工されたファイルとしてエラーで弾く
+    /// （スタックオーバーフローでプロセスを落とさない）。
+    static let maximumDepth = 256
+
+    /// このツリーの入れ子の深さが `limit` を超えているか。
+    ///
+    /// 検査自体の再帰は `limit + 1` 段で止まるため、相手のツリーが
+    /// どれだけ深くても安全に判定できる。
+    func hasDepth(exceeding limit: Int) -> Bool {
+        switch self {
+        case .array(let elements):
+            if limit <= 0 { return true }
+            return elements.contains { $0.hasDepth(exceeding: limit - 1) }
+        case .object(let fields):
+            if limit <= 0 { return true }
+            return fields.contains { $0.value.hasDepth(exceeding: limit - 1) }
+        default:
+            return limit < 0
+        }
+    }
+
     /// JSON テキストへシリアライズする。
     ///
     /// 文字列のエスケープは Newtonsoft の既定（StringEscapeHandling.Default）
@@ -236,6 +262,8 @@ public struct JSONParseError: Error, Sendable {
 public struct JSONParser {
     private let bytes: [UInt8]
     private var position: Int = 0
+    /// 現在の入れ子の深さ（オブジェクト／配列の開き数）。
+    private var depth: Int = 0
 
     public init(text: String) {
         bytes = Array(text.utf8)
@@ -298,7 +326,24 @@ public struct JSONParser {
         }
     }
 
+    /// コンテナ（オブジェクト／配列）へ入る際の深さ検査。
+    ///
+    /// 上限超過は再帰を深める前に `JSONParseError` で弾く。細工された
+    /// 深い入れ子でスタックオーバーフローを起こさないための検査であり、
+    /// 正常なファイル（実測の最大深度11）は遠く及ばない。
+    private mutating func enterContainer() throws {
+        guard depth < JSONValue.maximumDepth else {
+            throw JSONParseError(
+                message: "入れ子が深すぎます（上限 \(JSONValue.maximumDepth)）",
+                offset: position
+            )
+        }
+        depth += 1
+    }
+
     private mutating func parseObject() throws -> JSONValue {
+        try enterContainer()
+        defer { depth -= 1 }
         position += 1 // {
         var fields: [(key: String, value: JSONValue)] = []
         skipWhitespace()
@@ -337,6 +382,8 @@ public struct JSONParser {
     }
 
     private mutating func parseArray() throws -> JSONValue {
+        try enterContainer()
+        defer { depth -= 1 }
         position += 1 // [
         var elements: [JSONValue] = []
         skipWhitespace()

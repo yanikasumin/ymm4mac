@@ -6,13 +6,13 @@ import YMM4GPU
 
 
 /// プロジェクトのワークスペースを表示するデバッグ画面。
-/// 配置は本家 v4.55.1.1 の実コード解析（analysis-notes/UI-LAYOUT-FACTS.md）
-/// に基づく: 左カラムは上からプレビュー（主役・残り全域）→トランスポート帯
-/// →タイムライン帯（固定高）、右カラムはアイテム詳細（本家の編集ペイン
-/// 幅400・全高）。最下段に本家の並びのステータスバーを置き、書き出し・
-/// 読み込み診断・往復チェックはその上の小タブ（固定高）に残す。
-/// プレビューの高さを固定高さ領域が圧迫しないよう、サイズ配分は
-/// 「プレビューだけが可変、他は全て固定高さ」で設計している。
+/// 配置は本家 v4.55.1.1 の DefaultLayout（実コード解析:
+/// analysis-notes/UI-LAYOUT-FACTS.md §2）: 左カラムは上にプレビュー帯
+/// （初期高さ 400、境界スプリッタで可変）＋下にタイムライン（残り全高）、
+/// 右カラムはアイテム詳細（編集ペイン幅400・全高）。最下段に本家の
+/// 並びのステータスバーを置く。書き出し・読み込み診断・往復チェックの
+/// デバッグ帯は製品レイアウトから分離し、ステータスバーの下の
+/// 折りたたみ抽斗に置く（Issue #37 / #38）。
 /// 縦一列スクロールは廃止した（各領域が内部でスクロールする）。
 struct ProjectView: View {
     let project: Project
@@ -73,8 +73,10 @@ struct ProjectView: View {
     /// タイムラインキャンバスの表示幅（全体フィット計算用。
     /// TimelineStripView から受け取る）。
     @State private var canvasViewportWidth: CGFloat = 800
-    /// 波形表示の有無（本家の「波形を表示/非表示」）。
-    @State private var showWaveform = true
+    /// 表示中ビューポートの最上段レイヤー（本家 GetCurrentLayer() =
+    /// Viewport.Top / LayerHeight）。追加・貼り付け・ドロップの
+    /// 配置レイヤーは本家では全てこれで決まる。ストリップが報告する。
+    @State private var topVisibleLayer: Int = 0
     /// レベルメーターの表示フラグ（本家 YMMSettings の
     /// PeakMeterSettings.IsEnabled / LoudnessMeterSettings.IsEnabled）。
     /// ピークメーターは既定 true、ラウドネスメーターは既定 false
@@ -83,6 +85,24 @@ struct ProjectView: View {
     @State private var isLoudnessMeterEnabled = false
     /// メーター帯へのホバー（本家はホバー時に目盛り数値ラベルを出す）。
     @State private var isMeterHovering = false
+    /// プレビュー帯の高さ（本家 DefaultLayout のプレビュー DockHeight。
+    /// 初期値 400、下のスプリッタで可変）。
+    @State private var previewPaneHeight: CGFloat = 400
+    /// スプリッタのドラッグ量の前回値（差分計算用）。
+    @State private var splitterLastTranslation: CGFloat = 0
+    /// デバッグ帯（書き出し・診断・往復チェック）の展開状態。
+    /// 製品レイアウトとは分離し、既定では畳んでおく（Issue #38）。
+    @State private var isDebugDrawerExpanded = false
+    /// 波形表示モード（本家の TimelineWaveformVisibility:
+    /// 常に表示／マウスオーバー時に表示／非表示）。
+    @State private var waveformVisibility: WaveformVisibility = .always
+    /// タイムラインキャンバスへのホバー（波形のマウスオーバーモード用）。
+    @State private var isCanvasHovering = false
+    /// 縦グリッド線の表示（本家の VerticalLines.IsEnabled 相当）。
+    @State private var showVerticalLines = true
+    /// シーン名変更シートの対象（nil で閉じている）。
+    @State private var renamingTimelineIndex: Int?
+    @State private var renameText = ""
 
     init(project: Project, diagnostics: YmmpLoadDiagnostics, sourceURL: URL?) {
         self.project = project
@@ -124,17 +144,24 @@ struct ProjectView: View {
 
             if let timeline {
                 HStack(alignment: .top, spacing: 0) {
-                    // 左カラム: プレビュー（可変・主役）＋トランスポート（固定）
-                    // ＋タイムライン帯（ツールバー・本体・セリフ行）。
+                    // 左カラムは本家 DefaultLayout（DefaultLayout.cs）:
+                    // 上にプレビュー帯（初期高さ 400、スプリッタで可変）、
+                    // 下にタイムライン（残り全高）。右カラムは幅400・全高。
                     // レベルメーターは本家どおりタイムライン領域の左端に立つ。
                     VStack(alignment: .leading, spacing: 0) {
-                        previewView(timeline: timeline)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // プレビュー帯（映像＋トランスポート行）。
+                        VStack(alignment: .leading, spacing: 0) {
+                            previewView(timeline: timeline)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                        transportBar(timeline: timeline)
-                            .frame(height: 30)
+                            transportBar(timeline: timeline)
+                                .frame(height: 24)
+                        }
+                        .frame(height: previewPaneHeight)
 
-                        Divider()
+                        // プレビュー帯とタイムラインの境界スプリッタ
+                        // （本家はドッキングペインの境界で高さを変える）。
+                        previewSplitter
 
                         HStack(alignment: .top, spacing: 0) {
                             levelMeters
@@ -160,18 +187,40 @@ struct ProjectView: View {
                                     onSeek: { seek(to: $0, timeline: timeline) },
                                     zoomPercent: $timelineZoomPercent,
                                     rowHeight: CGFloat(layerRowHeight),
-                                    showWaveform: showWaveform,
-                                    reportedCanvasWidth: $canvasViewportWidth
+                                    showWaveform: effectiveShowWaveform,
+                                    showVerticalLines: $showVerticalLines,
+                                    reportedCanvasWidth: $canvasViewportWidth,
+                                    reportedTopLayer: $topVisibleLayer,
+                                    onEdited: { renderPreview() }
                                 )
-                                .frame(height: 232)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .clipped()
+                                .onHover { isCanvasHovering = $0 }
+                                .onDrop(
+                                    of: [.fileURL],
+                                    delegate: TimelineDropDelegate(
+                                        onURLs: { handleDroppedURLs($0, timeline: timeline) }
+                                    )
+                                )
 
                                 Divider()
 
-                                SerifInputView(characters: project.characters)
-                                    .frame(height: 32)
+                                SerifInputView(
+                                    characters: project.characters,
+                                    onAdd: { characterName, serif, seeksAfterAdd in
+                                        addVoiceItem(
+                                            characterName: characterName,
+                                            serif: serif,
+                                            seeksAfterAdd: seeksAfterAdd,
+                                            timeline: timeline
+                                        )
+                                    }
+                                )
+                                .frame(minHeight: 26)
                             }
                             .frame(maxWidth: .infinity)
                         }
+                        .frame(maxHeight: .infinity)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -200,15 +249,25 @@ struct ProjectView: View {
                         workspace.isExportPresented = false
                     }
                 }
-
-                Divider()
-
-                bottomTabs(timeline: timeline)
-                    .frame(height: 150)
+                .onChange(of: workspace.pendingAction?.sequence) { _, _ in
+                    if let pending = workspace.pendingAction {
+                        executeWorkspaceAction(pending.action, timeline: timeline)
+                    }
+                }
+                .sheet(item: renamingTimelineBinding) { target in
+                    renameTimelineSheet(index: target.index)
+                }
 
                 Divider()
 
                 statusBar(timeline: timeline)
+
+                Divider()
+
+                // デバッグ帯は製品レイアウトから分離し、ステータスバーの
+                // 下に畳める抽斗として置く（Issue #38。既定は畳んだ状態で、
+                // 左下に大きな空白を作らない）。
+                debugDrawer(timeline: timeline)
             } else {
                 Text("タイムラインがありません")
                     .foregroundStyle(.secondary)
@@ -277,8 +336,136 @@ struct ProjectView: View {
                         }
                 }
                 .buttonStyle(.borderless)
+                .contextMenu {
+                    Button("名前を変更…") {
+                        renameText = project.timelines[index].name
+                        renamingTimelineIndex = index
+                    }
+                    Divider()
+                    Button("シーンを追加") { addTimeline() }
+                    Button("シーンを削除") { deleteTimeline(at: index) }
+                        .disabled(project.timelines.count <= 1)
+                }
             }
             Spacer()
+        }
+    }
+
+    /// シーン（タイムライン）を末尾へ追加して切り替える。
+    private func addTimeline() {
+        let newTimeline = Timeline()
+        newTimeline.videoInfo = timeline?.videoInfo
+            ?? VideoInfo(fps: 60, hz: 48_000, width: 1920, height: 1080)
+        newTimeline.name = "シーン \(project.timelines.count + 1)"
+        project.timelines.append(newTimeline)
+        timelineIndex = project.timelines.count - 1
+        selectedItemIndex = nil
+        resetPreview()
+    }
+
+    /// シーンを削除する（最低1つは残す）。
+    private func deleteTimeline(at index: Int) {
+        guard project.timelines.count > 1,
+              project.timelines.indices.contains(index) else { return }
+        project.timelines.remove(at: index)
+        if timelineIndex >= project.timelines.count {
+            timelineIndex = project.timelines.count - 1
+        }
+        selectedItemIndex = nil
+        resetPreview()
+    }
+
+    /// シーン名変更シートの対象（.sheet(item:) 用）。
+    private struct RenamingTarget: Identifiable {
+        let index: Int
+        var id: Int { index }
+    }
+
+    private var renamingTimelineBinding: Binding<RenamingTarget?> {
+        Binding(
+            get: { renamingTimelineIndex.map { RenamingTarget(index: $0) } },
+            set: { renamingTimelineIndex = $0?.index }
+        )
+    }
+
+    private func renameTimelineSheet(index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("シーンの名前")
+                .font(.headline)
+            TextField("シーン名", text: $renameText)
+                .frame(width: 260)
+                .onSubmit { commitTimelineRename(index: index) }
+            HStack {
+                Spacer()
+                Button(UIStrings.Common.cancel) { renamingTimelineIndex = nil }
+                Button("変更") { commitTimelineRename(index: index) }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+    }
+
+    private func commitTimelineRename(index: Int) {
+        guard project.timelines.indices.contains(index) else { return }
+        project.timelines[index].name =
+            renameText.trimmingCharacters(in: .whitespaces)
+        renamingTimelineIndex = nil
+    }
+
+    /// プレビュー帯とタイムラインの境界スプリッタ（高さ6。
+    /// ドラッグでプレビュー帯の高さを変える）。
+    private var previewSplitter: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor).opacity(0.6))
+            .frame(height: 6)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        previewPaneHeight = min(
+                            max(previewPaneHeight + value.translation.height - splitterLastTranslation, 120),
+                            900
+                        )
+                        splitterLastTranslation = value.translation.height
+                    }
+                    .onEnded { _ in splitterLastTranslation = 0 }
+            )
+            .help("プレビューとタイムラインの高さを調整")
+    }
+
+    /// 波形の実効表示（モードとキャンバスホバーの合成）。
+    private var effectiveShowWaveform: Bool {
+        switch waveformVisibility {
+        case .always: return true
+        case .onMouseOver: return isCanvasHovering
+        case .hidden: return false
+        }
+    }
+
+    /// デバッグ帯の抽斗（書き出し／読み込み診断／往復チェック）。
+    /// 製品レイアウトの外（ステータスバーの下）に分離し、既定では
+    /// 見出し行だけが見える。
+    private func debugDrawer(timeline: Timeline) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                isDebugDrawerExpanded.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isDebugDrawerExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9))
+                    Text("デバッグ（書き出し・診断・往復チェック）")
+                        .font(.caption)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 10)
+            .frame(height: 20)
+            if isDebugDrawerExpanded {
+                bottomTabs(timeline: timeline)
+                    .frame(height: 150)
+            }
         }
     }
 
@@ -370,22 +557,48 @@ struct ProjectView: View {
                     .foregroundStyle(.white)
                     .frame(width: bounds.width * scale, height: bounds.height * scale)
                     .offset(x: bounds.minX * scale, y: bounds.minY * scale)
-
-                // 操作ハンドル（本家: 四隅▢ = 拡大率、辺の中点◯ =
-                // 回転角）。ドラッグ操作は接続フェーズ。ここでは形のみ。
-                selectionHandles(bounds: bounds, scale: scale)
             }
 
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(previewDragGesture(timeline: timeline, scale: scale))
+
+            // 操作ハンドル（本家: 四隅▢ = 拡大率、辺の中点◯ = 回転角）。
+            // 移動ジェスチャの層より上に置き、ハンドル上では拡大率／
+            // 回転角のドラッグが優先される。
+            if let item = selectedItem,
+               let bounds = previewItemBounds(item: item, timeline: timeline) {
+                selectionHandles(item: item, bounds: bounds, scale: scale, timeline: timeline)
+            }
         }
+        .coordinateSpace(name: "previewArea")
     }
 
-    /// 選択アイテムの操作ハンドル群（表示座標で 9px の正方形・円）。
-    private func selectionHandles(bounds: CGRect, scale: Double) -> some View {
+    /// ハンドルのドラッグ種別（四隅 = 拡大率、辺の中点 = 回転角）。
+    private enum HandleKind {
+        case zoom
+        case rotation
+    }
+
+    private struct HandleDragState {
+        var kind: HandleKind
+        var itemIndex: Int
+        /// アイテム中心の表示座標。
+        var center: CGPoint
+        var startDistance: CGFloat
+        var startAngle: Double
+        var startZoom: Double
+        var startRotation: Double
+        var lastWritten: Double
+    }
+
+    @State private var handleDrag: HandleDragState?
+
+    /// 選択アイテムの操作ハンドル群（表示は 9px、当たり判定は 18px）。
+    private func selectionHandles(
+        item: BaseItem, bounds: CGRect, scale: Double, timeline: Timeline
+    ) -> some View {
         let scale = CGFloat(scale)
-        let size = 9.0
         let corners: [(CGFloat, CGFloat)] = [
             (bounds.minX, bounds.minY), (bounds.maxX, bounds.minY),
             (bounds.minX, bounds.maxY), (bounds.maxX, bounds.maxY),
@@ -396,27 +609,129 @@ struct ProjectView: View {
         ]
         return ZStack(alignment: .topLeading) {
             ForEach(Array(corners.enumerated()), id: \.offset) { _, point in
-                Rectangle()
-                    .fill(.white)
-                    .overlay(Rectangle().strokeBorder(.gray, lineWidth: 1))
-                    .frame(width: size, height: size)
-                    .offset(
-                        x: point.0 * scale - size / 2,
-                        y: point.1 * scale - size / 2
-                    )
+                handleView(
+                    isCorner: true, item: item, bounds: bounds,
+                    point: point, scale: scale, timeline: timeline
+                )
             }
             ForEach(Array(edges.enumerated()), id: \.offset) { _, point in
-                Circle()
-                    .fill(.white)
-                    .overlay(Circle().strokeBorder(.gray, lineWidth: 1))
-                    .frame(width: size, height: size)
-                    .offset(
-                        x: point.0 * scale - size / 2,
-                        y: point.1 * scale - size / 2
-                    )
+                handleView(
+                    isCorner: false, item: item, bounds: bounds,
+                    point: point, scale: scale, timeline: timeline
+                )
             }
         }
-        .allowsHitTesting(false)
+    }
+
+    private func handleView(
+        isCorner: Bool, item: BaseItem, bounds: CGRect,
+        point: (CGFloat, CGFloat), scale: CGFloat, timeline: Timeline
+    ) -> some View {
+        let visualSize = 9.0
+        let hitSize = 18.0
+        return ZStack {
+            Color.clear
+                .frame(width: hitSize, height: hitSize)
+            Group {
+                if isCorner {
+                    Rectangle()
+                        .fill(.white)
+                        .overlay(Rectangle().strokeBorder(.gray, lineWidth: 1))
+                } else {
+                    Circle()
+                        .fill(.white)
+                        .overlay(Circle().strokeBorder(.gray, lineWidth: 1))
+                }
+            }
+            .frame(width: visualSize, height: visualSize)
+        }
+        .offset(
+            x: point.0 * scale - hitSize / 2,
+            y: point.1 * scale - hitSize / 2
+        )
+        .gesture(
+            handleDragGesture(
+                kind: isCorner ? .zoom : .rotation,
+                item: item, bounds: bounds, scale: scale, timeline: timeline
+            )
+        )
+        .help(isCorner ? "拡大率" : "回転角")
+    }
+
+    /// ハンドルのドラッグ。四隅は中心からの距離の比で拡大率を、
+    /// 辺の中点は中心まわりの角度差で回転角を変える。書き込みは
+    /// 移動ドラッグと同じ規則（定数なら定数化、それ以外は先頭値のみ）。
+    private func handleDragGesture(
+        kind: HandleKind, item: BaseItem, bounds: CGRect,
+        scale: CGFloat, timeline: Timeline
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named("previewArea"))
+            .onChanged { value in
+                if handleDrag == nil {
+                    guard let index = timeline.items.firstIndex(where: { $0 === item }),
+                          let props = item as? VideoItemProperties else { return }
+                    let context = animationContext(for: item, timeline: timeline)
+                    let center = CGPoint(
+                        x: bounds.midX * scale, y: bounds.midY * scale
+                    )
+                    let dx = value.location.x - center.x
+                    let dy = value.location.y - center.y
+                    handleDrag = HandleDragState(
+                        kind: kind,
+                        itemIndex: index,
+                        center: center,
+                        startDistance: max(hypot(dx, dy), 1),
+                        startAngle: atan2(Double(dy), Double(dx)) * 180 / .pi,
+                        startZoom: context.value(of: props.zoom),
+                        startRotation: context.value(of: props.rotation),
+                        lastWritten: kind == .zoom
+                            ? context.value(of: props.zoom)
+                            : context.value(of: props.rotation)
+                    )
+                }
+                guard let drag = handleDrag,
+                      timeline.items.indices.contains(drag.itemIndex) else { return }
+                let target = timeline.items[drag.itemIndex]
+                let dx = value.location.x - drag.center.x
+                let dy = value.location.y - drag.center.y
+                var updated = drag
+                switch drag.kind {
+                case .zoom:
+                    let factor = Double(hypot(dx, dy) / drag.startDistance)
+                    let newZoom = drag.startZoom * factor
+                    guard abs(newZoom - drag.lastWritten) >= 0.5 else { return }
+                    writeAnimationProperty(item: target, displayName: "拡大率", value: newZoom)
+                    updated.lastWritten = newZoom
+                case .rotation:
+                    let angle = atan2(Double(dy), Double(dx)) * 180 / .pi
+                    var delta = angle - drag.startAngle
+                    while delta > 180 { delta -= 360 }
+                    while delta < -180 { delta += 360 }
+                    let newRotation = drag.startRotation + delta
+                    guard abs(newRotation - drag.lastWritten) >= 0.5 else { return }
+                    writeAnimationProperty(item: target, displayName: "回転角", value: newRotation)
+                    updated.lastWritten = newRotation
+                }
+                handleDrag = updated
+                renderPreview()
+            }
+            .onEnded { _ in
+                handleDrag = nil
+            }
+    }
+
+    /// アニメーション付きプロパティへの書き込み（表示名で引く）。
+    /// ドラッグ移動と同じ規則: 定数なら定数化、それ以外は先頭値のみ。
+    private func writeAnimationProperty(item: BaseItem, displayName: String, value: Double) {
+        for descriptor in ItemPropertyMetadata.descriptors(for: item)
+        where descriptor.kind == .animation && descriptor.displayName == displayName {
+            guard let animation = descriptor.animationValue else { continue }
+            if animation.animationType == .none {
+                descriptor.setAnimationConstantValue(value)
+            } else {
+                descriptor.setAnimationFirstValue(value)
+            }
+        }
     }
 
     private func previewDragGesture(timeline: Timeline, scale: Double) -> some Gesture {
@@ -580,7 +895,7 @@ struct ProjectView: View {
         HStack(spacing: 2) {
             transportButton(
                 isPlayingForm ? "pause.fill" : "play.fill",
-                help: isPlayingForm ? "一時停止" : "再生"
+                help: isPlayingForm ? UIStrings.Transport.pause : UIStrings.Transport.play
             ) {
                 if let playbackEngine {
                     playbackEngine.togglePlay()
@@ -588,7 +903,7 @@ struct ProjectView: View {
                     isPlayingForm.toggle()
                 }
             }
-            transportButton("stop.fill", help: "停止") {
+            transportButton("stop.fill", help: UIStrings.Transport.stop) {
                 if let playbackEngine {
                     playbackEngine.stop()
                 } else {
@@ -597,7 +912,7 @@ struct ProjectView: View {
                 }
             }
 
-            // 再生速度（x1.0 以外は赤字＋太字 — 本家の規則）。
+            // 再生速度（本家は幅60のコンボ。x1.0 以外は赤字＋太字）。
             Picker("", selection: $playbackRate) {
                 ForEach(Self.playbackRates, id: \.self) { rate in
                     Text("x\(rate, specifier: "%.2g")").tag(rate)
@@ -605,16 +920,16 @@ struct ProjectView: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .frame(width: 64)
+            .frame(width: 60)
             .foregroundStyle(playbackRate == 1.0 ? Color.primary : Color.red)
             .fontWeight(playbackRate == 1.0 ? .regular : .bold)
-            .help("再生速度")
+            .help(UIStrings.Transport.playbackRate)
             .onChange(of: playbackRate) { _, newValue in
                 playbackEngine?.playbackRate = newValue
             }
 
             transportToggle(
-                "repeat", help: "リピート再生", isOn: $isRepeatOn
+                "repeat", help: UIStrings.Transport.repeatPlay, isOn: $isRepeatOn
             )
             .onChange(of: isRepeatOn) { _, newValue in
                 playbackEngine?.isRepeatEnabled = newValue
@@ -639,7 +954,7 @@ struct ProjectView: View {
             }
             .menuStyle(.borderlessButton)
             .frame(width: 24)
-            .help("コントロールポイント表示")
+            .help(UIStrings.Transport.controlPointVisibility)
 
             // プレビュー倍率（表示倍率は実動する）。
             Picker("", selection: $previewDisplayZoom) {
@@ -652,19 +967,19 @@ struct ProjectView: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .frame(width: 76)
-            .help("プレビュー倍率")
-            transportButton("aspectratio", help: "フィット") {
+            .frame(width: 80)
+            .help(UIStrings.Transport.previewZoom)
+            transportButton("aspectratio", help: UIStrings.Transport.fit) {
                 previewDisplayZoom = 1.0
             }
 
-            transportButton("backward.end.fill", help: "先頭へ移動") {
+            transportButton("backward.end.fill", help: UIStrings.Transport.seekToStart) {
                 seek(to: 0, timeline: timeline)
             }
-            transportButton("chevron.backward.2", help: "前の編集点へ移動") {
+            transportButton("chevron.backward.2", help: UIStrings.Transport.seekToPrevEditPoint) {
                 seekToPreviousEditPoint(timeline: timeline)
             }
-            transportButton("chevron.backward", help: "前フレーム") {
+            transportButton("chevron.backward", help: UIStrings.Transport.seekToPrevFrame) {
                 seek(to: Int(previewFrame) - 1, timeline: timeline)
             }
 
@@ -682,34 +997,36 @@ struct ProjectView: View {
             .onChange(of: previewFrame) { _, _ in renderPreview() }
             .padding(.horizontal, 6)
 
-            transportButton("chevron.forward", help: "次フレーム") {
+            transportButton("chevron.forward", help: UIStrings.Transport.seekToNextFrame) {
                 seek(to: Int(previewFrame) + 1, timeline: timeline)
             }
-            transportButton("chevron.forward.2", help: "次の編集点へ移動") {
+            transportButton("chevron.forward.2", help: UIStrings.Transport.seekToNextEditPoint) {
                 seekToNextEditPoint(timeline: timeline)
             }
-            transportButton("forward.end.fill", help: "末尾へ移動") {
+            transportButton("forward.end.fill", help: UIStrings.Transport.seekToEnd) {
                 seek(to: timeline.length, timeline: timeline)
             }
 
-            // 音量（本家は幅150の TextBoxSlider、0–100% を F1 表示）。
+            // 右端の並びは本家どおり「ミュート → 音量」。
+            // 音量は幅150の TextBoxSlider（スライダ＋数値欄）、
+            // 0–100% を F1 表示。
+            transportToggle(
+                isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                help: UIStrings.Transport.mute, isOn: $isMuted
+            )
+            .onChange(of: isMuted) { _, newValue in
+                playbackEngine?.isMuted = newValue
+            }
             Slider(value: $volume, in: 0...100)
-                .frame(width: 120)
-                .help("音量")
+                .frame(width: 100)
+                .help(UIStrings.Transport.volume)
                 .onChange(of: volume) { _, newValue in
                     playbackEngine?.volume = newValue
                 }
             Text(isMuted ? "0.0%" : "\(volume, specifier: "%.1f")%")
                 .font(.callout)
                 .monospacedDigit()
-                .frame(width: 52, alignment: .trailing)
-            transportToggle(
-                isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                help: "ミュート", isOn: $isMuted
-            )
-            .onChange(of: isMuted) { _, newValue in
-                playbackEngine?.isMuted = newValue
-            }
+                .frame(width: 48, alignment: .trailing)
         }
         .padding(.horizontal, 6)
     }
@@ -784,6 +1101,271 @@ struct ProjectView: View {
         seek(to: target, timeline: timeline)
     }
 
+    // MARK: - 編集アクション（メニュー／ツールバーからの実行）
+
+    /// UI 側の選択（インデックス）を Core の選択へ同期する。
+    /// Core の編集操作は `Timeline.selectedItems` を対象にするため、
+    /// 操作の直前に必ず通す。
+    private func syncSelectionToTimeline(_ timeline: Timeline) {
+        if let item = selectedItem {
+            timeline.selectItems([item])
+        } else {
+            timeline.selectItems([])
+        }
+    }
+
+    /// Core 側の選択を UI 側のインデックス選択へ写し戻す。
+    private func reflectCoreSelection(_ timeline: Timeline) {
+        if let first = timeline.selectedItems.first,
+           let index = timeline.items.firstIndex(where: { $0 === first }) {
+            selectedItemIndex = index
+        } else {
+            selectedItemIndex = nil
+        }
+    }
+
+    /// メニュー／ツールバーからの編集アクションを実行する。
+    /// いずれも Core の既存編集操作への接続であり、構造を変える操作の
+    /// 後はプレビューを再合成する。
+    private func executeWorkspaceAction(_ action: WorkspaceAction, timeline: Timeline) {
+        switch action {
+        case .addItem(let kind):
+            addItem(kind: kind, timeline: timeline)
+        case .splitAtCurrentPosition:
+            splitAtPlayhead(timeline: timeline)
+        case .deleteSelection:
+            guard selectedItem != nil else { return }
+            syncSelectionToTimeline(timeline)
+            timeline.deleteSelectedAndGroupedItems()
+            selectedItemIndex = nil
+            renderPreview()
+        case .deleteAndMoveAll:
+            guard selectedItem != nil else { return }
+            syncSelectionToTimeline(timeline)
+            _ = timeline.deleteAndMoveAll()
+            reflectCoreSelection(timeline)
+            renderPreview()
+        case .groupSelection:
+            guard selectedItem != nil else { return }
+            syncSelectionToTimeline(timeline)
+            timeline.groupSelectedAndGroupedItems()
+            renderPreview()
+        case .ungroupSelection:
+            guard selectedItem != nil else { return }
+            syncSelectionToTimeline(timeline)
+            timeline.ungroupSelectedAndGroupedItems()
+            renderPreview()
+        case .toggleLock:
+            selectedItem?.isLocked.toggle()
+            renderPreview()
+        case .toggleClipping:
+            if let visual = selectedItem as? VisualItem {
+                visual.isClippingWithObjectAbove.toggle()
+            } else if let voice = selectedItem as? VoiceItem {
+                voice.isClippingWithObjectAbove.toggle()
+            }
+            renderPreview()
+        case .toggleWaveform:
+            waveformVisibility = waveformVisibility == .hidden ? .always : .hidden
+        case .selectAll:
+            timeline.selectItems(timeline.items)
+            selectedItemIndex = timeline.items.isEmpty ? nil : 0
+        case .selectLeftItems:
+            let frame = Int(previewFrame)
+            timeline.selectItems(timeline.items.filter { $0.frame + $0.length <= frame })
+            reflectCoreSelection(timeline)
+        case .selectRightItems:
+            let frame = Int(previewFrame)
+            timeline.selectItems(timeline.items.filter { $0.frame >= frame })
+            reflectCoreSelection(timeline)
+        case .seekToStart:
+            seek(to: 0, timeline: timeline)
+        case .seekToEnd:
+            seek(to: timeline.length, timeline: timeline)
+        case .layerHeightUp:
+            // 本家 SizeUpLayer: Math.Max(14, LayerHeight + 1)。
+            // 増減は ±1、下限 14、上限なし（MainViewModel.cs）。
+            layerRowHeight += 1
+        case .layerHeightDown:
+            layerRowHeight = max(layerRowHeight - 1, 14)
+        case .zoomInTimeline:
+            // 本家 ZoomInTimeline: ×9/8、上限 4000。
+            timelineZoomPercent = min(timelineZoomPercent * 1.125, 4000)
+        case .zoomOutTimeline:
+            // 本家 ZoomOutTimeline: ×7/8、下限 0.01。
+            timelineZoomPercent = max(timelineZoomPercent * 0.875, 0.01)
+        case .saveThumbnail(let format):
+            saveThumbnail(format: format, timeline: timeline)
+        case .resetLayout:
+            previewPaneHeight = 400
+            timelineZoomPercent = 100
+            layerRowHeight = 32
+            previewDisplayZoom = 1.0
+        }
+    }
+
+    /// 再生ヘッド位置で、そこを跨ぐ全アイテムを分割する
+    /// （本家 SplitCurrentPosition）。
+    private func splitAtPlayhead(timeline: Timeline) {
+        let frame = Int(previewFrame)
+        let targets = timeline.items.filter {
+            $0.frame < frame && frame < $0.frame + $0.length
+        }
+        guard !targets.isEmpty else { return }
+        timeline.splitItems(targets, frame: frame, mode: .both)
+        reflectCoreSelection(timeline)
+        renderPreview()
+    }
+
+    /// 新規アイテムの仮の長さ（1秒分）。本家は素材の長さや生成音声から
+    /// 長さを決めるが、デコード／音声供給が未接続の範囲では仮置きする
+    /// （台帳に記録。接続時に実長へ差し替える）。
+    private func placeholderItemLength(timeline: Timeline) -> Int {
+        ItemFactory.placeholderLength(fps: timeline.videoInfo.fps)
+    }
+
+    /// アイテム種別から空のアイテムを生成する。
+    private func makeItem(kind: AddItemKind) -> BaseItem {
+        ItemFactory.makeItem(kind: kind)
+    }
+
+    /// アイテムを現在フレーム・表示最上段レイヤーへ追加し、選択する
+    /// （配置は本家 GetCurrentLayer() の規則。MainViewModel.cs 4493）。
+    private func addItem(kind: AddItemKind, timeline: Timeline) {
+        let item = makeItem(kind: kind)
+        item.frame = Int(previewFrame)
+        item.layer = topVisibleLayer
+        item.length = placeholderItemLength(timeline: timeline)
+        timeline.addItems([item])
+        timeline.refreshTimelineLengthAndMaxLayer()
+        if let index = timeline.items.firstIndex(where: { $0 === item }) {
+            selectedItemIndex = index
+            timeline.selectItems([item])
+        }
+        renderPreview()
+    }
+
+    /// セリフ行からの VoiceItem 生成（本家 AddVoiceItem）。
+    /// 本家では長さは生成された音声から決まる。音声供給（Issue #51）が
+    /// 未接続のため、長さは仮置き（1秒）で、音声長は 0 のままにする
+    /// （接続時に実長へ差し替える。台帳に記録）。
+    private func addVoiceItem(
+        characterName: String?, serif: String, seeksAfterAdd: Bool,
+        timeline: Timeline
+    ) {
+        let item = VoiceItem()
+        item.character = project.characters.first { $0.name == characterName }
+        item.characterName = characterName ?? ""
+        item.serif = serif
+        item.frame = Int(previewFrame)
+        item.layer = topVisibleLayer
+        item.length = placeholderItemLength(timeline: timeline)
+        timeline.addItems([item])
+        timeline.refreshTimelineLengthAndMaxLayer()
+        if let index = timeline.items.firstIndex(where: { $0 === item }) {
+            selectedItemIndex = index
+            timeline.selectItems([item])
+        }
+        if seeksAfterAdd {
+            seek(to: item.frame + item.length, timeline: timeline)
+        }
+        renderPreview()
+    }
+
+    /// 現在のプレビュー画像をサムネイルとして保存する
+    /// （本家 SaveThumbnail。保存先はダイアログで聞く）。
+    private func saveThumbnail(format: ThumbnailFormat, timeline: Timeline) {
+        renderPreview()
+        guard let previewImage else {
+            workspace.statusMessage = "サムネイルを保存できませんでした（プレビュー画像がありません）"
+            return
+        }
+        let panel = NSSavePanel()
+        switch format {
+        case .png, .pngAlpha:
+            panel.allowedContentTypes = [.png]
+            panel.nameFieldStringValue = "thumbnail.png"
+        case .jpeg:
+            panel.allowedContentTypes = [.jpeg]
+            panel.nameFieldStringValue = "thumbnail.jpg"
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let type: CFString = format == .jpeg ? UTType.jpeg.identifier as CFString
+            : UTType.png.identifier as CFString
+        guard let destination = CGImageDestinationCreateWithURL(
+            url as CFURL, type, 1, nil
+        ) else {
+            workspace.statusMessage = "サムネイルを保存できませんでした"
+            return
+        }
+        CGImageDestinationAddImage(destination, previewImage, nil)
+        if CGImageDestinationFinalize(destination) {
+            workspace.statusMessage = "サムネイルを保存しました: \(url.path)"
+        } else {
+            workspace.statusMessage = "サムネイルを保存できませんでした"
+        }
+    }
+
+    // MARK: - ファイルのドロップイン
+
+    /// タイムラインへドロップされたファイルを処理する。
+    /// 本家の規則（UI-FACTS-DND-AND-PLUGIN-UI.md / MEDIA-IO-FACTS §8）:
+    /// .ymmp 単独はプロジェクトを開く。素材ファイルは拡張子で種別を
+    /// 分類（判定順は 動画→音声→画像）し、ドロップ位置は使わず
+    /// 現在フレーム・表示最上段レイヤー（GetCurrentLayer()）へ追加する。
+    private func handleDroppedURLs(_ urls: [URL], timeline: Timeline) {
+        if urls.count == 1, urls[0].pathExtension.lowercased() == "ymmp" {
+            workspace.load(url: urls[0])
+            return
+        }
+        var added = false
+        for url in urls {
+            guard let kind = Self.itemKind(forFileExtension: url.pathExtension) else {
+                continue
+            }
+            let item = makeItem(kind: kind)
+            item.frame = Int(previewFrame)
+            item.layer = topVisibleLayer
+            item.length = placeholderItemLength(timeline: timeline)
+            switch item {
+            case let video as VideoItem: video.filePath = url.path
+            case let audio as AudioItem: audio.filePath = url.path
+            case let image as ImageItem: image.filePath = url.path
+            default: break
+            }
+            timeline.addItems([item])
+            added = true
+        }
+        if added {
+            timeline.refreshTimelineLengthAndMaxLayer()
+            renderPreview()
+        }
+    }
+
+    /// 拡張子からアイテム種別を決める（本家 FileExtensions の既定分類。
+    /// 判定順は 動画→音声→画像。字幕ファイルの分離処理は未実装）。
+    private static func itemKind(forFileExtension ext: String) -> AddItemKind? {
+        let ext = ext.lowercased()
+        let videoExtensions: Set<String> = [
+            "mp4", "avi", "wmv", "3g2", "3gp", "3gp2", "3gpp", "m4v", "mov",
+            "qt", "m2ts", "m2t", "mts", "ts", "mkv", "mpg", "mpeg", "webm",
+            "gif", "webp",
+        ]
+        if videoExtensions.contains(ext) { return .video }
+        let audioOnlyExtensions: Set<String> = [
+            "mp3", "wav", "wma", "m4a", "mka", "aac", "adts", "flac", "ogg",
+            "mid", "midi",
+        ]
+        if audioOnlyExtensions.contains(ext) { return .audio }
+        let imageExtensions: Set<String> = [
+            "png", "jpg", "jpeg", "jpe", "jfif", "bmp", "dib", "ico", "tiff",
+            "tif", "hdp", "dds", "dng", "heic", "heif", "hif", "avif", "jxr",
+            "wdp", "psd", "psb", "svg",
+        ]
+        if imageExtensions.contains(ext) { return .image }
+        return nil
+    }
+
     // MARK: - タイムラインのツールバーとレベルメーター
 
     /// 本家 TimelineView 上部のツールバートレイ（ズーム／アイテム／編集／
@@ -797,80 +1379,337 @@ struct ProjectView: View {
     }
 
     private func timelineToolbarContent(timeline: Timeline) -> some View {
+        // 本家のツールバートレイは5本（ズーム／アイテム／編集／
+        // プロジェクト／フィードバック）。ボタンはアイコンのみで、
+        // ツールチップは「コマンド名＋ショートカット」
+        // （Command.TextWithShortcut）。根拠:
+        // UI-FACTS-MENUS-CONTEXT.md §3。
         HStack(spacing: 2) {
-            toolbarButton("minus.magnifyingglass", help: "タイムラインを縮小") {
-                timelineZoomPercent = max(timelineZoomPercent - 10, 10)
-            }
-            Slider(value: $timelineZoomPercent, in: 10...800)
-                .frame(width: 90)
-                .help("タイムラインズーム")
-            toolbarButton("plus.magnifyingglass", help: "タイムラインを拡大") {
-                timelineZoomPercent = min(timelineZoomPercent + 10, 800)
-            }
-            Text("\(Int(timelineZoomPercent))%")
-                .font(.caption)
-                .monospacedDigit()
-                .frame(width: 38, alignment: .trailing)
-            toolbarTextButton("全体", help: "タイムライン全体を表示") {
-                let fit = Double(canvasViewportWidth)
-                    / Double(max(timeline.length, 1)) * 100
-                timelineZoomPercent = min(max(fit, 10), 800)
-            }
-
+            zoomToolbar(timeline: timeline)
             toolbarDivider
-
-            Menu {
-                Button("テキスト") {}
-                Button("画像") {}
-                Button("動画") {}
-                Button("音声") {}
-                Button("ボイス") {}
-                Button("図形") {}
-                Button("シーン") {}
-                Button("フレームバッファ") {}
-                Button("エフェクト") {}
-                Button("グループ") {}
-                Button("トランジション") {}
-            } label: {
-                Label("アイテム追加", systemImage: "plus")
-                    .font(.callout)
-            }
-            .menuStyle(.borderlessButton)
-            .frame(width: 118)
-            .help("アイテムを追加（未接続）")
-
-            toolbarButton("trash", help: "選択アイテムを削除（未接続）") {}
-
+            itemToolbar(timeline: timeline)
             toolbarDivider
-
-            toolbarTextButton("分割", help: "現在位置で分割（未接続）") {}
-            toolbarTextButton("グループ化", help: "グループ化（未接続）") {}
-            toolbarTextButton("グループ解除", help: "グループ解除（未接続）") {}
-
+            editToolbar(timeline: timeline)
             toolbarDivider
-
-            toolbarTextButton("高さ+", help: "レイヤーの高さを拡大") {
-                layerRowHeight = min(layerRowHeight + 4, 64)
-            }
-            toolbarTextButton("高さ−", help: "レイヤーの高さを縮小") {
-                layerRowHeight = max(layerRowHeight - 4, 14)
-            }
-
+            projectToolbar(timeline: timeline)
             toolbarDivider
-
-            toolbarToggleTextButton("波形", help: "波形を表示/非表示", isOn: $showWaveform)
-
-            toolbarDivider
-
-            toolbarTextButton("映像情報", help: "動画の設定") {
-                isVideoSettingsPresented = true
-            }
-
-            toolbarDivider
-
-            toolbarTextButton("フィードバック", help: "フィードバックを送信（未接続）") {}
+            feedbackToolbar
         }
         .padding(.horizontal, 6)
+    }
+
+    // MARK: ツールバー: ズーム（本家は虫眼鏡＋対数スライダ1つ）
+
+    private func zoomToolbar(timeline: Timeline) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: "magnifyingglass")
+                .frame(width: 18, height: 22)
+                .foregroundStyle(.secondary)
+            // 本家 TextBoxSlider（TimelineView.xaml 572）: 全幅120、
+            // 数値欄41、スライダ範囲 0.1–150 の対数スケール。
+            // 変換は TimelineLogScaleConverter の式そのもの:
+            //   slider = log10(zoom × 10) × 100 / 3
+            //   zoom   = 10^(slider / 100 × 3) / 10
+            // 数値欄の表示はスライダ空間（単位なし。zoom 100% で 100）。
+            Slider(value: zoomSliderBinding, in: 0.1...150)
+                .frame(width: 71)
+                .help(UIStrings.Toolbar.tip(UIStrings.Toolbar.zoomSlider))
+            Text("\(Int(zoomSliderValue.rounded()))")
+                .font(.caption)
+                .monospacedDigit()
+                .frame(width: 41, alignment: .trailing)
+            // 全体フィットは本家のズームツールバーには無い独自ボタン。
+            toolbarButton("arrow.up.left.and.arrow.down.right", help: UIStrings.Toolbar.fitAll) {
+                let fit = Double(canvasViewportWidth)
+                    / Double(max(timeline.length, 1)) * 100
+                timelineZoomPercent = min(max(fit, 0.01), 4000)
+            }
+        }
+    }
+
+    /// ズームスライダの表示値（対数スケール空間。0.1–150 に丸める）。
+    private var zoomSliderValue: Double {
+        min(max(log10(timelineZoomPercent * 10) * 100 / 3, 0.1), 150)
+    }
+
+    private var zoomSliderBinding: Binding<Double> {
+        Binding(
+            get: { zoomSliderValue },
+            set: { newValue in
+                timelineZoomPercent = pow(10, newValue / 100 * 3) / 10
+            }
+        )
+    }
+
+    // MARK: ツールバー: アイテム（追加13種＋テンプレート＋最近使ったファイル）
+
+    private func itemToolbar(timeline: Timeline) -> some View {
+        HStack(spacing: 2) {
+            ForEach(AddItemKind.allCases, id: \.self) { kind in
+                toolbarButton(
+                    kind.systemImage,
+                    help: UIStrings.Toolbar.tip(kind.displayName)
+                ) {
+                    addItem(kind: kind, timeline: timeline)
+                }
+            }
+            // テンプレート／最近使ったファイルのドロップダウン。
+            // テンプレートの保持先が無いため中身は空表示のみ。
+            Menu {
+                Text(UIStrings.Menu.noHistory)
+            } label: {
+                Image(systemName: "book")
+                    .frame(width: 22, height: 22)
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 22)
+            .help(UIStrings.Toolbar.tip(UIStrings.Toolbar.templateMenu))
+            Menu {
+                Text(UIStrings.Menu.noHistory)
+            } label: {
+                Image(systemName: "clock")
+                    .frame(width: 22, height: 22)
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 22)
+            .help(UIStrings.Toolbar.tip(UIStrings.Toolbar.recentFiles))
+        }
+    }
+
+    // MARK: ツールバー: 編集
+
+    private func editToolbar(timeline: Timeline) -> some View {
+        HStack(spacing: 2) {
+            // Undo/Redo は Core に履歴基盤が無いため未接続（無効表示）。
+            toolbarButton("arrow.uturn.backward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.undo, shortcut: UIStrings.Toolbar.shortcutUndo)) {}
+                .disabled(true)
+            toolbarButton("arrow.uturn.forward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.redo, shortcut: UIStrings.Toolbar.shortcutRedo)) {}
+                .disabled(true)
+            toolbarDivider
+            // 切り取り／コピー／貼り付けはアイテム用クリップボードが
+            // 無いため未接続（無効表示）。
+            toolbarButton("scissors", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.cut, shortcut: UIStrings.Toolbar.shortcutCut)) {}
+                .disabled(true)
+            toolbarButton("doc.on.doc", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.copy, shortcut: UIStrings.Toolbar.shortcutCopy)) {}
+                .disabled(true)
+            toolbarButton("doc.on.clipboard", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.paste, shortcut: UIStrings.Toolbar.shortcutPaste)) {}
+                .disabled(true)
+            toolbarButton("square.split.1x2", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.split, shortcut: UIStrings.Toolbar.shortcutSplit)) {
+                splitAtPlayhead(timeline: timeline)
+            }
+            toolbarDivider
+            // グループ化／グループ解除は本家ではトグル対（一方のみ表示）。
+            if let item = selectedItem, item.group != 0 {
+                toolbarButton("square.stack.3d.up.slash", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.ungroup)) {
+                    executeWorkspaceAction(.ungroupSelection, timeline: timeline)
+                }
+            } else {
+                toolbarButton("square.stack.3d.up", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.group)) {
+                    executeWorkspaceAction(.groupSelection, timeline: timeline)
+                }
+            }
+            // クリッピング／ロックも本家ではトグル対。
+            if isSelectedItemClipping {
+                toolbarButton("square.dashed.inset.filled", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.clippingOff)) {
+                    executeWorkspaceAction(.toggleClipping, timeline: timeline)
+                }
+            } else {
+                toolbarButton("square.dashed", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.clippingOn)) {
+                    executeWorkspaceAction(.toggleClipping, timeline: timeline)
+                }
+            }
+            if selectedItem?.isLocked == true {
+                toolbarButton("lock.open", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.unlock)) {
+                    executeWorkspaceAction(.toggleLock, timeline: timeline)
+                }
+            } else {
+                toolbarButton("lock", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.lock)) {
+                    executeWorkspaceAction(.toggleLock, timeline: timeline)
+                }
+            }
+            waveformSplitButton
+            gridSplitButton
+            meterMenuButton
+            toolbarDivider
+            toolbarButton("trash", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.delete, shortcut: UIStrings.Toolbar.shortcutDelete)) {
+                executeWorkspaceAction(.deleteSelection, timeline: timeline)
+            }
+            toolbarButton("trash.slash", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.deleteAndMove)) {
+                executeWorkspaceAction(.deleteAndMoveAll, timeline: timeline)
+            }
+            toolbarDivider
+            toolbarButton("arrow.left.to.line", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.selectLeft)) {
+                executeWorkspaceAction(.selectLeftItems, timeline: timeline)
+            }
+            toolbarButton("arrow.right.to.line", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.selectRight)) {
+                executeWorkspaceAction(.selectRightItems, timeline: timeline)
+            }
+            toolbarButton("selection.pin.in.out", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.selectAll, shortcut: UIStrings.Toolbar.shortcutSelectAll)) {
+                executeWorkspaceAction(.selectAll, timeline: timeline)
+            }
+        }
+    }
+
+    /// 選択中アイテムのクリッピング状態（トグル対の表示切替用）。
+    private var isSelectedItemClipping: Bool {
+        if let visual = selectedItem as? VisualItem {
+            return visual.isClippingWithObjectAbove
+        }
+        if let voice = selectedItem as? VoiceItem {
+            return voice.isClippingWithObjectAbove
+        }
+        return false
+    }
+
+    /// 波形 SplitButton（本体 = 表示/非表示の切替、ドロップダウン =
+    /// 3モードのラジオ。本家 §3.6(a)）。
+    private var waveformSplitButton: some View {
+        HStack(spacing: 0) {
+            toolbarButton(
+                waveformVisibility == .hidden ? "waveform.slash" : "waveform",
+                help: UIStrings.Toolbar.tip(UIStrings.Toolbar.waveform)
+            ) {
+                waveformVisibility = waveformVisibility == .hidden ? .always : .hidden
+            }
+            Menu {
+                waveformModeButton(.always, name: UIStrings.Toolbar.waveformAlways)
+                waveformModeButton(.onMouseOver, name: UIStrings.Toolbar.waveformOnMouseOver)
+                waveformModeButton(.hidden, name: UIStrings.Toolbar.waveformHidden)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8))
+                    .frame(width: 10, height: 22)
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 10)
+        }
+    }
+
+    private func waveformModeButton(
+        _ mode: WaveformVisibility, name: String
+    ) -> some View {
+        Button {
+            waveformVisibility = mode
+        } label: {
+            if waveformVisibility == mode {
+                Label(name, systemImage: "checkmark")
+            } else {
+                Text(name)
+            }
+        }
+    }
+
+    /// グリッド線 SplitButton（本体 = 表示切替、ドロップダウン =
+    /// 切替＋設定。本家 §3.6(b)。設定画面は未実装のため無効表示）。
+    private var gridSplitButton: some View {
+        HStack(spacing: 0) {
+            toolbarButton(
+                "square.grid.3x3",
+                help: UIStrings.Toolbar.tip(UIStrings.Toolbar.gridLine)
+            ) {
+                showVerticalLines.toggle()
+            }
+            Menu {
+                Button {
+                    showVerticalLines.toggle()
+                } label: {
+                    if showVerticalLines {
+                        Label(UIStrings.Toolbar.gridLine, systemImage: "checkmark")
+                    } else {
+                        Text(UIStrings.Toolbar.gridLine)
+                    }
+                }
+                Button(UIStrings.Toolbar.gridLineSettings) {}
+                    .disabled(true)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8))
+                    .frame(width: 10, height: 22)
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 10)
+        }
+    }
+
+    /// メーター表示のドロップダウン（本家 §3.6(c)）。
+    private var meterMenuButton: some View {
+        Menu {
+            Toggle(UIStrings.Toolbar.peakMeter, isOn: $isPeakMeterEnabled)
+            Toggle(UIStrings.Toolbar.loudnessMeter, isOn: $isLoudnessMeterEnabled)
+        } label: {
+            Image(systemName: "gauge.with.needle")
+                .frame(width: 22, height: 22)
+        }
+        .menuStyle(.borderlessButton)
+        .frame(width: 22)
+        .help(UIStrings.Toolbar.tip(UIStrings.Toolbar.meters))
+    }
+
+    // MARK: ツールバー: プロジェクト
+
+    private func projectToolbar(timeline: Timeline) -> some View {
+        HStack(spacing: 2) {
+            toolbarButton("doc.badge.plus", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.newProject, shortcut: UIStrings.Toolbar.shortcutNew)) {
+                workspace.newProject()
+            }
+            toolbarButton("folder", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.openProject, shortcut: UIStrings.Toolbar.shortcutOpen)) {
+                workspace.isImporterPresented = true
+            }
+            toolbarButton("square.and.arrow.down", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.saveProject, shortcut: UIStrings.Toolbar.shortcutSave)) {
+                workspace.saveCopy()
+            }
+            toolbarDivider
+            toolbarButton("tuningfork", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.videoInfo)) {
+                isVideoSettingsPresented = true
+            }
+            toolbarDivider
+            toolbarButton("film", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputExo)) {}
+                .disabled(true)
+            toolbarButton("play.rectangle", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputVideo)) {
+                isExportDialogPresented = true
+            }
+            toolbarDivider
+            // サムネイル保存 SplitButton（本体 = PNG 保存、
+            // ドロップダウン = 形式選択。本家 §3.6(d)(e)）。
+            HStack(spacing: 0) {
+                toolbarButton("camera", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.saveThumbnail)) {
+                    saveThumbnail(format: .png, timeline: timeline)
+                }
+                Menu {
+                    Button(UIStrings.Toolbar.saveThumbnailPng) {
+                        saveThumbnail(format: .png, timeline: timeline)
+                    }
+                    Button(UIStrings.Toolbar.saveThumbnailPngAlpha) {
+                        saveThumbnail(format: .pngAlpha, timeline: timeline)
+                    }
+                    Button(UIStrings.Toolbar.saveThumbnailJpeg) {
+                        saveThumbnail(format: .jpeg, timeline: timeline)
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8))
+                        .frame(width: 10, height: 22)
+                }
+                .menuStyle(.borderlessButton)
+                .frame(width: 10)
+            }
+        }
+    }
+
+    // MARK: ツールバー: フィードバック（本家はアイコン＋文言の1ボタン）
+
+    private var feedbackToolbar: some View {
+        Button {
+            // フィードバック送信ウィンドウは未実装。押下したことが
+            // 分かるようステータスへ未接続を出す。
+            workspace.statusMessage =
+                "フィードバック送信は未接続です（問い合わせはヘルプメニューから開けます）"
+        } label: {
+            Label(UIStrings.Toolbar.feedback, systemImage: "exclamationmark.bubble")
+                .font(.callout)
+        }
+        .buttonStyle(.borderless)
+        .help(UIStrings.Toolbar.tip(UIStrings.Toolbar.feedback))
     }
 
     private var toolbarDivider: some View {
@@ -889,26 +1728,6 @@ struct ProjectView: View {
         }
         .buttonStyle(.borderless)
         .help(help)
-    }
-
-    private func toolbarTextButton(
-        _ title: String, help: String, action: @escaping () -> Void
-    ) -> some View {
-        Button(title, action: action)
-            .buttonStyle(.borderless)
-            .font(.callout)
-            .help(help)
-    }
-
-    /// 状態を持つテキストトグルボタン（ツールバー用）。
-    private func toolbarToggleTextButton(
-        _ title: String, help: String, isOn: Binding<Bool>
-    ) -> some View {
-        Button(title) { isOn.wrappedValue.toggle() }
-            .buttonStyle(.borderless)
-            .font(.callout)
-            .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.primary)
-            .help(help)
     }
 
     // MARK: - レベルメーター
@@ -985,8 +1804,8 @@ struct ProjectView: View {
             playbackEngine?.levelMeter.isLoudnessMeterEnabled = newValue
         }
         .contextMenu {
-            Toggle("ピークメーターを表示", isOn: $isPeakMeterEnabled)
-            Toggle("ラウドネスメーターを表示", isOn: $isLoudnessMeterEnabled)
+            Toggle(UIStrings.Toolbar.peakMeter, isOn: $isPeakMeterEnabled)
+            Toggle(UIStrings.Toolbar.loudnessMeter, isOn: $isLoudnessMeterEnabled)
         }
     }
 
@@ -1157,7 +1976,7 @@ struct ProjectView: View {
                 .frame(width: 84)
                 .focused($statusFocus, equals: .time)
                 .onSubmit { commitStatusTime(timeline: timeline) }
-                .help("現在時刻（入力してシーク）")
+                .help(UIStrings.StatusBar.currentTime)
             Text("/")
             Text(timeText(frame: timeline.length, fps: info.fps))
             statusDivider
@@ -1167,7 +1986,7 @@ struct ProjectView: View {
                 .frame(width: 56)
                 .focused($statusFocus, equals: .frame)
                 .onSubmit { commitStatusFrame(timeline: timeline) }
-                .help("現在フレーム（入力してシーク）")
+                .help(UIStrings.StatusBar.currentFrame)
             Text("/")
             Text("\(timeline.length)")
             statusDivider
@@ -1177,7 +1996,7 @@ struct ProjectView: View {
                 isVideoSettingsPresented = true
             }
             .buttonStyle(.borderless)
-            .help("動画の設定")
+            .help(UIStrings.StatusBar.videoSettings)
             statusDivider
             Text(displayName)
                 .lineLimit(1)
@@ -1267,11 +2086,14 @@ struct ProjectView: View {
             url: sourceURL ?? URL(fileURLWithPath: "/untitled-project"),
             timelineIndex: timelineIndex
         )
-        guard let box = PreviewBox(
+        let box = PreviewBox(
             key: key, timeline: timeline, timelines: project.timelines,
             baseDirectory: baseDirectory
-        ) else {
-            previewError = "Metal デバイスを初期化できませんでした"
+        )
+        previewBox = box
+        if let failure = box.initializationFailure {
+            // 初期化失敗の理由をそのまま表示する（Issue #50）。
+            previewError = failure
             return
         }
         previewBox = box
@@ -1353,7 +2175,7 @@ struct ProjectView: View {
 
     private func inspectorPane(timeline: Timeline) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("アイテム")
+            Text(UIStrings.Inspector.item)
                 .font(.headline)
             Divider()
             ScrollView {
@@ -1391,7 +2213,7 @@ struct ProjectView: View {
             // 選択が変わったら各行の入力途中の状態を破棄する。
             .id(selectedItemIndex)
         } else {
-            Text("アイテムが選択されていません")
+            Text(UIStrings.Inspector.noSelection)
                 .foregroundStyle(.secondary)
         }
     }
@@ -1600,4 +2422,65 @@ enum ControlPointVisibility: CaseIterable {
 enum StatusField: Hashable {
     case time
     case frame
+}
+
+/// 波形表示モード（本家 YMMSettings.TimelineWaveformVisibility）。
+enum WaveformVisibility {
+    case always
+    case onMouseOver
+    case hidden
+}
+
+/// タイムラインへのファイルドロップの受け口。ドロップされた
+/// ファイル URL を集めてコールバックへ渡す。
+struct TimelineDropDelegate: DropDelegate {
+    let onURLs: ([URL]) -> Void
+
+    func performDrop(info: DropInfo) -> Bool {
+        let providers = info.itemProviders(for: [.fileURL])
+        guard !providers.isEmpty else { return false }
+        let collector = URLCollector()
+        let group = DispatchGroup()
+        for provider in providers {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                defer { group.leave() }
+                switch item {
+                case let data as Data:
+                    if let url = URL(dataRepresentation: data, relativeTo: nil) {
+                        collector.append(url)
+                    }
+                case let url as URL:
+                    collector.append(url)
+                default:
+                    break
+                }
+            }
+        }
+        group.notify(queue: .main) {
+            let urls = collector.snapshot()
+            if !urls.isEmpty {
+                onURLs(urls)
+            }
+        }
+        return true
+    }
+}
+
+/// ドロップされた URL を並行コールバックから集める箱。
+private final class URLCollector: @unchecked Sendable {
+    private var urls: [URL] = []
+    private let lock = NSLock()
+
+    func append(_ url: URL) {
+        lock.lock()
+        urls.append(url)
+        lock.unlock()
+    }
+
+    func snapshot() -> [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return urls
+    }
 }
