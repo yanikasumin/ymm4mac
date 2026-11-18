@@ -33,3 +33,7 @@ obj/
 *.ipa
 coverage/
 .cache/
+
+# Python (verification harness scripts)
+__pycache__/
+*.pyc

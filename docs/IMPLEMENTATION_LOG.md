@@ -55,7 +55,8 @@
 - BRUSH46 — ブラシ基盤: 型付きブラシモデルと GPU 塗り（Issue #46。MAC 番号は PR 時に付番）
 - MOSAICRECT — 矩形モザイクの本家方式化（5点サンプル平均）
 - GRADMESH — グラデーションメッシュブラシの型付き化と GPU 描画
-- NOISE7 — Noise エフェクト残り7種の実処理化（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）
+- NOISE7 — Noise エフェクト残り7種の実処理化（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）。既存3種の差分に関する記述の一部は NOISEFIX で訂正
+- NOISEFIX — Noise 既存3種（Fractal / Random / Curl）の本家シェーダとの差分是正
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 - INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
 
@@ -1322,6 +1323,21 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 **検証。** 期待値は、本家シェーダの DXBC を命令単位で実行するインタプリタ（作業領域 noise7-scratch）の出力。インタプリタ自体の妥当性は、既にマージ済みの移植 Fractal との照合ケース（fractal-cross）で担保した: 既存3種の既知の差分（オクターブ回数と ×(1/64)）を補正した条件ではバイト完全一致した。画素ハーネス noise7-harness（32×32、39ケース: 各種別の既定・整形モード・ワープ・角度・オフセット・スケール・色モード・ポスト処理・FlowAmount 変化など）で MetalNoiseProcessor 経由の実描画と比較した結果、37ケースがバイト完全一致（最大差 0）。残り2ケース（vor-cell / vor-manh-cell）は同一の1画素（行26・列5）だけが 1 バイト差（参照 157 に対して 158）で、勝者セルの取り違えではなくバイト境界での float 丸め差である。Flow は初版の転記で2箇所（permute 入力と第2角のスキュー）の読み違いがあり系統的にずれていたが、逆アセンブルのレジスタ手順を追い直して是正し、全ケース一致に至った。Mac 実機（検証コピー ~/ymm4-work/noise7-YMM4Mac）: ルートパッケージ `swift build` 成功・警告 0、対象テスト（GPUEffectRegistryTests / GPUEffectValuePreservationTests / GPUEffectLegacyKeyTests の計30件）0 失敗。Mac フルスイートは本単位では未実施（対象テストとハーネスのみ実行）。本家実機との比較試験は未実施のため IMPLEMENTED 止まり。
 
 **本家との差分・未解決。** (1) 既存3種（Fractal / Random / Curl）には本単位で変更していない差分が実測で確認された: ワープ第1評価点の +(19.1, 7.3, 3.7) オフセット欠落、オクターブ回数が Octaves 回（本家は Octaves + 1 回）、座標変換の ×(1/64) 欠落。是正は既存種の描画結果を変えるため本単位の範囲外とし、別途処分が要る。(2) IsUniqueSeed のシード基礎値（パラメータの GetHashCode 由来）は従来どおり未確定で 0 として扱う（全種共通の既存差分）。(3) Flow の周波数・振幅の更新は逆アセンブルのパックされたレジスタ更新を標準セマンティクスで読むと交差して見える箇所があるが、実測では通常の更新（周波数 ×Lacunarity、振幅 ×Gain）でインタプリタ参照と完全一致したため、通常の更新を採用した。
+#### NOISEFIX — Noise 既存3種（Fractal / Random / Curl）の本家シェーダとの差分是正（IMPLEMENTED、Mac 検証済み。本家との画素一致は DXBC 実行参照との照合範囲）
+
+**何を実装したか。** NOISE7 の検証で実測された、既存3種（Fractal / Random / Curl）と本家シェーダとの差分を是正した。対象は (1) ワープ第1評価点の +(19.1, 7.3, 3.7) オフセット欠落、(2) Fractal / Curl のオクターブ回数が Octaves 回で本家より1回不足、(3) 座標変換の ×(1/64) 欠落。あわせて noise7-harness に既存3種のケース8件（fractal-default / fractal-warp / fractal-turb / fractal-ridge / random-default / random-warp / curl-default / curl-warp）を追加し、全47ケースで照合できるようにした。従来ハーネス側にあった fractal-cross の補正（Octaves+1・Scale×64 のポート側補償）は撤去した。
+
+**本家根拠。** 本家シェーダの DXBC 逆アセンブル（作業領域 gpu45-scratch の fractalnoise / randomnoise / curlnoise）。3種は別々のシェーダであり、前段の規則は種別ごとに異なることを逆アセンブルで確認した。特に (3) は Fractal / Curl のシェーダにだけ存在し、Random のシェーダには無い。NOISE7 記録の未解決 (1) は3種共通の差分として ×(1/64) 欠落を挙げていたが、Random についてはこの限りでなかったため、本記録で訂正する。
+
+**どこを変更したか。** branch `noisefix/existing-three`（base = main 12df5ea）。`Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift` の `ymm4NoiseFragment` 既存3種経路: ワープ第1評価点を `q + (19.1, 7.3, 3.7)` へ是正、スケール後に ×0.015625 を追加（ただし noiseType == 1（Random）では適用しない条件分岐つき）、Fractal / Curl のオクターブループ条件を `octave < uniforms.octaves` から `octave <= uniforms.octaves` へ変更。Random は単一評価でオクターブループを持たないため (2) の対象外。`Harnesses/noise7-harness/` にケース8件と期待値（refs/）を追加し、`Harnesses/README.md` の noise7 行を更新した。Core は無変更。
+
+**どう実装したか。** 既存3種の経路は NOISE7 の新規7種と違い、シェーダごとに前段規則が異なるため、種別分岐の内側で吸収した。×(1/64) はスケール直後・回転直前の位置に置き、Random のみ条件分岐で除外した（Random の逆アセンブルではスケールの直後に回転が続く）。ワープの第2評価点オフセット (47.2, 31.6, 11.9) と、ワープ評価自体の ×(1/64)（warpScale への乗算）は従来どおりで変更していない。
+
+**検証。** 期待値は NOISE7 と同じ DXBC インタプリタの出力。既存39ケースの期待値は再生成しても全てバイト同一だった（インタプリタの決定性を確認）。Mac 実機（検証コピー ~/ymm4-work/verify-noisefix-YMM4Mac）: ルートパッケージ `swift build` 成功。noise7-harness 全47ケースを実描画と比較し、本単位の対象である既存3種のケースは全て最大差 0（バイト完全一致）。NOISE7 由来の Voronoi CellValue 系2ケース（vor-cell / vor-manh-cell）は最大差 1 が残る（NOISE7 節に記録済みの境界画素。第8ラウンド処分で下記のとおり原因を特定）。是正の途中経過として、×(1/64) を3種共通に適用した段階では Fractal / Curl が一致し Random の2ケースだけが系統的にずれた（最大差 194）ため、Random の逆アセンブルを読み直して上記の種別差を特定した。Mac フルスイートは、全586件から AudioDriftTests の7件を除いた579件を並列実行した（ドリフト試験はオーナー指示により既定で省略）。失敗は StreamingPCMProviderTests.testMemoryDoesNotGrowWithLongFile の1件のみ（メモリ増加量 35,651,632 バイトが上限 34,603,008 バイト = 33 MiB を超過）。同テストは単独実行では合格し、本単位の変更範囲（Noise シェーダ）とは無関係で、統合後スイート（main 12df5ea）でも合格していたため、並列実行時の計測揺らぎと判断した。本家実機との比較試験は未実施のため IMPLEMENTED 止まり。
+
+**第8ラウンドレビュー処分（PR #102、条件付き採用可・P1 なし・P2 4件）。** R8-01: 比較スクリプト compare.py が不一致でも終了コード 0 を返し、最大差 3 以下を合格扱いにしていた欠陥を是正した。全ケース最大差 0 でなければ非 0 終了とする厳密判定に変更し、改竄した出力で非 0 終了することも確認した。R8-03: 重点ケース5件を追加し全52ケース化した（fractal-oct0 / curl-oct0 / curl-turb / curl-ridge / random-axes）。この追加で Curl の FractalMode 系2ケースの期待値が実描画と一致しないことが判明し、原因はインタプリタ側の不具合と特定した: DXBC の分岐修飾子（`if X ; z` = ゼロのとき分岐）をコメント除去で落としており、Curl シェーダの FractalMode 分岐が反転していた。インタプリタを修正して全52ケースの期待値を再生成したところ、変更は curl-turb / curl-ridge の2件のみで、修正後の期待値と実描画はバイト完全一致した（移植側の実装は正しかった）。なお全シェーダで `; z` 分岐は Curl と HalfTone の各1箇所のみ。HalfTone の期待値は修正前インタプリタで生成されているため、再検証を Issue に切り出した。R8-04: PR に混入していた Python バイトコード（__pycache__）を追跡対象から外し、.gitignore に __pycache__/ と *.pyc を追加した。combos.swift の生成スクリプト gen_harness.py はリポジトリ内のハーネスフォルダへ収録した（期待値の生成はインタプリタと逆アセンブル成果物に依存するため作業領域に残る）。R8-02: メモリ増加量テストは最終コミットで単独3回再実行し全て合格した。ただし処分は「揺らぎで解消」ではなく、プロセス全体のメモリを測る試験が並列スイートと干渉する既知の試験環境問題として Issue に切り出し OPEN のままにする（閾値の引き上げはしない）。最終状態: 全52ケース中50ケースがバイト完全一致。残る vor-cell / vor-manh-cell は各1画素のみ最大差 1 で、インタプリタの値がバイト境界（157.5 / 255）で実描画より 1 ulp 低く出る精度差であり、NOISE7 以来の既知差分として残置する。
+
+**本家との差分・未解決。** IsUniqueSeed のシード基礎値（パラメータの GetHashCode 由来）は従来どおり未確定で 0 として扱う（全種共通の既存差分、本単位でも変更なし）。
 #### INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
 
 **何を統合したか。** 並行して実装された10単位を main へ順に統合した。対応は次のとおり。#84 = MAC-0040（VoiceItem 音声供給、#51）、#85 = MAC-0041・0042（実時間再生、#52）、#86 = SOLA53（#53）、#87 = STREAM54（#54）、#88 = MAC-0043（PngWav、#49）、#89 = MAC-0044（Metal 初期化診断、#50）、#90 = GPU45（#45 第1弾）、#91 = BRUSH46（#46）、#92 = TRANSFORM47（#47）、#93 = MOSAIC48（#48）。統合後の main は `8df38dd`。

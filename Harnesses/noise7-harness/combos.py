@@ -71,10 +71,30 @@ CASES = [
     case("flow-zero", "Flow", FlowAmount=0.0),
     case("flow-300", "Flow", FlowAmount=300.0),
     case("flow-oct2", "Flow", Octaves=2.0),
-    # Cross-check of the interpreter against the already-merged port
-    # Fractal: port Octaves = DXBC Octaves + 1 and port scale uniform
-    # lacks the /64, compensated in gen_refs/harness by Scale=6400.
+    # Existing three types (Fractal / Random / Curl). Before the
+    # NOISEFIX correction, fractal-cross compensated the port's known
+    # differences (Octaves + 1, Scale x64) in gen_harness.py. After
+    # the correction the port matches honke directly, so all cases
+    # here run with identical parameters on both sides.
     case("fractal-cross", "Fractal", Octaves=4.0),
+    case("fractal-default", "Fractal"),
+    case("fractal-warp", "Fractal", WarpStrength=40.0, WarpScale=150.0),
+    case("fractal-turb", "Fractal", FractalMode=1),
+    case("fractal-ridge", "Fractal", FractalMode=2),
+    case("random-default", "Random"),
+    case("random-warp", "Random", WarpStrength=25.0),
+    case("curl-default", "Curl"),
+    case("curl-warp", "Curl", WarpStrength=30.0),
+    # Round-8 review (R8-03) additions: the octave-loop boundary
+    # (Octaves=0 still evaluates once), Curl with non-default
+    # FractalMode, and Random combined with the axes that its
+    # shader handles differently (angle / scale / offset).
+    case("fractal-oct0", "Fractal", Octaves=0.0),
+    case("curl-oct0", "Curl", Octaves=0.0),
+    case("curl-turb", "Curl", FractalMode=1),
+    case("curl-ridge", "Curl", FractalMode=2),
+    case("random-axes", "Random", Angle=30.0, ScaleX=150.0, ScaleY=75.0,
+         ScaleZ=125.0, X=10.0, Y=-5.0, Z=3.0),
 ]
 
 

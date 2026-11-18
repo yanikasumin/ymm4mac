@@ -41,7 +41,7 @@ swift run -c release
 | brush46-harness | ブラシ基盤（BRUSH46）: 型付きブラシの GPU 塗りを4エフェクトと図形へ適用し、本家幾何から手計算した期待値と画素を照合。未対応ブラシの素通し回帰を含む | 引数なし。ビットマップブラシ用タイルは実行時に生成 | 42 件全 PASS |
 | transform47-harness | 変形・不透明度つき入力に対する共通規則（Issue #47）: 自作 Source で非プレーンな入力を連鎖へ流し、エフェクトが効くことと実体化カウンタの発動を検証。`--measure <ymmp パス>` で実プロジェクトでの発動頻度を測定する診断モードも持つ | 引数なし / `--measure <ymmp パス>` | 13 件全 PASS。測定モードは upload.ymmp / upload-2.ymmp とも発動 0 回 |
 | trim55-harness | 提示タイムスタンプとトリム（Issue #55）: 提示開始オフセット・AAC 遅延・MP3 素材での音の開始位置とシーク着地の実測（harness）、資産・セグメント・提示時刻の診断（diag）、映像の提示区間とフレーム内容の診断（vdiag） | `harness <素材パス>`、`diag <素材パス> [シーク秒 [着地秒]]`、`vdiag <動画パス>`。素材は ffmpeg で別途生成（台帳 TRIM55 参照） | 5 素材すべて本家の意味論と一致（2026-11-18 実測） |
-| noise7-harness | Noise 生成器の新規7種（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）と Fractal 照合の計39ケースを MetalNoiseProcessor 経由で描画し、画素バイト列を標準出力へ出す（PASS/FAIL 形式ではないダンプ型） | 引数なし。出力と同梱の期待値（refs/）の比較は `python3 compare.py <出力ファイル>` | 37 件バイト完全一致、Voronoi セル値 2 件は 1 画素のみ 1 バイト差（2026-11-18 実測。詳細は docs/IMPLEMENTATION_LOG.md の NOISE7 節）。期待値は本家シェーダの DXBC を実行するインタプリタの出力を凍結したもの |
+| noise7-harness | Noise 生成器の全10種（新規7種 Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow と既存3種 Fractal / Random / Curl）の計52ケースを MetalNoiseProcessor 経由で描画し、画素バイト列を標準出力へ出す（PASS/FAIL 形式ではないダンプ型） | 引数なし。出力と同梱の期待値（refs/）の比較は `python3 compare.py <出力ファイル>`（全ケース最大差 0 でなければ非 0 終了） | 52ケース中50ケースでバイト完全一致（2026-11-18 実測）。残る vor-cell / vor-manh-cell は各1画素だけ最大差 1（期待値生成インタプリタの境界丸め差。詳細は docs/IMPLEMENTATION_LOG.md の NOISE7 節と NOISEFIX 節）。期待値は本家シェーダの DXBC を実行するインタプリタの出力を凍結したもの |
 
 ## 材料について
 
