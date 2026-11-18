@@ -511,6 +511,89 @@ public final class MetalGraphicsDevices {
             return (plane + offset - rect.xy) / rect.zw;
         }
 
+        // モザイク系 (mode 7〜11) の共通部品。本家のカスタムシェーダ
+        // (CircleMosaic / TriangleMosaic / HexagonMosaic / VoronoiMosaic /
+        // DelaunayMosaic) の逆アセンブルから抽出した式を再実装したもの。
+        // いずれも「現在画素が属するセルの代表点を求め、その点の色で
+        // セルを塗る」形であり、代表点の決め方だけが形状ごとに異なる。
+
+        // Voronoi / Delaunay の seed 前処理。本家字面: seed の符号で
+        // ±(1234.5677, 1234.9012) を選び、frac(±0.00081 * seed) 等との
+        // 積をハッシュ入力への加算オフセットとする。
+        float2 ymm4MosaicSeedOffset(float seed) {
+            float2 s = seed >= 0.0
+                ? float2(1234.5677490234375, 1234.9012451171875)
+                : float2(-1234.5677490234375, -1234.9012451171875);
+            float2 f = fract(float2(
+                (seed >= 0.0 ? 0.0008100001141428947 : -0.0008100001141428947) * seed,
+                (seed >= 0.0 ? 0.0008097813697531819 : -0.0008097813697531819) * seed));
+            return float2(s.x * f.x, s.y * f.y);
+        }
+
+        // ハッシュ用の sin。本家シェーダは dot の結果 (絶対値で数百〜
+        // 数十万) をそのまま sin に渡し fract で小数部を取るため、sin の
+        // 引数削減の精度が結果を支配する。Metal の sin は引数が大きいと
+        // 粗い近似になる (実測: fract(sin(x)*43758.546875) が 1/128 刻みに
+        // 量子化された) ため、2π の高精度分割 (Cody-Waite) で剰余を
+        // 取ってから sin を計算し、数学的に正しい値に寄せる。本家
+        // Direct2D 側の値も GPU の sin 実装に依存し、機種が変われば
+        // 散らばり自体が変わる性質のもの (台帳に記録)。
+        float ymm4MosaicHashSin(float x) {
+            const float twoPiHi = 6.2831854820251465;
+            const float twoPiLo = -1.7484556000744526e-07;
+            float n = round(x * 0.15915494309189535);
+            float r = fma(-n, twoPiHi, x);
+            r = fma(-n, twoPiLo, r);
+            return sin(r);
+        }
+
+        // セル座標から [0, 1) の乱数2成分を作るハッシュ (本家字面:
+        // frac(sin(dot) * 43758.546875) の2定数版)。
+        float2 ymm4MosaicHashRand(float2 cellPoint) {
+            return float2(
+                fract(ymm4MosaicHashSin(dot(cellPoint, float2(127.0999984741211, 311.70001220703125))) * 43758.546875),
+                fract(ymm4MosaicHashSin(dot(cellPoint, float2(269.5, 183.3000030517578))) * 43758.546875));
+        }
+
+        // 3x3 近傍セルの特徴点 (セル座標系の連続値)。
+        // index = (dy + 1) * 3 + (dx + 1)。
+        void ymm4MosaicFeaturePoints(float2 q, float seed, thread float2 *points) {
+            float2 cell = round(q);
+            float2 offset = ymm4MosaicSeedOffset(seed);
+            int index = 0;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    float2 base = cell + float2(float(dx), float(dy));
+                    points[index] = base + ymm4MosaicHashRand(base + offset);
+                    index++;
+                }
+            }
+        }
+
+        float ymm4MosaicCross(float2 a, float2 b) {
+            return a.x * b.y - a.y * b.x;
+        }
+
+        bool ymm4MosaicInTriangle(float2 q, float2 a, float2 b, float2 c) {
+            float d1 = ymm4MosaicCross(b - a, q - a);
+            float d2 = ymm4MosaicCross(c - b, q - b);
+            float d3 = ymm4MosaicCross(a - c, q - c);
+            return (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0)
+                || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0);
+        }
+
+        // 点 d が三角形 abc の外接円内にあるか (Delaunay 判定)。
+        bool ymm4MosaicInCircle(float2 a, float2 b, float2 c, float2 d) {
+            float2 pa = a - d;
+            float2 pb = b - d;
+            float2 pc = c - d;
+            float det = dot(pa, pa) * ymm4MosaicCross(pb, pc)
+                - dot(pb, pb) * ymm4MosaicCross(pa, pc)
+                + dot(pc, pc) * ymm4MosaicCross(pa, pb);
+            float orient = ymm4MosaicCross(b - a, c - a);
+            return orient > 0.0 ? det > 0.0 : det < 0.0;
+        }
+
         fragment float4 ymm4WarpFragment(
             VertexOut in [[stage_in]],
             texture2d<float> input [[texture(0)]],
@@ -608,6 +691,130 @@ public final class MetalGraphicsDevices {
                     float adjusted = (uniforms.param0.x > 0.5
                         ? 1.0 - maskAlpha : maskAlpha) * uniforms.param0.y;
                     return color * adjusted;
+                }
+                case 7: case 8: case 9: case 10: case 11: {
+                    // 非矩形モザイク: param0.x = セル寸法 (本家の setter
+                    // クランプ済みの値が渡る), param0.y = seed
+                    // (Voronoi / Delaunay のみ使用)。
+                    // 本家シェーダは SCENE_POSITION (入力平面座標) で
+                    // セルを決めるため、point に入力の planeOffset を
+                    // 加えた座標を基準にする。サンプルは代表点の UV を
+                    // 入力平面から直接引く (本家は現在 UV からの相対
+                    // オフセットで引くが、線形サンプルでは等価)。
+                    float size = max(uniforms.param0.x, 1.0);
+                    float seed = uniforms.param0.y;
+                    float2 pos = point + uniforms.inputOffset;
+                    float2 samplePoint = pos;
+                    if (uniforms.mode == 7) {
+                        // 円形: 中心 = (round(pos/size) + 0.5) * size。
+                        // 中心から size/2 を超える画素は透明になる
+                        // (本家字面どおり。格子の位相は中心側に寄る)。
+                        float2 center = (round(pos / size) + 0.5) * size;
+                        float2 offset = pos - center;
+                        if (dot(offset, offset) > 0.25 * size * size) {
+                            return float4(0.0);
+                        }
+                        samplePoint = center;
+                    } else if (uniforms.mode == 8) {
+                        // 三角形: 斜交座標へ写し、frac の和で三角形の
+                        // 重心 (1/3 か 2/3) を選ぶ (本家字面どおり)。
+                        float2 q = pos / size;
+                        float sx = q.x - q.y * 0.5773502588272095;
+                        float sy = q.y * 1.154700517654419;
+                        float o = (fract(sx) + fract(sy) <= 1.0)
+                            ? 0.3333333432674408 : 0.6666666865348816;
+                        float2 base = round(float2(sx, sy)) + o;
+                        samplePoint = float2(
+                            (base.x + 0.5 * base.y) * size,
+                            base.y * size * 0.8660253882408142);
+                    } else if (uniforms.mode == 9) {
+                        // 六角形: 2方向の格子座標と frac の補正で中心を
+                        // 選ぶ (本家字面どおり)。
+                        float2 q = pos / size;
+                        float a = -q.x + q.y * 0.5773502588272095;
+                        float b = 2.0 * q.x;
+                        float fa = fract(a);
+                        float fb = fract(b);
+                        float c = (3.0 * fa + fb <= 2.0) ? 0.0 : 1.0;
+                        float fa2 = fa + c * (1.0 - 2.0 * fa);
+                        float fb2 = fb + c * (1.0 - 2.0 * fb);
+                        float d = ((3.0 * fb2 + 2.0 * fa2 <= 1.0) ? -1.0 : 0.0) + c;
+                        float baseA = round(b) - abs(d) + 1.0;
+                        float baseB = c + round(a);
+                        samplePoint = float2(
+                            baseA * size * 0.5,
+                            (0.8660253882408142 * baseA
+                             + 1.7320507764816284 * baseB) * size);
+                    } else if (uniforms.mode == 10) {
+                        // ボロノイ: 3x3 近傍の特徴点のうち frac 座標から
+                        // 最も近い点の絶対位置をサンプルする
+                        // (本家字面どおり。初期の最良距離は 2.0)。
+                        float2 q = pos / size;
+                        float2 cell = round(q);
+                        float2 f = fract(q);
+                        float2 offset = ymm4MosaicSeedOffset(seed);
+                        float bestDist = 2.0;
+                        float2 best = float2(0.0);
+                        for (int dy = -1; dy <= 1; dy++) {
+                            for (int dx = -1; dx <= 1; dx++) {
+                                float2 delta = float2(float(dx), float(dy));
+                                float2 p = delta + ymm4MosaicHashRand(
+                                    cell + delta + offset);
+                                float dist = length(p - f);
+                                if (dist < bestDist) {
+                                    bestDist = dist;
+                                    best = p;
+                                }
+                            }
+                        }
+                        samplePoint = (cell + best) * size;
+                    } else {
+                        // ドロネー: 特徴点は mode 10 と共通。2x2 ブロック
+                        // (z = 0, 1, 3, 4 の順に探索) の4点について
+                        // 外接円判定で対角線を選び、現在画素を含む
+                        // 三角形の重心をサンプルする。本家字面の
+                        // ブロック選択は角度和 (winding) 判定であり、
+                        // ここでは三角形所属による等価判定へ置き換えた
+                        // (非凸四角形と境界での差は台帳に記録)。
+                        float2 q = pos / size;
+                        float2 points[9];
+                        ymm4MosaicFeaturePoints(q, seed, points);
+                        int blockStarts[4] = {0, 1, 3, 4};
+                        float2 a = points[0];
+                        float2 b = points[1];
+                        float2 c = points[3];
+                        float2 d = points[4];
+                        for (int i = 0; i < 4; i++) {
+                            int z = blockStarts[i];
+                            float2 ba = points[z];
+                            float2 bb = points[z + 1];
+                            float2 bc = points[z + 3];
+                            float2 bd = points[z + 4];
+                            if (ymm4MosaicInTriangle(q, ba, bb, bd)
+                                || ymm4MosaicInTriangle(q, ba, bd, bc)) {
+                                a = ba; b = bb; c = bc; d = bd;
+                                break;
+                            }
+                        }
+                        // どちらの三角形にも属さない場合 (非凸四角形で
+                        // 起きる) は対角線ペアの第1三角形へ倒す。
+                        float2 g;
+                        if (ymm4MosaicInCircle(a, b, c, d)) {
+                            g = ymm4MosaicInTriangle(q, a, b, c)
+                                ? (a + b + c) / 3.0
+                                : (ymm4MosaicInTriangle(q, b, c, d)
+                                    ? (b + c + d) / 3.0 : (a + b + c) / 3.0);
+                        } else {
+                            g = ymm4MosaicInTriangle(q, a, b, d)
+                                ? (a + b + d) / 3.0
+                                : (ymm4MosaicInTriangle(q, a, d, c)
+                                    ? (a + d + c) / 3.0 : (a + b + d) / 3.0);
+                        }
+                        samplePoint = g * size;
+                    }
+                    float2 sampleUV = (samplePoint - uniforms.inputPlane.xy)
+                        / uniforms.inputPlane.zw;
+                    return input.sample(inputSampler, sampleUV);
                 }
                 default:
                     return float4(0.0);

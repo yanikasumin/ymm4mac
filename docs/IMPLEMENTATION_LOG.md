@@ -843,6 +843,27 @@
 - **根拠が取れず未確認のまま残した値**: エフェクト追加ポップアップの初期サイズ（本家はリサイズ可＋設定に保持で固定寸法なし）、シー��タブ行の高さ 24、プレビュースプリッタのクランプ範囲（120–900）、プレビューハンドルの割当て（隅=拡大率・辺中点=回転角は本家 XAML に直接の根拠がない独自の割当て）。
 - **検証**: Mac 実機でルート＋DebugApp の debug／release ビルド成功・警告0、全テスト 432 件・0 失敗（変更前と同数・回帰なし）。見た目の最終確認は未実施（目視未確認）。
 
+#### MOSAIC48 — モザイクの非矩形対応とサイズアニメーション評価（Issue #48）（IMPLEMENTED、Mac 検証済み。本家との画素一致は下記の範囲）
+
+**何を実装したか。** モザイクエフェクト（本家 `YukkuriMovieMaker.Project.Effects.MosaicEffect`）の残件2件を解消した。(1) 非矩形モザイク（円形・三角形・六角形・ボロノイ・ドロネー）が素通しだったのを実処理にした。(2) モザイクの Size アニメーションが定義側で不完全にしか復元されず（ベジェ曲線が落ちる）、キーフレームも伝播しなかったのを、他のエフェクトと同じ評価規則に揃えた。
+
+**本家根拠。** 形状は `MosaicType` の宣言順（Circle / Triangle / Rectangle / Hexagon / Delaunay / Voronoi）。6形状のパラメータクラスはいずれも `SizeMosaicParameterBase` を継承し、保持プロパティは Size（Animation、既定 10、範囲 0–2000）のみで、`SetParameterTo` も Size だけを渡す。描画は Player 側カスタムエフェクト（Direct2D）が担い、Size の setter クランプは全形状 1–5000。シェーダ6種の DXBC 逆アセンブルから抽出した式を仕様として再実装した（逆アセンブル文自体は実装へ複写していない）。Delaunay / Voronoi の Seed は本家ではパラメータ生成時に `GetHashCode()` で決まる実行時値で、ファイルには保存されない。
+
+**どこを変更したか。** 新規 `Sources/YMM4Core/Model/MosaicParameter.swift`（形状6種の型付きパラメータ。$type で判別し、未知の型は `.preserved` として生保持へ倒す）、`Sources/YMM4Core/Effects/GPU/BlurEffects.swift` の `MosaicEffectDefinition`（`mosaicParameter` を生保持から型付きへ変更、ベジェを含む完全な Animation 復元と `forEachAnimation` によるキーフレーム伝播を追加）、`Sources/YMM4GPU/Effects/MetalBlurMosaicProcessors.swift` の `MetalMosaicProcessor`（部分デコードを廃し、Size を通常のアニメーション評価で取得）、`Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift` の Warp フラグメントへ mode 7–11（円形・三角形・六角形・ボロノイ・ドロネー）を追加。検証資産として `Harnesses/mosaic48-harness/`（画素ハーネス＋参照実装＋期待値生成スクリプト）を新設。
+
+**どう実装したか。** 定義層は ShapeParameter / Brush と同じ型付き＋生保持フォールバックの形にした。処理器は Size を `value(atFrame:length:fps:)` で評価して 1–5000 にクランプし、矩形は既存の矩形モザイク描画、他5形状は Warp 経路で代表点を計算して線形サンプルする。座標基準は本家シェーダの SCENE_POSITION（入力平面座標）に合わせた。Seed は既存の `VideoEffectDefinitionBase.randomSeed`（GetHashCode の代替として用意されていたが未使用だったもの）を渡す。
+
+**本家との差分（ユーザーから見えるもの）。**
+- 矩形モザイク: 本家シェーダはセル内5点の平均だが、従来の移植はセル内全テクセルの平均で、本作業の範囲外として据え置いた（従来差分の継続）。
+- 円形モザイクの格子位相: 中心 = (round(pos/Size) + 0.5)・Size の字面どおりで、格子は中心側へ寄る（円の外側が広く透明になる）。本家字面の再現であり意図的な選択。
+- Delaunay のブロック選択: 本家は角度和（winding）と atan2 近似多項式でブロックを選ぶが、移植は三角形所属による幾何学的な等価判定へ置き換えた。非凸四角形と境界では本家と違う三角形を選ぶ場合がある（下記検証の範囲では参照と一致）。
+- 出力範囲の拡張: 本家のカスタムエフェクトは形状ごとに描画範囲を広げるが、Player 側の `MosaicEffect` は DrawDescription を変えず最終描画は入力範囲で切れるため、移植でも入力範囲のままにした。
+- Voronoi / Delaunay の散らばり: 本家は Seed が実行ごとに不定で、GPU の sin 実装にも依存するため、安定した「本家の出力」が存在しない。移植は数学的に正しい sin へ寄せた決定的な散らばりにした（Metal の sin は引数が大きいと粗く、実測で fract 値が 1/128 刻みに量子化されたため、Cody-Waite 分割で引数削減してから sin を計算する）。
+
+**検証。** Mac 実機でルートパッケージビルド成功・警告0。画素ハーネス（64×64、識別パターン入力、参照は逆アセンブル抽出式の独立実装＋線形サンプルの再現）: 円形・三角形・六角形は Size 16／10／12／20 で全画素一致（不一致 0px）。サイズアニメーション（直線移動 8→24）は先頭フレーム全画素一致、最終フレーム 5px（0.122%、円の半径境界の float 判定割れ）。ボロノイ／ドロネーは独立参照と 11〜218px（0.269〜5.322%）の不一致が残るが、特徴点ハッシュの実測値を参照へ差し替えた照合では全ケース 0px となり、差がハッシュの float32 丸め（81セル中9セルで最大 0.066 の差）だけに由来することを確認した。未知の形状パラメータは素通しになることも確認した。Core テストは GPUEffectsTests にモザイクの往復・ベジェ保持・キーフレーム伝播の4件を追加。Mac フルスイートは 447 件・0 失敗（所要 3936 秒。うち AudioDriftTests 7件が 2016 秒を占める重量級で、分離せず単一実行で完走させた）。
+
+**未解決。** Seed と本家の GetHashCode の対応（対応付け自体が不可能で、散らばりの再現性は本家にも無い）。Delaunay の非凸四角形・境界での本家 winding 判定との等価性（参照実装同士の一致までで、本家実出力との比較は Seed 不定のため実施不能）。矩形の5点平均への是正は別件。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）

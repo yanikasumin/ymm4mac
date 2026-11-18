@@ -215,8 +215,9 @@ public final class SharpenEffectDefinition: GPUEffectDefinitionBase {
 
 /// モザイク。本家 `MosaicEffect`。
 /// パラメータ（実測）: MosaicType は既定 Rectangle。MosaicParameter は
-/// 形状ごとのパラメータ（多態オブジェクト）であり、プラグイン型の
-/// パラメータとして生保持に倒す。
+/// 形状ごとのパラメータ（多態オブジェクト）で、組み込み6形状は
+/// `MosaicParameter` として型付き化する（全形状とも `Size` だけを持つ。
+/// 未知の $type は生保持）。
 public final class MosaicEffectDefinition: GPUEffectDefinitionBase {
     public override class var typeName: String {
         "YukkuriMovieMaker.Project.Effects.MosaicEffect, YukkuriMovieMaker"
@@ -224,8 +225,14 @@ public final class MosaicEffectDefinition: GPUEffectDefinitionBase {
 
     /// モザイクの形状。
     public var mosaicType: MosaicType = .rectangle
-    /// 形状パラメータ（生保持。本家 `MosaicParameterBase`）。
-    public var mosaicParameter: PreservedObject?
+    /// 形状パラメータ。本家 `MosaicParameterBase`。
+    public var mosaicParameter: MosaicParameter?
+
+    public override func forEachAnimation(_ body: (inout Animation) -> Void) {
+        // 本家は GetAnimatables() でパラメータを返し、パラメータ内の
+        // Animation（Size）がキーフレーム文脈を受ける。
+        mosaicParameter?.forEachAnimation(body)
+    }
 
     public override func decodeKnownField(_ key: String, _ value: JSONValue) -> Bool {
         switch key {
@@ -233,7 +240,7 @@ public final class MosaicEffectDefinition: GPUEffectDefinitionBase {
             mosaicType = CodecSupport.enumeration(value, default: MosaicType.rectangle)
             return true
         case "MosaicParameter":
-            mosaicParameter = CodecSupport.preservedObject(value)
+            mosaicParameter = MosaicParameter.decode(from: value)
             return true
         default:
             return super.decodeKnownField(key, value)
@@ -245,7 +252,7 @@ public final class MosaicEffectDefinition: GPUEffectDefinitionBase {
             (key: "MosaicType", value: .string(mosaicType.honkeName)),
         ]
         if let mosaicParameter {
-            fields.append((key: "MosaicParameter", value: mosaicParameter.value))
+            fields.append((key: "MosaicParameter", value: mosaicParameter.encodeToJSONValue()))
         }
         return fields + super.encodeKnownFields()
     }
