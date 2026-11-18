@@ -1,11 +1,13 @@
 import CoreGraphics
 import XCTest
 import YMM4Core
+import YMM4GPU
 @testable import PreviewCore
 
 /// 描画時間を門（セマフォ）で制御できる偽セッション。
 private final class FakeSession: PreviewRenderSession {
     var initializationFailure: String?
+    let diagnostics = RenderDiagnosticsCollector()
     /// render はこの門が開くまで待つ（blockRenders が真の間）。
     let gate = DispatchSemaphore(value: 0)
     var blockRenders = false
@@ -96,7 +98,7 @@ final class PreviewRenderWorkerTests: XCTestCase {
         let log = DeliveryLog()
         let delivered = expectation(description: "two deliveries")
         delivered.expectedFulfillmentCount = 2
-        worker.onRenderFailed = { identity, frame in
+        worker.onRenderFailed = { identity, frame, _, _ in
             log.append(identity, frame)
             delivered.fulfill()
         }
@@ -132,7 +134,7 @@ final class PreviewRenderWorkerTests: XCTestCase {
         let log = DeliveryLog()
         let delivered = expectation(description: "two deliveries")
         delivered.expectedFulfillmentCount = 2
-        worker.onRenderFailed = { identity, frame in
+        worker.onRenderFailed = { identity, frame, _, _ in
             log.append(identity, frame)
             delivered.fulfill()
         }
@@ -188,7 +190,7 @@ final class PreviewRenderWorkerTests: XCTestCase {
         let worker = makeWorker(sessions: [sessionA, sessionB])
         let log = DeliveryLog()
         let delivered = expectation(description: "delivery on new model")
-        worker.onRenderFailed = { identity, frame in
+        worker.onRenderFailed = { identity, frame, _, _ in
             log.append(identity, frame)
             delivered.fulfill()
         }

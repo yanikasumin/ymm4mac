@@ -9,6 +9,8 @@ import YMM4GPU
 public protocol PreviewRenderSession: AnyObject {
     /// 初期化に失敗した場合の、利用者向けの理由文。成功時は nil。
     var initializationFailure: String? { get }
+    /// この描画セッションの診断収集先（R6-06）。
+    var diagnostics: RenderDiagnosticsCollector { get }
     /// 指定フレームを合成して読み戻す。失敗時は nil。
     func render(frame: Int, timeline: Timeline, usage: TimelineSourceUsage) -> CGImage?
     /// 資源を解放する。
@@ -74,10 +76,18 @@ public final class PreviewRenderWorker: @unchecked Sendable {
         public init() {}
     }
 
-    /// 完成画像の通知（メインキュー）。画像・識別子・フレーム。
-    public var onImage: ((CGImage, Identity, Int) -> Void)?
-    /// 合成が失敗したときの通知（メインキュー）。識別子・フレーム。
-    public var onRenderFailed: ((Identity, Int) -> Void)?
+    /// 完成画像の通知（メインキュー）。画像・識別子・フレーム、
+    /// この描画で発生した診断とセッション履歴の集約（R6-06）。
+    public var onImage: ((
+        CGImage, Identity, Int,
+        [RenderDiagnosticsCollector.Entry], [RenderDiagnosticsCollector.Entry]
+    ) -> Void)?
+    /// 合成が失敗したときの通知（メインキュー）。識別子・フレーム、
+    /// この描画の診断とセッション履歴の集約。
+    public var onRenderFailed: ((
+        Identity, Int,
+        [RenderDiagnosticsCollector.Entry], [RenderDiagnosticsCollector.Entry]
+    ) -> Void)?
     /// モデルの初期化に失敗したときの通知（メインキュー）。
     /// 理由文と、そのモデルの識別子（R11-03）。
     public var onModelFailed: ((String, Identity) -> Void)?
@@ -238,19 +248,24 @@ public final class PreviewRenderWorker: @unchecked Sendable {
         lock.lock()
         statsValue.rendersStarted += 1
         lock.unlock()
+        // 描画の間に発生した診断だけを切り分けるため、開始時点の
+        // 通し番号を控える（現在の失敗状態と履歴を分ける — R6-06）。
+        let diagnosticsMark = currentModel.session.diagnostics.eventCount
         let image = currentModel.session.render(
             frame: request.frame, timeline: currentModel.timeline,
             usage: request.usage
         )
+        let failures = currentModel.session.diagnostics.entries(after: diagnosticsMark)
+        let history = currentModel.session.diagnostics.allEntries()
         lock.lock()
         statsValue.rendersCompleted += 1
         lock.unlock()
         let identity = currentModel.identity
         DispatchQueue.main.async { [self] in
             if let image {
-                onImage?(image, identity, request.frame)
+                onImage?(image, identity, request.frame, failures, history)
             } else {
-                onRenderFailed?(identity, request.frame)
+                onRenderFailed?(identity, request.frame, failures, history)
             }
         }
         queue.async { [self] in step() }
