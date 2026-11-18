@@ -106,13 +106,13 @@ extension CodecSupport {
             }
             return .object(result)
         case (.array(let existingElements), .array(let overlayElements)):
-            return overlayElements.enumerated().map { index, element in
+            return .array(overlayElements.enumerated().map { index, element in
                 existingElements.indices.contains(index)
                     ? mergePreservingUnknownFields(
                         existing: existingElements[index], overlay: element
                     )
                     : element
-            }
+            })
         default:
             return overlay
         }
