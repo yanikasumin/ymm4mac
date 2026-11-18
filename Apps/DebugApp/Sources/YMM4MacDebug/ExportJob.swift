@@ -14,6 +14,22 @@ final class ExportUIState: ObservableObject {
     var cancellation: TimelineExportCancellation?
 }
 
+/// 書き出し要求（ダイアログで確定した出力形式と出力先）。
+enum ExportRequest: Sendable {
+    /// MP4（H.264 / AAC、ffmpeg 経由）。出力先はファイル。
+    case mp4(fileURL: URL)
+    /// PNG 連番＋WAV（PngWav）。出力先はフォルダ。
+    case pngWav(directoryURL: URL, settings: PngWavExportSettings)
+
+    /// 要約表示用の出力先 URL。
+    var outputURL: URL {
+        switch self {
+        case .mp4(let fileURL): return fileURL
+        case .pngWav(let directoryURL, _): return directoryURL
+        }
+    }
+}
+
 /// 書き出しジョブ。保持するモデルは、書き出し開始時に
 /// `Project.makeExportSnapshot(of:)` で作ったジョブ専有の
 /// スナップショットであり、編集中のプロジェクトとはインスタンスを
@@ -25,19 +41,19 @@ final class ExportJob: @unchecked Sendable {
     private let timeline: Timeline
     private let timelines: [Timeline]
     private let baseDirectory: URL
-    private let outputURL: URL
+    private let request: ExportRequest
     private let cancellation: TimelineExportCancellation
     private let state: ExportUIState
 
     init(
         timeline: Timeline, timelines: [Timeline], baseDirectory: URL,
-        outputURL: URL, cancellation: TimelineExportCancellation,
+        request: ExportRequest, cancellation: TimelineExportCancellation,
         state: ExportUIState
     ) {
         self.timeline = timeline
         self.timelines = timelines
         self.baseDirectory = baseDirectory
-        self.outputURL = outputURL
+        self.request = request
         self.cancellation = cancellation
         self.state = state
     }
@@ -58,16 +74,28 @@ final class ExportJob: @unchecked Sendable {
         }
         defer { exporter.dispose() }
         do {
-            let outcome = try exporter.run(
-                outputPath: outputURL.path, cancellation: cancellation
-            ) { [state] done, total in
+            let progress: (Int, Int) -> Void = { [state] done, total in
                 Task { @MainActor in
                     state.framesDone = done
                     state.framesTotal = total
                 }
             }
+            let outcome: ExportOutcome
+            switch request {
+            case .mp4(let fileURL):
+                outcome = try exporter.run(
+                    outputPath: fileURL.path, cancellation: cancellation,
+                    onProgress: progress
+                )
+            case .pngWav(let directoryURL, let settings):
+                outcome = try exporter.runPngWav(
+                    outputDirectory: directoryURL.path, settings: settings,
+                    cancellation: cancellation, onProgress: progress
+                )
+            }
             let summary = exportSummaryText(
-                outcome: outcome, analysis: exporter.analysisResult, outputURL: outputURL
+                outcome: outcome, analysis: exporter.analysisResult,
+                outputURL: request.outputURL
             )
             finish { $0.status = summary }
         } catch {

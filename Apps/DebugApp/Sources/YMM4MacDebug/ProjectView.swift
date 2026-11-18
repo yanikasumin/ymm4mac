@@ -236,8 +236,15 @@ struct ProjectView: View {
                     VideoSettingsView(timeline: timeline) { resetPreview() }
                 }
                 .sheet(isPresented: $isExportDialogPresented) {
-                    ExportDialogView(timeline: timeline) { url in
-                        runExport(timeline: timeline, outputURL: url)
+                    ExportDialogView(
+                        timeline: timeline,
+                        // 接頭辞の初期値は「今開いているファイル」の名前。
+                        // project.filePath は .ymmp 内に保存された値で、
+                        // 開いたファイルと一致するとは限らない（R10-02）。
+                        defaultPngWavFileName: sourceURL?
+                            .deletingPathExtension().lastPathComponent ?? "untitled"
+                    ) { request in
+                        runExport(timeline: timeline, request: request)
                     }
                 }
                 .onChange(of: workspace.isVideoSettingsPresented) { _, requested in
@@ -2299,7 +2306,7 @@ struct ProjectView: View {
     /// よる専有複製）であり、書き出し中の編集とは競合しない（AUD-07）。
     /// スナップショットを作れない場合は、編集中のモデルを共有する形へ
     /// フォールバックせず、書き出し自体を中止する。
-    private func runExport(timeline: Timeline, outputURL: URL) {
+    private func runExport(timeline: Timeline, request: ExportRequest) {
         let snapshot: (timelines: [Timeline], timeline: Timeline)
         do {
             snapshot = try project.makeExportSnapshot(of: timeline)
@@ -2319,7 +2326,7 @@ struct ProjectView: View {
             timeline: snapshot.timeline,
             timelines: snapshot.timelines,
             baseDirectory: baseDirectory,
-            outputURL: outputURL,
+            request: request,
             cancellation: cancellation,
             state: exportState
         )
