@@ -189,6 +189,53 @@ final class StreamingPCMProviderTests: XCTestCase {
         assertFrame(provider, startsAt: 48_000, frames: 200)
     }
 
+    // MARK: - 終端境界のシーク（R6-05）
+
+    /// 終端直前（最終フレーム）へのシークは、そのフレームを返して
+    /// から終端になること。
+    func testSeekToLastFrameReadsItThenEnds() throws {
+        let frameCount = 96_000
+        let (provider, url) = try makeProvider(frameCount: frameCount)
+        defer { try? FileManager.default.removeItem(at: url) }
+        provider.seek(toTime: TimeSpanValue(
+            ticks: Int64(frameCount - 1) * 10_000_000 / Int64(hz)
+        ))
+        assertFrame(provider, startsAt: frameCount - 1, frames: 1)
+        var buffer = [Float](repeating: 0, count: 100)
+        XCTAssertEqual(provider.read(into: &buffer, offset: 0, count: 100), 0)
+    }
+
+    /// ちょうど終端へのシークは終端（0 件）になること。修正前は
+    /// 時間範囲未設定のリーダーが素材全体を先頭からデコードし、
+    /// 読み取りループが提示時刻で全量を捨てる経路に退化していた
+    /// （戻り値の意味論は同じだが、全デコードの負荷がかかった）。
+    /// リーダーを作らないことは経過時間ではなく構造で担保し、
+    /// ここでは意味論を回帰として固定する。
+    func testSeekExactlyToEndReturnsZero() throws {
+        let frameCount = 96_000
+        let (provider, url) = try makeProvider(frameCount: frameCount)
+        defer { try? FileManager.default.removeItem(at: url) }
+        provider.seek(toTime: provider.duration)
+        var buffer = [Float](repeating: 0, count: 100)
+        XCTAssertEqual(provider.read(into: &buffer, offset: 0, count: 100), 0)
+        XCTAssertEqual(provider.read(into: &buffer, offset: 0, count: 100), 0)
+    }
+
+    /// 終端以降へのシークも終端として扱い、その後の前方シークで
+    /// 通常どおり読めること（終端状態が残って壊れないこと）。
+    func testSeekBeyondEndReturnsZeroThenRecovers() throws {
+        let frameCount = 96_000
+        let (provider, url) = try makeProvider(frameCount: frameCount)
+        defer { try? FileManager.default.removeItem(at: url) }
+        provider.seek(toTime: TimeSpanValue(
+            ticks: provider.duration.ticks + 10_000_000
+        ))
+        var buffer = [Float](repeating: 0, count: 100)
+        XCTAssertEqual(provider.read(into: &buffer, offset: 0, count: 100), 0)
+        provider.seek(toTime: .zero)
+        assertFrame(provider, startsAt: 0, frames: 200)
+    }
+
     // MARK: - メモリ使用量
 
     private func physicalFootprint() -> Int64 {
