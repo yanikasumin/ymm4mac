@@ -242,6 +242,37 @@ final class PreviewRenderWorkerTests: XCTestCase {
         XCTAssertTrue(sessionA.disposed)
     }
 
+    /// ループの停止境界で要求を出しても、追加の要求やモデル設置
+    /// なしに描画が再開される（lost wake-up の回帰試験。R13-01）。
+    /// 停止判定の前後どちらに要求が入っても、最終的に全ての要求
+    /// が順に描かれることを、多数回の往復で確認する。
+    func testLoopRestartsAcrossStopBoundary() {
+        let session = FakeSession()
+        let worker = makeWorker(sessions: [session])
+        let id = identity(generation: 1, version: 1)
+        worker.setModel(
+            identity: id, timelines: [], timeline: Timeline(),
+            baseDirectory: nil
+        )
+        let rounds = 100
+        for frame in 0..<rounds {
+            // 要求は別スレッドからも出す（停止判定との競合を広げる）。
+            if frame % 2 == 0 {
+                worker.request(frame: frame, usage: .paused, identity: id)
+            } else {
+                DispatchQueue.global().sync {
+                    worker.request(frame: frame, usage: .paused, identity: id)
+                }
+            }
+            // 描画はワーカーのキューで起きるため、背景側の状態を
+            // ポーリングで待てる（メインキューの配信待ちではない）。
+            waitUntil("render of frame \(frame)") {
+                session.renderedFrames.last == frame
+            }
+        }
+        XCTAssertEqual(session.renderedFrames, Array(0..<rounds))
+    }
+
     /// 初期化失敗の通知には識別子が付き、どのモデルの失敗か
     /// 呼び出し側で照合できる（R11-03）。
     func testModelFailureCarriesIdentity() {

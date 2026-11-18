@@ -215,34 +215,26 @@ public final class PreviewRenderWorker: @unchecked Sendable {
         lock.lock()
         let currentModel = model
         var request: PendingRequest?
-        var identityMismatch = false
-        if let pending {
-            if let currentModel, pending.identity == currentModel.identity {
-                request = pending
-                self.pending = nil
-            } else if currentModel != nil {
-                identityMismatch = true
-            }
+        if let pending,
+           let currentModel, pending.identity == currentModel.identity {
+            request = pending
+            self.pending = nil
+        }
+        if request == nil {
+            // 描くべき要求がない（保留がない、モデルが未設置、また
+            // は保留が別のモデル向け）。停止判定は要求の確認と同じ
+            // ロック区間で完結させる。区間を分けると、確認と停止の
+            // 間に届いた要求が「ループ稼働中」と誤認して起動の機会
+            // を失う（lost wake-up。R13-01）。この形なら、停止前に
+            // 届いた要求は上の確認の対象になっており、停止後に届
+            // いた要求は loopActive == false を見てループを起動
+            // できる。別のモデル向けの保留は残し、対象モデルの
+            // 設置完了時に setModel 側が再開する。
+            loopActive = false
         }
         lock.unlock()
 
-        if identityMismatch {
-            // 保留は別のモデル向け。消費せずに残し、ループを止める。
-            // 対象モデルの設置完了時に setModel 側が再開する
-            // （対象が永遠に来ない場合に回し続けないためでもある）。
-            lock.lock()
-            loopActive = false
-            lock.unlock()
-            return
-        }
-        guard let request, let currentModel else {
-            // 保留がないか、モデルが未設置。保留が残っている場合
-            // （モデル未設置）は、設置時に setModel 側が再開する。
-            lock.lock()
-            loopActive = false
-            lock.unlock()
-            return
-        }
+        guard let request, let currentModel else { return }
         lock.lock()
         statsValue.rendersStarted += 1
         lock.unlock()
