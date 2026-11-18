@@ -123,6 +123,8 @@ enum WorkspaceAction: Equatable {
     case zoomOutTimeline
     case saveThumbnail(ThumbnailFormat)
     case resetLayout
+    /// ユーザー辞書が編集された（プレビューの再描画が要る）。
+    case userDictionaryChanged
 }
 
 /// サムネイル保存の形式（本家プロジェクトツールバーの SplitButton

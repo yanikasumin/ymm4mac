@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import YMM4Core
 
 /// バンドル化されていない実行ファイルとして起動された場合でも、
 /// 通常のアプリとして Dock にアイコンが表示されるようにする保険。
@@ -9,6 +10,8 @@ import SwiftUI
 final class DebugAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // ユーザー辞書を設定ファイルから読み込む（TEXT60 の設定層）。
+        UserDictionaryStore.shared.load()
     }
 }
 
@@ -16,12 +19,19 @@ final class DebugAppDelegate: NSObject, NSApplicationDelegate {
 struct YMM4MacDebugApp: App {
     @NSApplicationDelegateAdaptor(DebugAppDelegate.self) private var appDelegate
     @StateObject private var workspace = WorkspaceState()
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(workspace)
         }
+        // ユーザー辞書の編集ウィンドウ（TEXT60 の辞書設定層）。
+        Window(UIStrings.Menu.toolUserDictionary, id: "user-dictionary") {
+            UserDictionaryEditorView()
+                .environmentObject(workspace)
+        }
+        .defaultSize(width: 860, height: 520)
         // ウィンドウの大きさはシーン側で標準の流儀で指定する。
         // 既定サイズで大きく開き、内容の最小サイズまでは自由に
         // リサイズできる（.contentMinSize）。内容側の .frame で
@@ -202,7 +212,9 @@ struct YMM4MacDebugApp: App {
                 Button(UIStrings.Menu.toolScenario) {}.disabled(true)
                 Button(UIStrings.Menu.toolTranscription) {}.disabled(true)
                 Button(UIStrings.Menu.toolTemplateEditor) {}.disabled(true)
-                Button(UIStrings.Menu.toolUserDictionary) {}.disabled(true)
+                Button(UIStrings.Menu.toolUserDictionary) {
+                    openWindow(id: "user-dictionary")
+                }
                 Button(UIStrings.Menu.toolVolumeAnalyzer) {}.disabled(true)
             }
 

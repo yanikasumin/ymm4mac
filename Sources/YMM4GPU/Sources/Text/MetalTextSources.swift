@@ -54,6 +54,8 @@ public final class MetalTextSource: Source {
         var visibleEnd: Int
         var timeMs: Double
         var durationMs: Double
+        /// ユーザー辞書の版数（辞書が変われば再ラスタライズする）。
+        var dictionaryGeneration: Int
     }
 
     public init(devices: MetalGraphicsDevices, item: TextItem) {
@@ -134,7 +136,8 @@ public final class MetalTextSource: Source {
             // 制御タグを含むテキストはタイミングで表示が時刻変化する
             // ため、非分割でも時刻をキーに含める。
             timeMs: (values.isDevidedPerCharacter || text.contains("<")) ? timeMs : 0,
-            durationMs: values.isDevidedPerCharacter ? durationMs : 0
+            durationMs: values.isDevidedPerCharacter ? durationMs : 0,
+            dictionaryGeneration: UserDictionaryStore.shared.generation
         )
         if key == cachedKey {
             outputs = cachedOutputs
@@ -250,6 +253,8 @@ public final class MetalJimakuSource: Source {
         var visibleEnd: Int
         var timeMs: Double
         var durationMs: Double
+        /// ユーザー辞書の版数（辞書が変われば再ラスタライズする）。
+        var dictionaryGeneration: Int
     }
 
     private let item: VoiceItem
@@ -321,7 +326,8 @@ public final class MetalJimakuSource: Source {
             // 制御タグを含むセリフはタイミングで表示が時刻変化する
             // ため、非分割でも時刻をキーに含める。
             timeMs: (values.isDevidedPerCharacter || item.serif.contains("<")) ? timeMs : 0,
-            durationMs: values.isDevidedPerCharacter ? durationMs : 0
+            durationMs: values.isDevidedPerCharacter ? durationMs : 0,
+            dictionaryGeneration: UserDictionaryStore.shared.generation
         )
         if key == textSource.cachedKey {
             outputs = textSource.cachedOutputs

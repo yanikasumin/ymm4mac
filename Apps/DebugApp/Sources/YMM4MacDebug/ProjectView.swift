@@ -1279,6 +1279,10 @@ struct ProjectView: View {
             timelineZoomPercent = 100
             layerRowHeight = 32
             previewDisplayZoom = 1.0
+        case .userDictionaryChanged:
+            // 辞書の版数が上がっているため、テキスト供給のキャッシュ
+            // キーが変わり、再描画で新しい辞書が適用される。
+            requestPreviewRender()
         }
     }
 

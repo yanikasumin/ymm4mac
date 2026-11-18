@@ -70,13 +70,15 @@ final class MetalTextRasterizer {
         timeMs: Double,
         durationMs: Double,
         isTrimEndSpace: Bool,
-        dictionary: UserDictionary = .default
+        dictionary: UserDictionary? = nil
     ) -> [MetalTextPiece] {
         // 前処理は本家 TextSource と同じ順序: アスタリスク置換
         // （ユーザー辞書）→ 正規化（NFC＋行末スペース除去）→ 制御タグ
         // 解析 → 文字タイミング計算 → 表示区間のフィルタ。
-        // 辞書は設定層がまだ無いため既定値が渡る。既定のアスタリスク
-        // 辞書は全件無効であり、本家の初期状態と同じく無変換になる。
+        // 辞書は設定層（UserDictionaryStore.shared）から取る。
+        // 既定のアスタリスク辞書は全件無効であり、本家の初期状態と
+        // 同じく無変換になる。明示指定はテスト用。
+        let dictionary = dictionary ?? UserDictionaryStore.shared.current
         let (asteriskedText, asteriskedDecorations) = TextPreprocessor.applyAsterisk(
             text: rawText, decorations: rawDecorations,
             wordSets: dictionary.asteriskWordSets
