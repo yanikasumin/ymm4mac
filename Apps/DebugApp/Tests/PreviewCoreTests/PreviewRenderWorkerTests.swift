@@ -104,11 +104,11 @@ final class PreviewRenderWorkerTests: XCTestCase {
             identity: identity(generation: 1, version: 1),
             timelines: [], timeline: Timeline(), baseDirectory: nil
         )
-        worker.request(frame: 0, usage: .paused)
+        worker.request(frame: 0, usage: .paused, identity: identity(generation: 1, version: 1))
         waitUntil("first render started") { session.renderedFrames == [0] }
 
         for frame in 1...10 {
-            worker.request(frame: frame, usage: .paused)
+            worker.request(frame: frame, usage: .paused, identity: identity(generation: 1, version: 1))
         }
         XCTAssertEqual(worker.stats.requestsReceived, 11)
         XCTAssertEqual(worker.stats.requestsOverwritten, 9)
@@ -140,14 +140,14 @@ final class PreviewRenderWorkerTests: XCTestCase {
             identity: identity(generation: 1, version: 1),
             timelines: [], timeline: Timeline(), baseDirectory: nil
         )
-        worker.request(frame: 5, usage: .paused)
+        worker.request(frame: 5, usage: .paused, identity: identity(generation: 1, version: 1))
         waitUntil("A render started") { sessionA.renderedFrames == [5] }
 
         worker.setModel(
             identity: identity(generation: 1, version: 2),
             timelines: [], timeline: Timeline(), baseDirectory: nil
         )
-        worker.request(frame: 7, usage: .paused)
+        worker.request(frame: 7, usage: .paused, identity: identity(generation: 1, version: 2))
         sessionA.gate.signal()
 
         wait(for: [delivered], timeout: 5)
@@ -172,10 +172,74 @@ final class PreviewRenderWorkerTests: XCTestCase {
             identity: identity(generation: 2, version: 1),
             timelines: [], timeline: Timeline(), baseDirectory: nil
         )
-        worker.request(frame: 3, usage: .paused)
+        worker.request(frame: 3, usage: .paused, identity: identity(generation: 2, version: 1))
         waitUntil("B rendered") { sessionB.renderedFrames == [3] }
         XCTAssertTrue(sessionA.disposed)
         XCTAssertTrue(sessionA.renderedFrames.isEmpty)
+    }
+
+    /// 新しい版数向けに先行して出された要求は、旧モデルでは描かれ
+    /// ず、新モデルの設置完了後にそのモデルで描かれる（R12-01 の
+    /// 必須試験1: モデル切替前の描画ブロックが新モデル向け要求を
+    /// 消費しない）。
+    func testRequestForNewVersionWaitsForItsModel() {
+        let sessionA = FakeSession()
+        let sessionB = FakeSession()
+        let worker = makeWorker(sessions: [sessionA, sessionB])
+        let log = DeliveryLog()
+        let delivered = expectation(description: "delivery on new model")
+        worker.onRenderFailed = { identity, frame in
+            log.append(identity, frame)
+            delivered.fulfill()
+        }
+        worker.setModel(
+            identity: identity(generation: 1, version: 1),
+            timelines: [], timeline: Timeline(), baseDirectory: nil
+        )
+        // 版数2向けの要求を、モデル設置より先に出す。
+        worker.request(
+            frame: 7, usage: .paused, identity: identity(generation: 1, version: 2)
+        )
+        // 旧モデルでは描かれないことを、短い観察で確認する。
+        let deadline = Date().addingTimeInterval(0.3)
+        while Date() < deadline {
+            XCTAssertTrue(sessionA.renderedFrames.isEmpty)
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        worker.setModel(
+            identity: identity(generation: 1, version: 2),
+            timelines: [], timeline: Timeline(), baseDirectory: nil
+        )
+        wait(for: [delivered], timeout: 5)
+        XCTAssertEqual(sessionB.renderedFrames, [7])
+        XCTAssertTrue(sessionA.renderedFrames.isEmpty)
+        XCTAssertEqual(log.all.map { $0.0.version }, [2])
+    }
+
+    /// セッション無効化と新世代の設置の途中で出された新世代向けの
+    /// 要求は、旧世代に消費されず、新世代で描かれる（R12-01 の
+    /// 必須試験2）。
+    func testRequestIssuedDuringResetSurvivesToNewGeneration() {
+        let sessionA = FakeSession()
+        let sessionB = FakeSession()
+        let worker = makeWorker(sessions: [sessionA, sessionB])
+        worker.setModel(
+            identity: identity(generation: 1, version: 1),
+            timelines: [], timeline: Timeline(), baseDirectory: nil
+        )
+        worker.invalidate(generation: 1)
+        // 無効化の呼び出しより後・新世代の設置より前に要求する
+        // （呼び出し側のリセット手順と同じ順序）。
+        worker.request(
+            frame: 9, usage: .paused, identity: identity(generation: 2, version: 1)
+        )
+        worker.setModel(
+            identity: identity(generation: 2, version: 1),
+            timelines: [], timeline: Timeline(), baseDirectory: nil
+        )
+        waitUntil("B rendered frame 9") { sessionB.renderedFrames == [9] }
+        XCTAssertTrue(sessionA.renderedFrames.isEmpty)
+        XCTAssertTrue(sessionA.disposed)
     }
 
     /// 初期化失敗の通知には識別子が付き、どのモデルの失敗か

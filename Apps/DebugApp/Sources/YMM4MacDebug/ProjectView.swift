@@ -52,8 +52,13 @@ struct ProjectView: View {
     /// 位置・現在モデルの画像かを確認するために使う。R11-08）。
     @State private var displayedPreviewIdentity: PreviewRenderWorker.Identity?
     @State private var displayedPreviewFrame: Int?
-    /// 対応画像の完成を待っているサムネイル保存の形式。
-    @State private var pendingThumbnailFormat: ThumbnailFormat?
+    /// 対応画像の完成を待っているサムネイル保存。形式だけでなく
+    /// 要求時点の識別子とフレームを固定して持つ（R12-06）。
+    @State private var pendingThumbnail: (
+        format: ThumbnailFormat,
+        identity: PreviewRenderWorker.Identity,
+        frame: Int
+    )?
     /// プレビュー上でのドラッグ移動の作業状態（開始時点の評価値と
     /// 開始点を保持し、移動量は常に開始時点からの差分で書き込む）。
     @State private var previewDrag: PreviewDragState?
@@ -1330,7 +1335,11 @@ struct ProjectView: View {
             writeThumbnail(format: format, timeline: timeline)
             return
         }
-        pendingThumbnailFormat = format
+        if let identity = currentPreviewIdentity {
+            pendingThumbnail = (
+                format: format, identity: identity, frame: Int(previewFrame)
+            )
+        }
         requestPreviewRender()
     }
 
@@ -2138,7 +2147,7 @@ struct ProjectView: View {
         previewSessionGeneration += 1
         pendingModelRefreshItem?.cancel()
         pendingModelRefreshItem = nil
-        pendingThumbnailFormat = nil
+        pendingThumbnail = nil
         displayedPreviewIdentity = nil
         displayedPreviewFrame = nil
         previewImage = nil
@@ -2169,16 +2178,28 @@ struct ProjectView: View {
                   identity.generation == previewSessionGeneration,
                   identity.version == previewModelVersion
             else { return }
+            // 停止中は現在位置と一致するフレームだけを採用する
+            // （シーク前に始まった描画の結果で表示が巻き戻らない。
+            // R12-02）。再生中は多少古いフレームも採用する
+            // （第9ラウンドの二段階規則）。
+            if !isPlayingForm, frame != Int(previewFrame) { return }
             previewImage = image
             previewError = nil
             displayedPreviewIdentity = identity
             displayedPreviewFrame = frame
             // サムネイル保存が対応画像を待っている場合はここで進める
-            // （R11-08）。
-            if let format = pendingThumbnailFormat,
-               frame == Int(previewFrame), let timeline {
-                pendingThumbnailFormat = nil
-                writeThumbnail(format: format, timeline: timeline)
+            // （R11-08）。保留は要求時点の識別子とフレームを固定して
+            // 持ち、同じモデルの別フレームが先に完成したら（利用者
+            // が移動したということなので）別フレームを保存せず
+            // 取り消す（R12-06）。
+            if let pending = pendingThumbnail {
+                if pending.identity == identity, pending.frame == frame,
+                   let timeline {
+                    pendingThumbnail = nil
+                    writeThumbnail(format: pending.format, timeline: timeline)
+                } else if pending.identity == identity {
+                    pendingThumbnail = nil
+                }
             }
         }
         previewWorker.onRenderFailed = { identity, _ in
@@ -2221,8 +2242,13 @@ struct ProjectView: View {
     /// 発火時に再生状態を再判定するため、再生中に発火してもモデル
     /// には触らない。
     private func scheduleTrailingModelRefresh(delay: TimeInterval = 0.1) {
-        pendingModelRefreshItem?.cancel()
+        // 既に予約がある場合は延期しない（スロットル）。呼ばれる
+        // たびに先送りすると、編集が続く間は確定が永遠に来ない
+        // デバウンスになる（R12-03）。発火時に予約を空へ戻すため、
+        // 連続編集でも一定間隔で最新状態が反映される。
+        guard pendingModelRefreshItem == nil else { return }
         let item = DispatchWorkItem {
+            pendingModelRefreshItem = nil
             if previewModelDirty { requestPreviewRender(modelChanged: true) }
         }
         pendingModelRefreshItem = item
@@ -2253,6 +2279,10 @@ struct ProjectView: View {
         lastPreviewSnapshotAt = Date()
         previewModelDirty = false
         previewModelVersion += 1
+        // モデルが変わると、保留中のサムネイル保存の対象画像は
+        // 二度と完成しない。別モデルの画像を保存せず取り消す
+        // （R12-06）。
+        pendingThumbnail = nil
         guard let identity = currentPreviewIdentity else { return }
         previewWorker.setModel(
             identity: identity, timelines: snapshot.timelines,
@@ -2273,11 +2303,21 @@ struct ProjectView: View {
     ) {
         if modelChanged { previewModelDirty = true }
         if isPlayingForm {
-            previewWorker.request(frame: Int(previewFrame), usage: .playing)
+            // 再生中はモデルに触らないため、識別子は現在設置済みの
+            // もののまま（版数は再生中に上がらない）。
+            guard let identity = currentPreviewIdentity else { return }
+            previewWorker.request(
+                frame: Int(previewFrame), usage: .playing, identity: identity
+            )
             return
         }
         if previewModelDirty { refreshPreviewModel(force: forceModelRefresh) }
-        previewWorker.request(frame: Int(previewFrame), usage: usage)
+        // モデルを作り直した場合は版数が上がっているため、識別子は
+        // ここで取り直す（要求は発行時点のモデルに結び付く。R12-01）。
+        guard let identity = currentPreviewIdentity else { return }
+        previewWorker.request(
+            frame: Int(previewFrame), usage: usage, identity: identity
+        )
     }
 
     /// 実時間再生エンジンをセッションに合わせて作り直す。

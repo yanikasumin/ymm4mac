@@ -8,7 +8,7 @@ import YMM4GPU
 /// 合成結果は CGImage として読み戻し、SwiftUI の Image で表示する。
 public final class PreviewBox: PreviewRenderSession {
     /// 再合成キー（ファイルとタイムラインが変わったら作り直す）。
-    public struct SessionKey: Equatable {
+    public struct SessionKey: Equatable, Sendable {
         public var url: URL
         public var timelineIndex: Int
 

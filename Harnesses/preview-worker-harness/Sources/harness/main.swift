@@ -28,7 +28,13 @@ final class Runner: @unchecked Sendable {
     let projectPath: String
     let outDir: String
     var worker: PreviewRenderWorker!
-    var deliveries: [(frame: Int, audioFrame: Int)] = []
+    var identity: PreviewRenderWorker.Identity!
+    /// 正常画像の配信（フレーム・配信時点の音声フレーム・到達時刻）。
+    var imageDeliveries: [(frame: Int, audioFrame: Int, atNs: UInt64)] = []
+    /// 描画失敗の配信数（正常画像と分けて数える。R12-05）。
+    var failureDeliveries = 0
+    /// 計測区間の終了時刻。これより後の配信はドレイン分として分ける。
+    var windowEndNs: UInt64 = 0
     var probeLatencies: [Double] = []
     var tickIntervals: [Double] = []
     var ticks = 0
@@ -68,11 +74,12 @@ final class Runner: @unchecked Sendable {
         )
         worker = PreviewRenderWorker()
         worker.onImage = { [self] _, _, frame in
-            deliveries.append((frame, audioFrame(at: nowNs())))
+            let t = nowNs()
+            imageDeliveries.append((frame, audioFrame(at: t), t))
             modelReady = true
         }
-        worker.onRenderFailed = { [self] _, frame in
-            deliveries.append((frame, audioFrame(at: nowNs())))
+        worker.onRenderFailed = { [self] _, _ in
+            failureDeliveries += 1
             modelReady = true
         }
         worker.onModelFailed = { message, _ in
@@ -80,26 +87,31 @@ final class Runner: @unchecked Sendable {
                 "MODEL FAILED: \(message)\n".data(using: .utf8)!
             )
         }
+        identity = .init(key: key, generation: 1, version: 1)
         worker.setModel(
-            identity: .init(key: key, generation: 1, version: 1),
+            identity: identity,
             timelines: snapshot.timelines, timeline: snapshot.timeline,
             baseDirectory: URL(fileURLWithPath: projectPath)
                 .deletingLastPathComponent()
         )
         // モデル設置と初回描画の完了を待つ（準備完了の合図）。
-        worker.request(frame: windowStart, usage: .playing)
+        worker.request(frame: windowStart, usage: .playing, identity: identity)
         let readyDeadline = Date().addingTimeInterval(20)
         while !modelReady && Date() < readyDeadline {
             RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
         }
         guard modelReady else { throw NSError(domain: "harness", code: 2) }
-        deliveries.removeAll()
+        imageDeliveries.removeAll()
+        failureDeliveries = 0
 
         let tickTimer = DispatchSource.makeTimerSource(queue: .main)
         tickTimer.schedule(
             deadline: .now() + .milliseconds(33), repeating: .milliseconds(33))
         tickTimer.setEventHandler { [self] in tick() }
-        let probeTimer = DispatchSource.makeTimerSource(queue: .main)
+        // プローブは背景キューから投入する。メインキュー上のタイマ
+        // では、タイマ自体の遅延を観測できないため（R12-04）。
+        let probeTimer = DispatchSource.makeTimerSource(
+            queue: DispatchQueue.global(qos: .userInitiated))
         probeTimer.schedule(
             deadline: .now() + .milliseconds(16), repeating: .milliseconds(16))
         probeTimer.setEventHandler { [self] in
@@ -122,7 +134,8 @@ final class Runner: @unchecked Sendable {
         }
 
         let stats = worker.stats
-        let latencyFrames = deliveries.map { Double($0.audioFrame - $0.frame) }
+        let inWindow = imageDeliveries.filter { $0.atNs <= windowEndNs }
+        let latencyFrames = inWindow.map { Double($0.audioFrame - $0.frame) }
         let summary: [String: Any] = [
             "windowStart": windowStart,
             "windowFrames": windowFrames,
@@ -134,8 +147,11 @@ final class Runner: @unchecked Sendable {
             "requestsOverwritten": stats.requestsOverwritten,
             "rendersStarted": stats.rendersStarted,
             "rendersCompleted": stats.rendersCompleted,
-            "deliveries": deliveries.count,
-            "effectiveFps": Double(deliveries.count) / 30.0,
+            "imageDeliveries": imageDeliveries.count,
+            "imageDeliveriesInWindow": inWindow.count,
+            "failureDeliveries": failureDeliveries,
+            "drainDeliveries": imageDeliveries.count - inWindow.count,
+            "effectiveFps": Double(inWindow.count) / 30.0,
             "deliveryLagFramesMean": mean(latencyFrames),
             "deliveryLagFramesP95": percentile(latencyFrames.sorted(), 0.95),
             "deliveryLagFramesMax": latencyFrames.max() ?? 0,
@@ -156,8 +172,11 @@ final class Runner: @unchecked Sendable {
         if ticks > 0 { tickIntervals.append(msBetween(lastTickNs, t)) }
         lastTickNs = t
         ticks += 1
-        worker.request(frame: audioFrame(at: t), usage: .playing)
-        if msBetween(startNs, t) >= 30_000 { finished = true }
+        worker.request(frame: audioFrame(at: t), usage: .playing, identity: identity)
+        if msBetween(startNs, t) >= 30_000 {
+            windowEndNs = t
+            finished = true
+        }
     }
 }
 

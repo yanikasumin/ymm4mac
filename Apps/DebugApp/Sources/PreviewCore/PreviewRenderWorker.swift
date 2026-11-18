@@ -38,6 +38,12 @@ public protocol PreviewRenderSession: AnyObject {
 ///   セッション世代・モデル版数）で判定する。採番は呼び出し側が
 ///   一元的に行い、ワーカーは受け取った識別子をそのまま返す
 ///   （二重採番はしない。R11-04）。
+/// - フレーム要求にも発行時点の識別子を付け、要求はその識別子の
+///   モデルでだけ描く（第12ラウンド R12-01）。識別子が現行モデル
+///   と異なる要求は消費せずに残し、対象モデルが設置された時点で
+///   描画を再開する。キュー順序だけに頼ると、モデル差し替えより
+///   先に積まれた描画ブロックが新世代の要求を旧モデルで消費し、
+///   要求が失われる経路ができるため、この照合が要る。
 /// - 保留が単一スロットであるため、取り出された要求は取り出し
 ///   時点で常に最新であり、世代番号による追加の間引きは不要
 ///   （第11ラウンド処分の検討で確認し、機構を置かないことにした）。
@@ -46,7 +52,7 @@ public protocol PreviewRenderSession: AnyObject {
 ///   要求があるという理由だけで破棄すると画面が更新されなくなる）。
 public final class PreviewRenderWorker: @unchecked Sendable {
     /// 結果の識別子一式。呼び出し側が確定し、通知でそのまま返る。
-    public struct Identity: Equatable {
+    public struct Identity: Equatable, Sendable {
         public var key: PreviewBox.SessionKey
         public var generation: Int
         public var version: Int
@@ -85,9 +91,18 @@ public final class PreviewRenderWorker: @unchecked Sendable {
 
     // MARK: - ロック保護の状態（描画の実行中は保持しない）
 
+    /// 保留中のフレーム要求。発行時点の識別子を持ち、その識別子の
+    /// モデルでだけ描かれる（R12-01）。
+    private struct PendingRequest {
+        var frame: Int
+        var usage: TimelineSourceUsage
+        var seq: Int
+        var identity: Identity
+    }
+
     private let lock = NSLock()
     private var model: (identity: Identity, session: any PreviewRenderSession, timeline: Timeline)?
-    private var pending: (frame: Int, usage: TimelineSourceUsage, seq: Int)?
+    private var pending: PendingRequest?
     /// 要求の通し番号。無効化の時点で区切り、区切り以前の要求だけを
     /// 落とすために使う（無効化の後に来た要求を巻き込まない）。
     private var requestSeq = 0
@@ -117,10 +132,11 @@ public final class PreviewRenderWorker: @unchecked Sendable {
 
     /// 描画モデルを差し替える。識別子は呼び出し側が確定して渡す。
     /// セッションの生成と旧セッションの破棄はキュー上で行い、描画
-    /// ブロックの合間に処理される。保留中のフレーム要求は消さない:
-    /// 要求はフレーム番号だけであり、取り出し時点の現行モデルで
-    /// 描くことが呼び出し側の意図と一致する（差し替え直前に出された
-    /// 要求を消すと、その要求が永遠に描かれない経路ができる）。
+    /// ブロックの合間に処理される。保留中のフレーム要求は消さない
+    /// （別のモデル向けの要求は消費もされない。R12-01）。設置の
+    /// 完了時に、このモデル向けの保留があれば描画を再開する:
+    /// 要求がモデル設置より先に届いていた場合、描画ループは識別子
+    /// 不一致で止まっているため、再開はここで担う。
     public func setModel(
         identity: Identity,
         timelines: [Timeline],
@@ -141,19 +157,27 @@ public final class PreviewRenderWorker: @unchecked Sendable {
             lock.lock()
             let old = model
             model = (identity, newSession, timeline)
+            let shouldKick = pending?.identity == identity && !loopActive
+            if shouldKick { loopActive = true }
             lock.unlock()
             old?.session.dispose()
+            if shouldKick {
+                queue.async { [self] in step() }
+            }
         }
     }
 
     /// フレームの描画を要求する。キューへ仕事は積まず、保留
-    /// スロットへ最新値だけを書き込む。
-    public func request(frame: Int, usage: TimelineSourceUsage) {
+    /// スロットへ最新値だけを書き込む。識別子は要求の発行時点の
+    /// モデルのもので、描画はそのモデルに対してだけ行われる。
+    public func request(frame: Int, usage: TimelineSourceUsage, identity: Identity) {
         lock.lock()
         statsValue.requestsReceived += 1
         if pending != nil { statsValue.requestsOverwritten += 1 }
         requestSeq += 1
-        pending = (frame, usage, requestSeq)
+        pending = PendingRequest(
+            frame: frame, usage: usage, seq: requestSeq, identity: identity
+        )
         let shouldStart = !loopActive
         if shouldStart { loopActive = true }
         lock.unlock()
@@ -189,21 +213,34 @@ public final class PreviewRenderWorker: @unchecked Sendable {
 
     private func step() {
         lock.lock()
-        let request = pending
-        pending = nil
         let currentModel = model
+        var request: PendingRequest?
+        var identityMismatch = false
+        if let pending {
+            if let currentModel, pending.identity == currentModel.identity {
+                request = pending
+                self.pending = nil
+            } else if currentModel != nil {
+                identityMismatch = true
+            }
+        }
         lock.unlock()
 
-        guard let request, let currentModel else {
+        if identityMismatch {
+            // 保留は別のモデル向け。消費せずに残し、ループを止める。
+            // 対象モデルの設置完了時に setModel 側が再開する
+            // （対象が永遠に来ない場合に回し続けないためでもある）。
             lock.lock()
-            // 保留が再び積まれていないことと原子的に確認して止める。
-            // 積まれていれば次のブロックで取り出す。
-            let hasPending = pending != nil
-            if !hasPending { loopActive = false }
+            loopActive = false
             lock.unlock()
-            if hasPending {
-                queue.async { [self] in step() }
-            }
+            return
+        }
+        guard let request, let currentModel else {
+            // 保留がないか、モデルが未設置。保留が残っている場合
+            // （モデル未設置）は、設置時に setModel 側が再開する。
+            lock.lock()
+            loopActive = false
+            lock.unlock()
             return
         }
         lock.lock()
