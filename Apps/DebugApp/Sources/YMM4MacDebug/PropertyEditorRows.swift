@@ -267,6 +267,9 @@ struct AnimationRowView: View {
                     )
                     .frame(minWidth: 60)
                 }
+                // アニメーション種別の切替メニュー（本家は
+                // AnimationSlider の右クリックメニュー）。
+                AnimationTypeMenuButton(descriptor: descriptor, onEdited: onEdited)
                 Text(caption(for: animation))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -304,9 +307,9 @@ struct AnimationRowView: View {
         if animation.animationType == .none {
             return "定数（\(range)）"
         }
-        // キーフレーム編集は未対応のため、種別名と「先頭値のみ書き換わる」
-        // ことを明示する。
-        return "\(animation.animationType)（\(range)、編集は先頭値のみ）"
+        // 値の編集は先頭値のみ書き換わる（キーフレーム個別の編集は
+        // 未対応）ことを明示する。種別名は種別メニュー側が表示する。
+        return "\(range)、編集は先頭値のみ"
     }
 
     private func commit() {

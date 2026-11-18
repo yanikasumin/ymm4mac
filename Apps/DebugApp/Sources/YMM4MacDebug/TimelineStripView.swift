@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import YMM4Core
 
@@ -37,8 +38,16 @@ struct TimelineStripView: View {
     var rowHeight: CGFloat = 32
     /// 波形表示の有無（本家の「波形を表示/非表示」相当）。
     var showWaveform: Bool = true
+    /// 縦グリッド線の表示（本家の VerticalLines.IsEnabled 相当）。
+    @Binding var showVerticalLines: Bool
     /// キャンバスの表示幅をツールバー側（全体フィット計算用）へ伝える。
     @Binding var reportedCanvasWidth: CGFloat
+    /// 表示中ビューポートの最上段レイヤーを外へ伝える
+    /// （本家 GetCurrentLayer() = Viewport.Top / LayerHeight）。
+    @Binding var reportedTopLayer: Int
+    /// コンテキストメニュー等の編集操作の後にプレビュー再合成を
+    /// 促すための受け口。
+    var onEdited: () -> Void = {}
     @State var horizontalOffset: CGFloat = 0
     @State var verticalOffset: CGFloat = 0
     /// レイヤー設定の変更を再描画へ反映させるための世代カウンタ。
@@ -49,6 +58,10 @@ struct TimelineStripView: View {
     /// レイヤー全体の音量（%）。Core の LayerSetting には音量が無いため
     /// 形のみのローカル状態（接続台帳に記録）。
     @State var layerVolumes: [Int: Double] = [:]
+    /// 目盛り帯のウィンドウ座標（ホイールズームの当たり判定用）。
+    @State var rulerRectBox = WindowRectBox()
+    /// ホイールイベントの監視トークン（目盛り上のホイール = ズーム）。
+    @State var wheelMonitor: Any?
 
     let labelWidth: CGFloat = 80
     private let rulerHeight: CGFloat = 26
@@ -76,7 +89,7 @@ struct TimelineStripView: View {
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
                     // 目盛り帯の左上隅（ラベル列の上）。
-                    Text("レイヤー")
+                    Text(UIStrings.Timeline.layer)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(width: labelWidth, height: rulerHeight)
@@ -108,6 +121,9 @@ struct TimelineStripView: View {
             } action: { _, newValue in
                 reportedCanvasWidth = newValue
             }
+            // 帯の外へ内容が描かれて下のセリフ行へ重なることを防ぐ
+            // 構造的な上限（Issue #40）。
+            .clipped()
         }
     }
 
@@ -173,6 +189,10 @@ struct TimelineStripView: View {
                     onSeek(min(max(frame, 0), timeline.length))
                 }
         )
+        .background(WindowRectReporter(box: rulerRectBox))
+        .onAppear { installWheelZoomMonitor() }
+        .onDisappear { removeWheelZoomMonitor() }
+        .contextMenu { rulerContextMenu() }
     }
 
 
@@ -195,6 +215,7 @@ struct TimelineStripView: View {
                                 onSeek(min(max(frame, 0), timeline.length))
                             }
                     )
+                    .contextMenu { canvasContextMenu() }
 
                 // レイヤー行の区切りと縦グリッド線（大目盛り位置）。
                 ForEach(0..<rowCount, id: \.self) { layer in
@@ -203,11 +224,13 @@ struct TimelineStripView: View {
                         .frame(width: contentWidth, height: 1)
                         .offset(y: CGFloat(layer + 1) * rowHeight - 1)
                 }
-                ForEach(verticalGridFrames(viewportWidth: viewportWidth), id: \.self) { frame in
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.08))
-                        .frame(width: 1, height: contentHeight)
-                        .offset(x: CGFloat(frame) * pxPerFrame)
+                if showVerticalLines {
+                    ForEach(verticalGridFrames(viewportWidth: viewportWidth), id: \.self) { frame in
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.08))
+                            .frame(width: 1, height: contentHeight)
+                            .offset(x: CGFloat(frame) * pxPerFrame)
+                    }
                 }
 
                 // アイテムブロック。
@@ -226,6 +249,9 @@ struct TimelineStripView: View {
         .onScrollGeometryChange(for: CGPoint.self, of: { $0.contentOffset }) { _, newValue in
             horizontalOffset = newValue.x
             verticalOffset = newValue.y
+            if rowHeight > 0 {
+                reportedTopLayer = Int(newValue.y / rowHeight)
+            }
         }
     }
 
@@ -303,6 +329,7 @@ struct TimelineStripView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { selectedItemIndex = index }
+        .contextMenu { itemContextMenu(index: index, item: item) }
         .offset(
             x: CGFloat(item.frame) * pxPerFrame,
             y: CGFloat(item.layer) * rowHeight
@@ -367,4 +394,46 @@ func swiftUIColor(_ color: YMM4Core.Color) -> SwiftUI.Color {
         blue: Double(color.blue) / 255,
         opacity: Double(color.alpha) / 255
     )
+}
+
+/// ウィンドウ座標の矩形を保持する箱（ホイールズームの当たり判定用）。
+final class WindowRectBox {
+    var rect: CGRect = .zero
+}
+
+/// 自分のウィンドウ座標矩形を箱へ報告するだけの NSView。
+/// ヒットテストには参加しない（目盛りのドラッグ等を妨げない）。
+struct WindowRectReporter: NSViewRepresentable {
+    let box: WindowRectBox
+
+    func makeNSView(context: Context) -> ReporterView {
+        let view = ReporterView()
+        view.box = box
+        return view
+    }
+
+    func updateNSView(_ nsView: ReporterView, context: Context) {
+        nsView.box = box
+        nsView.report()
+    }
+
+    final class ReporterView: NSView {
+        var box: WindowRectBox?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func layout() {
+            super.layout()
+            report()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            report()
+        }
+
+        func report() {
+            box?.rect = convert(bounds, to: nil)
+        }
+    }
 }
