@@ -92,6 +92,9 @@ public final class TimelineExporter {
                 onProgress(frame - range.lowerBound + 1, range.count)
             }
         }
+        // 辞書の一貫性（R18-05、D19-01）: 書き出し側はジョブ開始
+        // 時点の辞書を MetalExportVideoProvider の生成時に取得して
+        // ジョブ内へ閉じ込める。ストア自体は固定しない。
         let session = ExportSession(writer: writer)
         return session.run(
             configuration: ExportSession.Configuration(
@@ -131,6 +134,8 @@ public final class TimelineExporter {
                 onProgress(frame - range.lowerBound + 1, range.count)
             }
         }
+        // 辞書の一貫性は run と同じ（ジョブ開始時点の辞書を供給元
+        // の生成時に取得する。D19-01）。
         let session = ExportSession(writer: writer)
         return session.run(
             configuration: ExportSession.Configuration(

@@ -108,6 +108,71 @@ public class BaseItem {
         self.keyFrames = keyFrames
     }
 
+    // MARK: - キーフレーム編集（値列の連動つき）
+
+    /// キーフレームを追加する。全 `Animation` へ連動させ、対応する
+    /// 値（追加位置での現在値）を値列へ挿入するため、追加前後で
+    /// 曲線は変わらない。位置だけを差し替える `setKeyFrames` では
+    /// 値列がずれて曲線が変わるため、編集 UI からはこちらを使う。
+    ///
+    /// - Returns: 追加したら true（範囲外・重複は false）。
+    @discardableResult
+    public func insertKeyFrame(at frame: Int) -> Bool {
+        guard frame >= 0, frame < length, !keyFrames.contains(frame) else {
+            return false
+        }
+        forEachAnimation { $0.insertKeyFrame(at: frame) }
+        var updated = keyFrames
+        updated.insert(frame)
+        keyFrames = updated
+        return true
+    }
+
+    /// キーフレームを削除する。全 `Animation` へ連動させ、対応する
+    /// 値を値列から取り除く。
+    ///
+    /// - Returns: 削除したら true。
+    @discardableResult
+    public func removeKeyFrame(at frame: Int) -> Bool {
+        guard keyFrames.contains(frame) else { return false }
+        forEachAnimation { $0.removeKeyFrame(at: frame) }
+        var updated = keyFrames
+        updated.remove(frame)
+        keyFrames = updated
+        return true
+    }
+
+    /// 全キーフレームを削除する。全 `Animation` の値列は開始値と
+    /// 終了値だけに畳まれる。
+    public func removeAllKeyFrames() {
+        forEachAnimation { $0.removeAllKeyFrames() }
+        keyFrames = KeyFrames()
+    }
+
+    /// キーフレームの位置だけを動かす（隣を越えない範囲へ丸める）。
+    /// 値はインデックス対応のため動かさない。
+    ///
+    /// - Returns: 実際に動いたら true。
+    @discardableResult
+    public func moveKeyFrame(from source: Int, to target: Int) -> Bool {
+        guard let index = keyFrames.index(of: source) else { return false }
+        let lower = index > 0 ? keyFrames.frames[index - 1] + 1 : 0
+        let upper = index + 1 < keyFrames.frames.count
+            ? keyFrames.frames[index + 1] - 1 : length - 1
+        // アイテム長より後方にキーフレームがある不整合データでは
+        // 下限が上限を超える。その場合はアイテム側とアニメーション
+        // 側で丸め先が食い違うため、移動を成立させない
+        // （R20-114-03。Animation 側の防御と対）。
+        guard lower <= upper else { return false }
+        let clamped = min(max(target, lower), upper)
+        guard clamped != source else { return false }
+        forEachAnimation { $0.moveKeyFrame(from: source, to: clamped) }
+        var frames = keyFrames.frames
+        frames[index] = clamped
+        keyFrames = KeyFrames(frames: frames)
+        return true
+    }
+
     // MARK: - 位置関係（本家 ItemEx）
 
     /// フレームを含むか（半開区間 [frame, frame+length)）。

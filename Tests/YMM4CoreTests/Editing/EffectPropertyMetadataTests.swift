@@ -461,7 +461,7 @@ final class EffectPropertyMetadataTests: XCTestCase {
               "NoiseType": "Fractal",
               "NoiseParameter": {
                 "$type": "YukkuriMovieMaker.Project.Effects.NoiseParameters.FractalNoiseParameter, YukkuriMovieMaker",
-                "Strength": { "Values": [{ "Value": 100.0 }], "Span": 0.0, "AnimationType": "なし" },
+                "Strength": { "Values": [{ "Value": 100.0, "UnknownExtension": 42.0 }], "Span": 0.0, "AnimationType": "なし", "FutureKey": "keep" },
                 "CustomNumber": 3.25,
                 "UnknownText": "keep-me"
               }
@@ -491,7 +491,84 @@ final class EffectPropertyMetadataTests: XCTestCase {
                 .field("Value")?.doubleValue,
             55
         )
+        // Values 要素内の未知キーと、アニメーション自体の未知キーも
+        // 編集で失われない（R21-117-01）。
+        XCTAssertEqual(
+            parameterJSON.field("Strength")?.field("Values")?.arrayValue?.first?
+                .field("UnknownExtension")?.doubleValue,
+            42
+        )
+        XCTAssertEqual(
+            parameterJSON.field("Strength")?.field("FutureKey")?.stringValue, "keep"
+        )
         XCTAssertEqual(parameterJSON.field("UnknownText")?.stringValue, "keep-me")
+    }
+
+    /// グラデーションメッシュ: 格子点の追加・削除と寸法変更が、
+    /// 常に points.count == 横 × 縦 を保つ（R21-117-02）。追加は
+    /// 末尾へ1行、削除は対象要素を含む1行、寸法変更は既存の点を
+    /// (行, 列) の位置で保持する。
+    func testGradientMeshGridInvariantThroughDescriptors() throws {
+        let definition = try decodeDefinition("""
+            {
+              "$type": "YukkuriMovieMaker.Project.Effects.ShadowEffect, YukkuriMovieMaker",
+              "Brush": {
+                "Type": "YukkuriMovieMaker.Plugin.Brush.GradientMeshBrushPlugin, YukkuriMovieMaker",
+                "Parameter": {
+                  "$type": "YukkuriMovieMaker.Brush.GradientMeshBrushParameter, YukkuriMovieMaker",
+                  "HorizontalCount": 2,
+                  "VerticalCount": 2,
+                  "Points": [
+                    { "Color": "#FFFF0000" },
+                    { "Color": "#FF00FF00" },
+                    { "Color": "#FF0000FF" },
+                    { "Color": "#FFFFFF00" }
+                  ]
+                }
+              }
+            }
+            """)
+        let brush = try topDescriptor(definition, "Brush")
+        let points = try childDescriptor(brush, "Points")
+        XCTAssertEqual(points.collectionCount, 4)
+
+        // 追加は1行分（横の個数だけ）増える。
+        XCTAssertTrue(points.insertCollectionElement())
+        XCTAssertEqual(points.collectionCount, 6)
+        var encoded = VideoEffectRegistry.encode(definition).value
+        var parameterJSON = try XCTUnwrap(
+            encoded.field("Brush")?.field("Parameter")
+        )
+        XCTAssertEqual(parameterJSON.field("VerticalCount")?.doubleValue, 3)
+        XCTAssertEqual(
+            parameterJSON.field("Points")?.arrayValue?.count, 6
+        )
+
+        // 先頭行の要素を削除すると、その行ごと取り除かれる。
+        XCTAssertTrue(points.removeCollectionElement(at: 0))
+        XCTAssertEqual(points.collectionCount, 4)
+        encoded = VideoEffectRegistry.encode(definition).value
+        parameterJSON = try XCTUnwrap(encoded.field("Brush")?.field("Parameter"))
+        XCTAssertEqual(parameterJSON.field("VerticalCount")?.doubleValue, 2)
+        let colors = try XCTUnwrap(
+            parameterJSON.field("Points")?.arrayValue
+        ).map { $0.field("Color")?.stringValue }
+        XCTAssertEqual(
+            colors, ["#FF0000FF", "#FFFFFF00", "#FFFFFFFF", "#FFFFFFFF"]
+        )
+
+        // 横の寸法を広げると、既存の点は (行, 列) の位置に残る。
+        let horizontal = try childDescriptor(brush, "HorizontalCount")
+        XCTAssertTrue(horizontal.setIntegerValue(3))
+        encoded = VideoEffectRegistry.encode(definition).value
+        parameterJSON = try XCTUnwrap(encoded.field("Brush")?.field("Parameter"))
+        XCTAssertEqual(parameterJSON.field("HorizontalCount")?.doubleValue, 3)
+        let widened = try XCTUnwrap(
+            parameterJSON.field("Points")?.arrayValue
+        ).map { $0.field("Color")?.stringValue }
+        XCTAssertEqual(widened.count, 6)
+        XCTAssertEqual(widened[0], "#FF0000FF")
+        XCTAssertEqual(widened[1], "#FFFFFF00")
     }
 
     /// 生保持のブラシ形（{Type, Parameter}）: 子は Parameter の中から

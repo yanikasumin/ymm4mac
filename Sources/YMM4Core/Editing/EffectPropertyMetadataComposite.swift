@@ -307,11 +307,21 @@ public extension EffectPropertyMetadata {
             return [
                 .integer(
                     id: "HorizontalCount", displayName: "HorizontalCount", group: group,
-                    get: { parameter.horizontalCount }, set: { parameter.horizontalCount = $0 }
+                    get: { parameter.horizontalCount },
+                    set: {
+                        parameter.resizeGrid(
+                            horizontal: $0, vertical: parameter.verticalCount
+                        )
+                    }
                 ),
                 .integer(
                     id: "VerticalCount", displayName: "VerticalCount", group: group,
-                    get: { parameter.verticalCount }, set: { parameter.verticalCount = $0 }
+                    get: { parameter.verticalCount },
+                    set: {
+                        parameter.resizeGrid(
+                            horizontal: parameter.horizontalCount, vertical: $0
+                        )
+                    }
                 ),
                 .enumeration(
                     id: "CoordinateMode", displayName: "CoordinateMode", group: group,
@@ -330,6 +340,9 @@ public extension EffectPropertyMetadata {
                     id: "ExtendOutside", displayName: "ExtendOutside", group: group,
                     get: { parameter.extendOutside }, set: { parameter.extendOutside = $0 }
                 ),
+                // 格子点の追加・削除は行単位で行い、寸法との不変条件
+                // （points.count == 横 × 縦）を常に保つ（R21-117-02）。
+                // 追加は末尾へ1行、削除は対象要素を含む1行を取り除く。
                 .collection(
                     id: "Points", displayName: "Points", group: group,
                     count: { parameter.points.count },
@@ -339,10 +352,26 @@ public extension EffectPropertyMetadata {
                             of: parameter.points[index], group: group
                         )
                     },
-                    insert: { parameter.points.append(GradientMeshPointValue()) },
+                    insert: {
+                        parameter.resizeGrid(
+                            horizontal: parameter.horizontalCount,
+                            vertical: parameter.verticalCount + 1
+                        )
+                    },
                     remove: { index in
-                        guard parameter.points.indices.contains(index) else { return }
-                        parameter.points.remove(at: index)
+                        guard parameter.verticalCount > 2,
+                              parameter.horizontalCount > 0,
+                              parameter.points.indices.contains(index)
+                        else { return }
+                        let rowStart = index / parameter.horizontalCount
+                            * parameter.horizontalCount
+                        guard rowStart + parameter.horizontalCount
+                                <= parameter.points.count
+                        else { return }
+                        parameter.points.removeSubrange(
+                            rowStart..<(rowStart + parameter.horizontalCount)
+                        )
+                        parameter.verticalCount -= 1
                     }
                 ),
                 .animation(
@@ -820,7 +849,18 @@ public extension EffectPropertyMetadata {
                             }
                             return CodecSupport.decodeLegacyAnimation(current)
                         },
-                        set: { writeField(CodecSupport.encodeAnimation($0)) }
+                        set: { newAnimation in
+                            // 既存の保存内容を土台に重ね、Values 要素内の
+                            // 未知キー等を失わない（R21-117-01）。
+                            let encoded = CodecSupport.encodeAnimation(newAnimation)
+                            if let current = rawValue(at: fieldPath, in: readRoot()) {
+                                writeField(CodecSupport.mergePreservingUnknownFields(
+                                    existing: current, overlay: encoded
+                                ))
+                            } else {
+                                writeField(encoded)
+                            }
+                        }
                     ))
                 } else if depth < rawMaximumDepth {
                     result.append(.object(id: key, displayName: key, group: group) {

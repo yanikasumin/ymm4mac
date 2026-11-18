@@ -293,11 +293,26 @@ struct TimelineStripView: View {
             }
 
             // キーフレームマーカー（上端帯の赤い三角形）。
+            // 横ドラッグで位置を動かせる（隣を越えない範囲へ丸められ、
+            // 値はインデックス対応のため動かない）。
             ForEach(item.keyFrames.frames, id: \.self) { keyFrame in
                 Triangle()
                     .fill(Color(red: 1, green: 0, blue: 0))
                     .frame(width: 7, height: 5)
                     .offset(x: CGFloat(keyFrame) * pxPerFrame - 3.5, y: 0)
+                    .gesture(
+                        DragGesture(minimumDistance: 2)
+                            .onEnded { gesture in
+                                let delta = Int(
+                                    (gesture.translation.width / pxPerFrame).rounded()
+                                )
+                                if item.moveKeyFrame(
+                                    from: keyFrame, to: keyFrame + delta
+                                ) {
+                                    onEdited()
+                                }
+                            }
+                    )
             }
 
             Text(item.label)

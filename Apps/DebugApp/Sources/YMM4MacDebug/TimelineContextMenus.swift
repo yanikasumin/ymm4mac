@@ -169,7 +169,7 @@ extension TimelineStripView {
             removeKeyFrame(item: item, atRelativeFrame: currentFrame - item.frame)
         }
         Button(UIStrings.Timeline.removeAllKeyFrames) {
-            item.setKeyFrames(KeyFrames())
+            item.removeAllKeyFrames()
             onEdited()
         }
         Button(UIStrings.Timeline.distributeKeyFrames) {
@@ -255,17 +255,14 @@ extension TimelineStripView {
 
     /// キーフレームを追加する（相対フレームが範囲内のときだけ）。
     func addKeyFrame(item: BaseItem, atRelativeFrame relative: Int) {
-        guard relative >= 0, relative < item.length else { return }
-        var keyFrames = item.keyFrames
-        keyFrames.insert(relative)
-        item.setKeyFrames(keyFrames)
+        // 値列の連動つきの追加を使う（位置だけ差し替えると値列が
+        // ずれて曲線が変わる）。
+        guard item.insertKeyFrame(at: relative) else { return }
         onEdited()
     }
 
     func removeKeyFrame(item: BaseItem, atRelativeFrame relative: Int) {
-        var keyFrames = item.keyFrames
-        guard keyFrames.remove(relative) != nil else { return }
-        item.setKeyFrames(keyFrames)
+        guard item.removeKeyFrame(at: relative) else { return }
         onEdited()
     }
 

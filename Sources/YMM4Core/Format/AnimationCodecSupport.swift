@@ -80,6 +80,44 @@ extension CodecSupport {
         target.bezier = source.bezier
     }
 
+    /// 既存の保存 JSON を土台に、新しい値を重ねる。オブジェクト同士は
+    /// キー単位で再帰し、配列同士は要素単位で重ねる（共通部分は要素
+    /// 同士を再帰マージし、新しい側の超過分はそのまま採用する）。
+    /// 既存にだけあるキー（未知フィールド）は残る。生保持データの
+    /// 編集で、既知フィールドの書き換えが未知情報を壊さないための
+    /// 規則（R21-117-01）。
+    static func mergePreservingUnknownFields(
+        existing: JSONValue, overlay: JSONValue
+    ) -> JSONValue {
+        switch (existing, overlay) {
+        case (.object(let existingFields), .object(let overlayFields)):
+            var result = existingFields
+            for field in overlayFields {
+                if let index = result.firstIndex(where: { $0.key == field.key }) {
+                    result[index] = (
+                        key: field.key,
+                        value: mergePreservingUnknownFields(
+                            existing: result[index].value, overlay: field.value
+                        )
+                    )
+                } else {
+                    result.append(field)
+                }
+            }
+            return .object(result)
+        case (.array(let existingElements), .array(let overlayElements)):
+            return overlayElements.enumerated().map { index, element in
+                existingElements.indices.contains(index)
+                    ? mergePreservingUnknownFields(
+                        existing: existingElements[index], overlay: element
+                    )
+                    : element
+            }
+        default:
+            return overlay
+        }
+    }
+
     static func encodeAnimation(_ animation: Animation) -> JSONValue {
         .object([
             (key: "Values", value: .array(animation.values.map {

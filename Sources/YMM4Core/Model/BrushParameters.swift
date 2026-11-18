@@ -762,6 +762,35 @@ public final class GradientMeshBrushParameter {
 
     public init() {}
 
+    /// 格子寸法と点列を一体で変更し、常に
+    /// `points.count == horizontalCount * verticalCount` を保つ。
+    /// 既存の点は (行, 列) の位置で保持し、新しい位置は既定点で
+    /// 埋める。寸法は本家 UI の範囲（2〜上限）へ丸める。編集操作は
+    /// 寸法と点列を別々に触らず、必ずこの経路を通す（R21-117-02）。
+    public func resizeGrid(horizontal newHorizontal: Int, vertical newVertical: Int) {
+        let h = min(max(newHorizontal, 2), Self.maximumPointCount)
+        let v = min(max(newVertical, 2), Self.maximumPointCount)
+        let oldPoints = points
+        let oldHorizontal = horizontalCount
+        let oldVertical = verticalCount
+        var rebuilt: [GradientMeshPointValue] = []
+        rebuilt.reserveCapacity(h * v)
+        for row in 0..<v {
+            for column in 0..<h {
+                let oldIndex = row * oldHorizontal + column
+                if row < oldVertical, column < oldHorizontal,
+                   oldPoints.indices.contains(oldIndex) {
+                    rebuilt.append(oldPoints[oldIndex])
+                } else {
+                    rebuilt.append(GradientMeshPointValue())
+                }
+            }
+        }
+        horizontalCount = h
+        verticalCount = v
+        points = rebuilt
+    }
+
     func forEachAnimation(_ body: (inout Animation) -> Void) {
         body(&width)
         body(&height)

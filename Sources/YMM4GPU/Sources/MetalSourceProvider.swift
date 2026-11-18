@@ -78,6 +78,11 @@ public struct MetalSourceProvider {
     /// セッションへ届くようにする。未設定なら失敗は報告されない。
     public let diagnostics: RenderDiagnosticsCollector?
 
+    /// 書き出しジョブが開始時点で固定したユーザー辞書（D19-01）。
+    /// テキスト・字幕の描画へ渡す。未設定なら共有ストアの最新を
+    /// 読む（プレビュー経路）。子供給元へも同じ値を伝播させる。
+    public let dictionarySnapshot: UserDictionarySnapshot?
+
     public init(
         devices: MetalGraphicsDevices,
         baseDirectory: URL? = nil,
@@ -86,7 +91,8 @@ public struct MetalSourceProvider {
         tachieRendererFactory: (any MetalTachieRendererFactory)? = nil,
         timeline: Timeline? = nil,
         effectProvider: (any EffectPairProvider)? = nil,
-        diagnostics: RenderDiagnosticsCollector? = nil
+        diagnostics: RenderDiagnosticsCollector? = nil,
+        dictionarySnapshot: UserDictionarySnapshot? = nil
     ) {
         self.devices = devices
         self.baseDirectory = baseDirectory
@@ -96,6 +102,7 @@ public struct MetalSourceProvider {
         self.timeline = timeline
         self.effectProvider = effectProvider
         self.diagnostics = diagnostics
+        self.dictionarySnapshot = dictionarySnapshot
     }
 
     public func source(for item: BaseItem & VideoItemProperties) -> any Source {
@@ -107,9 +114,15 @@ public struct MetalSourceProvider {
         case let shapeItem as ShapeItem:
             return MetalShapeSource(devices: devices, item: shapeItem)
         case let textItem as TextItem:
-            return MetalTextSource(devices: devices, item: textItem)
+            return MetalTextSource(
+                devices: devices, item: textItem,
+                dictionarySnapshot: dictionarySnapshot
+            )
         case let voiceItem as VoiceItem:
-            return MetalJimakuSource(devices: devices, item: voiceItem)
+            return MetalJimakuSource(
+                devices: devices, item: voiceItem,
+                dictionarySnapshot: dictionarySnapshot
+            )
         case let videoItem as VideoItem:
             return MetalVideoSource(
                 devices: devices, item: videoItem, baseDirectory: baseDirectory
@@ -171,6 +184,7 @@ public struct MetalSourceProvider {
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
         let diagnostics = self.diagnostics
+        let dictionarySnapshot = self.dictionarySnapshot
         return { context in
             context.targetSize = PixelSize(
                 width: timeline.videoInfo.width, height: timeline.videoInfo.height
@@ -183,7 +197,8 @@ public struct MetalSourceProvider {
                 tachieRendererFactory: tachieRendererFactory,
                 timeline: timeline,
                 effectProvider: effectProvider,
-                diagnostics: diagnostics
+                diagnostics: diagnostics,
+                dictionarySnapshot: dictionarySnapshot
             )
             let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
             return TimelineComposer(
@@ -215,6 +230,7 @@ public struct MetalSourceProvider {
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
         let diagnostics = self.diagnostics
+        let dictionarySnapshot = self.dictionarySnapshot
         return { beforeContext, afterContext in
             func makeComposer(
                 context: MetalGraphicsContext, isBefore: Bool
@@ -230,7 +246,8 @@ public struct MetalSourceProvider {
                     tachieRendererFactory: tachieRendererFactory,
                     timeline: timeline,
                     effectProvider: effectProvider,
-                    diagnostics: diagnostics
+                    diagnostics: diagnostics,
+                    dictionarySnapshot: dictionarySnapshot
                 )
                 let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
                 return TimelineComposer(
@@ -289,6 +306,7 @@ public struct MetalSourceProvider {
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
         let diagnostics = self.diagnostics
+        let dictionarySnapshot = self.dictionarySnapshot
         return { sceneID, context in
             guard let timeline = sceneResolver?(sceneID) else { return nil }
             if parentSceneChain.filter({ $0 == sceneID }).count >= 10 { return nil }
@@ -303,7 +321,8 @@ public struct MetalSourceProvider {
                 tachieRendererFactory: tachieRendererFactory,
                 timeline: timeline,
                 effectProvider: effectProvider,
-                diagnostics: diagnostics
+                diagnostics: diagnostics,
+                dictionarySnapshot: dictionarySnapshot
             )
             let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
             return TimelineComposer(
