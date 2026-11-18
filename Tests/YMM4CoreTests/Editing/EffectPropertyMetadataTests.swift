@@ -299,6 +299,30 @@ final class EffectPropertyMetadataTests: XCTestCase {
         return try XCTUnwrap(VideoEffectRegistry.decode(PreservedObject(value)))
     }
 
+    /// グラデーションメッシュブラシを持つ定義の JSON。寸法と点数を
+    /// 引数で与え、保存データ由来の異常な寸法もそのまま再現する。
+    private func gradientMeshDefinitionJSON(
+        horizontalCount: Int, verticalCount: Int, pointCount: Int
+    ) -> String {
+        let points = Array(
+            repeating: "{ \"Color\": \"#FFFF0000\" }", count: pointCount
+        ).joined(separator: ", ")
+        return """
+            {
+              "$type": "YukkuriMovieMaker.Project.Effects.ShadowEffect, YukkuriMovieMaker",
+              "Brush": {
+                "Type": "YukkuriMovieMaker.Plugin.Brush.GradientMeshBrushPlugin, YukkuriMovieMaker",
+                "Parameter": {
+                  "$type": "YukkuriMovieMaker.Brush.GradientMeshBrushParameter, YukkuriMovieMaker",
+                  "HorizontalCount": \(horizontalCount),
+                  "VerticalCount": \(verticalCount),
+                  "Points": [\(points)]
+                }
+              }
+            }
+            """
+    }
+
     /// 型付きブラシ（単色）の色変更が保存 JSON へ届き、パラメータ内の
     /// 未知キーが保持される。
     func testTypedBrushSolidColorWriteThrough() throws {
@@ -635,6 +659,93 @@ final class EffectPropertyMetadataTests: XCTestCase {
         }
         XCTAssertFalse(points.removeCollectionElement(at: 0))
         XCTAssertEqual(points.collectionCount, 4)
+    }
+
+    /// コレクション操作の成否報告: 不正な旧寸法を持つ格子への行追加は
+    /// false を返し、状態を変えない（R24-117-01）。縦 Int.max では
+    /// 呼び出し側の +1 が trap し、縦51行では resizeGrid の丸め込みで
+    /// 末尾行を失うのに「変更あり」になる、というのが修正前の実挙動。
+    /// 横寸法が範囲外の場合も、丸めで寸法が変わる操作を追加成功と
+    /// 報告しない。正常な格子（縦49行）への追加は従来どおり true で
+    /// 50行になる。縦50行での追加が false であることは
+    /// testGradientMeshCollectionReportsNoChangeAtGridLimits が覆う。
+    func testGradientMeshInsertRejectsInvalidGridDimensions() throws {
+        // 縦 Int.max: +1 で trap せず false、状態不変。
+        var definition = try decodeDefinition(gradientMeshDefinitionJSON(
+            horizontalCount: 2, verticalCount: Int.max, pointCount: 4
+        ))
+        var points = try childDescriptor(
+            topDescriptor(definition, "Brush"), "Points"
+        )
+        XCTAssertFalse(points.insertCollectionElement())
+        XCTAssertEqual(points.collectionCount, 4)
+        var parameterJSON = try XCTUnwrap(
+            VideoEffectRegistry.encode(definition).value
+                .field("Brush")?.field("Parameter")
+        )
+        XCTAssertEqual(
+            parameterJSON.field("VerticalCount")?.doubleValue, Double(Int.max)
+        )
+        XCTAssertEqual(parameterJSON.field("Points")?.arrayValue?.count, 4)
+
+        // 縦51行: 丸め込みで末尾行を失わず false、状態不変。
+        definition = try decodeDefinition(gradientMeshDefinitionJSON(
+            horizontalCount: 2, verticalCount: 51, pointCount: 102
+        ))
+        points = try childDescriptor(
+            topDescriptor(definition, "Brush"), "Points"
+        )
+        XCTAssertFalse(points.insertCollectionElement())
+        XCTAssertEqual(points.collectionCount, 102)
+        parameterJSON = try XCTUnwrap(
+            VideoEffectRegistry.encode(definition).value
+                .field("Brush")?.field("Parameter")
+        )
+        XCTAssertEqual(parameterJSON.field("VerticalCount")?.doubleValue, 51)
+        XCTAssertEqual(parameterJSON.field("Points")?.arrayValue?.count, 102)
+
+        // 縦1行（下限未満）: false、状態不変。
+        definition = try decodeDefinition(gradientMeshDefinitionJSON(
+            horizontalCount: 2, verticalCount: 1, pointCount: 2
+        ))
+        points = try childDescriptor(
+            topDescriptor(definition, "Brush"), "Points"
+        )
+        XCTAssertFalse(points.insertCollectionElement())
+        XCTAssertEqual(points.collectionCount, 2)
+
+        // 横51（範囲外）: 縦が正常でも、丸めで横寸法が変わる操作を
+        // 成功と報告しない。false で寸法・点列とも不変。
+        definition = try decodeDefinition(gradientMeshDefinitionJSON(
+            horizontalCount: 51, verticalCount: 2, pointCount: 4
+        ))
+        points = try childDescriptor(
+            topDescriptor(definition, "Brush"), "Points"
+        )
+        XCTAssertFalse(points.insertCollectionElement())
+        XCTAssertEqual(points.collectionCount, 4)
+        parameterJSON = try XCTUnwrap(
+            VideoEffectRegistry.encode(definition).value
+                .field("Brush")?.field("Parameter")
+        )
+        XCTAssertEqual(parameterJSON.field("HorizontalCount")?.doubleValue, 51)
+        XCTAssertEqual(parameterJSON.field("VerticalCount")?.doubleValue, 2)
+
+        // 縦49行（正常範囲の上限）: true で50行になる（回帰）。
+        definition = try decodeDefinition(gradientMeshDefinitionJSON(
+            horizontalCount: 2, verticalCount: 49, pointCount: 98
+        ))
+        points = try childDescriptor(
+            topDescriptor(definition, "Brush"), "Points"
+        )
+        XCTAssertTrue(points.insertCollectionElement())
+        XCTAssertEqual(points.collectionCount, 100)
+        parameterJSON = try XCTUnwrap(
+            VideoEffectRegistry.encode(definition).value
+                .field("Brush")?.field("Parameter")
+        )
+        XCTAssertEqual(parameterJSON.field("VerticalCount")?.doubleValue, 50)
+        XCTAssertEqual(parameterJSON.field("Points")?.arrayValue?.count, 100)
     }
 
     /// コレクション操作の成否報告: 範囲外の位置の削除は false を返し、

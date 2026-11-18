@@ -353,14 +353,32 @@ public extension EffectPropertyMetadata {
                         )
                     },
                     insert: {
-                        // 行数が上限（50）へ丸め込まれた場合は無変更として
-                        // false を返す（R22-117-01）。
+                        // 行追加は正常な格子への操作に限る。旧寸法は
+                        // decode が保存値を丸めず復元するため範囲外が
+                        // あり得る: 縦が Int.max では +1 自体が trap し、
+                        // 51行では resizeGrid の丸め（上限50）で末尾行を
+                        // 失うのに「変更あり」になってしまう。横が範囲外
+                        // の場合も、丸めで寸法が変わる操作を「追加成功」
+                        // と報告しない。入口で検証し、正常範囲（縦は
+                        // 追加後に上限へ収まる 2〜49行、横は 2〜50）の
+                        // ときだけ進める（R24-117-01）。不正な格子の
+                        // 安全化は resizeGrid 側の責務であり（R23-117-01）、
+                        // 追加が修復を兼ねない。
+                        let previousHorizontalCount = parameter.horizontalCount
                         let previousVerticalCount = parameter.verticalCount
+                        guard (2...GradientMeshBrushParameter.maximumPointCount)
+                                .contains(previousHorizontalCount),
+                              (2..<GradientMeshBrushParameter.maximumPointCount)
+                                .contains(previousVerticalCount)
+                        else { return false }
                         parameter.resizeGrid(
-                            horizontal: parameter.horizontalCount,
-                            vertical: parameter.verticalCount + 1
+                            horizontal: previousHorizontalCount,
+                            vertical: previousVerticalCount + 1
                         )
-                        return parameter.verticalCount != previousVerticalCount
+                        return parameter.verticalCount
+                                == previousVerticalCount + 1
+                            && parameter.horizontalCount
+                                == previousHorizontalCount
                     },
                     remove: { index in
                         // 最小行数（2行）では削除できない（無変更）。
