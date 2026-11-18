@@ -77,9 +77,8 @@ final class AnimationSliderSpecTests: XCTestCase {
     // MARK: - アイテム記述子への解決
 
     /// VideoItem の音量: 具象型の宣言（0〜100、F1、単位 %）が表に
-    /// あること。なお現行ポートの `ItemPropertyMetadata` は
-    /// VideoItem / AudioItem に Volume 記述子自体を出していない
-    /// （VoiceItem のみ）ため、ここでは表レベルの裏取りに留める。
+    /// あること。記述子経由の解決は FE-R8-001 で追加され、
+    /// `PropertyMetadataTests` 側で固定している。
     func testVideoItemVolumeSpecInTable() throws {
         let spec = try XCTUnwrap(AnimationSliderTable.spec(
             ownerType: "YukkuriMovieMaker.Project.Items.VideoItem", property: "Volume"

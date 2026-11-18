@@ -20,6 +20,12 @@ public enum ItemPropertyMetadata {
         if let visual = item as? VisualItem {
             result += videoDescriptors(group: "描画", idPrefix: "", accesses: videoAccesses(of: visual))
         }
+        if let video = item as? VideoItem {
+            result += audioDescriptors(volume: access(video, \.volume), pan: access(video, \.pan))
+        }
+        if let audio = item as? AudioItem {
+            result += audioDescriptors(volume: access(audio, \.volume), pan: access(audio, \.pan))
+        }
         if let voice = item as? VoiceItem {
             result += voiceDescriptors(for: voice)
         }
@@ -198,6 +204,27 @@ public enum ItemPropertyMetadata {
             .boolean(
                 id: idPrefix + "IsZOrderEnabled", displayName: "Z値順に表示", group: group,
                 get: a.isZOrderEnabled.get, set: a.isZOrderEnabled.set
+            ),
+        ]
+    }
+
+    // MARK: - 音声プロパティ（VideoItem / AudioItem）
+
+    /// 音量・パンの記述子（グループ・表示名は `VoiceItem` の音声系と
+    /// 同一）。本家では両プロパティとも `VideoItem` / `AudioItem` の
+    /// 各具象型に宣言され、`AnimationSliderAttribute` も具象型ごとに
+    /// 付くため、スライダ仕様は具象型の宣言で解決される（FE-R8-001）。
+    private static func audioDescriptors(
+        volume: Access<Animation>, pan: Access<Animation>
+    ) -> [PropertyDescriptor] {
+        [
+            .animation(
+                id: "Volume", displayName: "音量", group: "音声",
+                get: volume.get, set: volume.set
+            ),
+            .animation(
+                id: "Pan", displayName: "パン", group: "音声",
+                get: pan.get, set: pan.set
             ),
         ]
     }
