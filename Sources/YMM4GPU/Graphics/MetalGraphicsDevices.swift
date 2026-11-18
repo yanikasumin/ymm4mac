@@ -58,6 +58,27 @@ public final class MetalGraphicsDevices {
     private var registry: [ObjectIdentifier: MetalImage] = [:]
     private let registryLock = NSLock()
 
+    /// 診断カウンタ: 共通規則（TRANSFORM47 / Issue #47）で実体化された
+    /// エフェクト処理器入力の累計。実プロジェクトでの発動頻度の測定に
+    /// 使う（現行の Source・処理器・描画先はいずれもプレーンな画像しか
+    /// 出さないため、通常の合成では 0 のままであることが期待値）。
+    private var materializedInputCounter = 0
+    private let materializedInputCounterLock = NSLock()
+
+    /// 実体化された処理器入力の累計（診断用）。
+    public var materializedInputCount: Int {
+        materializedInputCounterLock.lock()
+        defer { materializedInputCounterLock.unlock() }
+        return materializedInputCounter
+    }
+
+    /// 処理器入力の実体化を1件記録する（診断用）。
+    func noteMaterializedProcessorInput() {
+        materializedInputCounterLock.lock()
+        materializedInputCounter += 1
+        materializedInputCounterLock.unlock()
+    }
+
     /// デバイスと共有資源を生成する。
     public convenience init() throws {
         try self.init(shaderSource: Self.shaderSource)

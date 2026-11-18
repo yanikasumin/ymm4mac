@@ -263,11 +263,17 @@ final class MetalEffectDefinition: VideoEffectDefinition {
 /// ぼかしの Soft 境界だけが境界を広げる。本家の D2D でも出力境界が
 /// 広がるのはその場合のみ）。
 ///
-/// 第1段の制約: 入力の実体が「変換なし・不透明度 1」のプレーンな画像
-/// であることを前提とする。現在の Source 実装（画像・図形・テキスト・
-/// 字幕）と処理器自身の出力はすべてこの形であり、連鎖の入力は常に
-/// プレーンになる。プレーンでない入力が来た場合は効果を適用せず入力を
-/// そのまま出す（差し替え点。台帳に記録）。
+/// 入力の実体は原則として「変換なし・不透明度 1」のプレーンな画像だが、
+/// 共通規則（TRANSFORM47 / Issue #47）として、プレーンでない入力は
+/// 基底が実体化（変換と不透明度を新しいテクスチャへ焼き込む）してから
+/// `render` へ渡す。本家には「プレーンでない入力では効果を適用しない」
+/// というガードは存在せず、本家の処理器は入力を D2D エフェクトへ
+/// そのまま渡し、変換つき入力でも効果が効く（GaussianBlurEffect /
+/// InvertEffect の実コードで確認）。実体化は本家にも先例がある方式
+/// （FrameBufferSource 系の蓄積画像の実体化、DrawingEffect の Crop 段）。
+/// 現在の Source 実装（画像・図形・テキスト・字幕）と処理器自身の出力、
+/// 描画先の出力はすべてプレーンな形であり、通常の連鎖で実体化が発動
+/// することは無い。発動はデバイスの診断カウンタで数えられる。
 public class MetalEffectProcessor: VideoEffectProcessor {
     /// 描画に使う文脈（供給元が所有し、処理器間で共有する）。
     let context: MetalGraphicsContext
@@ -307,23 +313,74 @@ public class MetalEffectProcessor: VideoEffectProcessor {
             ))
             return modifiedDrawDescription(description, input: nil)
         }
-        guard input.transform == .identity, input.opacity == 1 else {
-            register(input)
-            return modifiedDrawDescription(description, input: input)
-        }
-        if let rendered = try render(input: input, description: description) {
+        let effectiveInput = try materializedInput(input)
+        if let rendered = try render(input: effectiveInput, description: description) {
             register(rendered)
         } else {
-            register(input)
+            register(effectiveInput)
         }
         return modifiedDrawDescription(description, input: input)
+    }
+
+    /// 共通規則（TRANSFORM47 / Issue #47）: 処理器入力の実体化。
+    ///
+    /// プレーンな入力（変換が恒等・不透明度 1）はそのまま返す。
+    /// 変換つきの入力は変換後の外接矩形へ焼き込み、不透明度つきの入力は
+    /// Premultiplied の全成分へ不透明度を乗算して、どちらもプレーンな
+    /// 実体にしてから `render` へ渡す。実体化した場合はデバイスの診断
+    /// カウンタへ1件記録する。
+    ///
+    /// 本家との差分: 本家の D2D エフェクトは入力の変換を出力へ伝播させる
+    /// （焼き込まない）ため、ぼかし等の局所処理は変換前の座標系で効く。
+    /// こちらの実体化では変換後の画素へ効果が効く。現行の連鎖では
+    /// プレーンでない入力自体が発生しないため、この差が観測されるのは
+    /// 将来 Source や処理器の出力が変換・不透明度を持つようになった
+    /// 場合に限る（台帳に記録）。
+    func materializedInput(_ input: MetalImage) throws -> MetalImage {
+        guard input.transform != .identity || input.opacity != 1 else {
+            return input
+        }
+        context.devices.noteMaterializedProcessorInput()
+        var image = input
+        if image.transform != .identity {
+            let outputBounds = MetalDrawingEffect.boundingRect(
+                of: image.bounds, transformedBy: image.transform
+            )
+            // renderTransformed の出力は変換・不透明度を持たないプレーンな
+            // 実体になる。元の不透明度はこの時点ではまだ焼き込まれて
+            // いないため、下の段で入力の値をそのまま適用する。
+            image = try renderTransformed(
+                input: image, matrix: image.transform,
+                outputBounds: outputBounds, interpolation: image.interpolation
+            )
+        }
+        if input.opacity != 1 {
+            // 不透明度の焼き込みは全成分への乗算とする。これは
+            // MetalImage.opacity の消費側（MetalRenderTarget の描画
+            // シェーダが color * opacity で全成分へ掛ける）の意味論に
+            // 合わせたもので、実体化の前後で最終合成が変わらないための
+            // 規則である。本家の ColorMatrix は M44 のみへ掛けるが、
+            // そちらは DrawDescription 層の不透明度の消費方式であり、
+            // MetalImage 層の規則とは別に扱う（台帳に記録）。
+            let opacity = Float(input.opacity)
+            image = try renderColorEffect(
+                input: image,
+                uniforms: ColorEffectUniforms(
+                    mode: 7,
+                    param0: SIMD4<Float>(opacity, opacity, opacity, opacity),
+                    param1: .zero
+                )
+            )
+        }
+        return image
     }
 
     /// 戻り DrawDescription を書き換える処理器（回転の 3D 分岐・中心点・
     /// 自動ズーム・ジャンプ・描画遅延等、第2段）用のフック。既定は無変更
     /// （第1段の対象処理器はいずれも DrawDescription を無変換で返す）。
     /// 本家では DrawDescription の書き換えは画像変換とは独立に行われる
-    /// ため、入力がプレーンでない素通し経路でもフックは通す。`input` は
+    /// ため、フックには実体化前の入力実体を渡す（本家の処理器が読む
+    /// 入力の局所境界は変換前の境界であることに対応）。`input` は
     /// 登録表で解決した入力実体（入力が無い場合は nil）。
     func modifiedDrawDescription(
         _ description: EffectDescription, input: MetalImage?
