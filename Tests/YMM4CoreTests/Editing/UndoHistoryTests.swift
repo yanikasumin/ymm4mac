@@ -12,13 +12,24 @@ final class UndoHistoryTests: XCTestCase {
         var frame: Int = 0
     }
 
+    /// トランザクションを開始し、拒否されたらテストを失敗させる
+    /// （開始が成功する前提のテスト用）。
+    private func beginTransaction(
+        _ coordinator: EditCoordinator,
+        file: StaticString = #filePath, line: UInt = #line
+    ) -> EditTransaction {
+        let transaction = coordinator.beginTransaction()
+        XCTAssertNotNil(transaction, "トランザクションの開始が拒否された", file: file, line: line)
+        return transaction!
+    }
+
     /// 変更を適用して1トランザクションとして確定する。
     private func commitChange(
         _ coordinator: EditCoordinator, _ item: StubItem, to newValue: Int
     ) {
         let oldValue = item.frame
         item.frame = newValue
-        let transaction = coordinator.beginTransaction()
+        let transaction = beginTransaction(coordinator)
         transaction.addValueChange(
             target: EditTargetKey(item, key: "Frame"),
             oldValue: oldValue, newValue: newValue,
@@ -95,7 +106,7 @@ final class UndoHistoryTests: XCTestCase {
         XCTAssertTrue(coordinator.undo())
         XCTAssertTrue(coordinator.canRedo)
 
-        let empty = coordinator.beginTransaction()
+        let empty = beginTransaction(coordinator)
         coordinator.commit(empty)
 
         XCTAssertTrue(coordinator.canRedo)
@@ -114,7 +125,7 @@ final class UndoHistoryTests: XCTestCase {
         func sideEffectAttempt(to newValue: Int) {
             let oldValue = item.frame
             item.frame = newValue
-            let transaction = coordinator.beginTransaction()
+            let transaction = beginTransaction(coordinator)
             transaction.addValueChange(
                 target: EditTargetKey(item, key: "Frame"),
                 oldValue: oldValue, newValue: newValue,
@@ -124,7 +135,7 @@ final class UndoHistoryTests: XCTestCase {
         }
 
         item.frame = 30
-        let transaction = coordinator.beginTransaction()
+        let transaction = beginTransaction(coordinator)
         transaction.addAction(
             undo: {
                 item.frame = 0
@@ -187,7 +198,7 @@ final class UndoHistoryTests: XCTestCase {
         commitChange(coordinator, item, to: 10)
         XCTAssertEqual(notifications, 1)
 
-        let empty = coordinator.beginTransaction()
+        let empty = beginTransaction(coordinator)
         coordinator.commit(empty)
         XCTAssertEqual(notifications, 1)
 
@@ -198,5 +209,40 @@ final class UndoHistoryTests: XCTestCase {
 
         coordinator.history.clear()
         XCTAssertEqual(notifications, 4)
+    }
+
+    // MARK: - FE-R5-119-03: 容量の不変条件
+
+    /// 空の履歴へ負の容量を指定しても異常終了せず、容量0として扱う
+    /// （容量0では確定しても何も保持されない）。
+    func testNegativeCapacityOnEmptyHistoryBehavesAsZero() {
+        let coordinator = EditCoordinator()
+        let item = StubItem()
+
+        coordinator.history.capacity = -1
+        XCTAssertEqual(coordinator.history.capacity, 0)
+
+        commitChange(coordinator, item, to: 10)
+        XCTAssertEqual(item.frame, 10)
+        XCTAssertEqual(coordinator.history.undoCount, 0)
+        XCTAssertFalse(coordinator.canUndo)
+        XCTAssertFalse(coordinator.undo())
+    }
+
+    /// 非空の履歴へ負の容量を指定すると、容量0として全エントリが
+    /// 切り詰められる（異常終了しない）。
+    func testNegativeCapacityOnNonEmptyHistoryTrimsAll() {
+        let coordinator = EditCoordinator()
+        let item = StubItem()
+
+        commitChange(coordinator, item, to: 10)
+        commitChange(coordinator, item, to: 20)
+        XCTAssertEqual(coordinator.history.undoCount, 2)
+
+        coordinator.history.capacity = -5
+        XCTAssertEqual(coordinator.history.capacity, 0)
+        XCTAssertEqual(coordinator.history.undoCount, 0)
+        XCTAssertFalse(coordinator.canUndo)
+        XCTAssertFalse(coordinator.undo())
     }
 }

@@ -9,10 +9,20 @@ import Foundation
 /// 集約する）。
 ///
 /// 同時に有効なトランザクションは1つだけとする（本家のコレクタが
-/// 全体で1つであることに対応）。有効なトランザクションがある状態で
-/// 新しく開始すると、前のトランザクションはキャンセル（開始状態へ
-/// 巻き戻し）して置き換える。置き換えは、放棄されたドラッグ等の
-/// 中断時に半端な変更を残さないための仕様である。
+/// 全体で1つであることに対応）。有効なトランザクションがある間は
+/// 新しいトランザクションを開始できない（`beginTransaction` は nil
+/// を返す）。前の編集を中断する場合は `cancel`、確定して次へ進む
+/// 場合は `commit` を、呼び出し側が明示的に呼ぶ契約とする
+/// （FE-R5-119-04。「新しい編集が始まった」ことだけを根拠に前の
+/// 編集を Core 側が黙って巻き戻すと、終了イベント未処理のドラッグ
+/// 結果などが黙って失われるため）。
+///
+/// 履歴の Undo/Redo もこの Coordinator 経由でのみ実行できる
+/// （`UndoHistory` 側の操作はモジュール内に閉じた）。未確定の
+/// トランザクションがある間の Undo/Redo は実行しない。確定前の
+/// 変更と履歴エントリが混ざった状態で履歴を動かすと、その後の
+/// 確定・巻き戻しが履歴とモデルを乖離させるためである
+/// （FE-R5-119-01）。
 public final class EditCoordinator {
     /// 保持する Undo/Redo 履歴。
     public let history: UndoHistory
@@ -31,12 +41,11 @@ public final class EditCoordinator {
     }
 
     /// 編集トランザクションを開始する。既に有効なトランザクションが
-    /// あれば、それをキャンセルしてから開始する。
+    /// ある場合は開始を拒否し、nil を返す（前のトランザクションは
+    /// 巻き戻されず、そのまま有効であり続ける）。
     @discardableResult
-    public func beginTransaction() -> EditTransaction {
-        if let active = activeTransaction {
-            cancel(active)
-        }
+    public func beginTransaction() -> EditTransaction? {
+        guard activeTransaction == nil else { return nil }
         let transaction = EditTransaction()
         activeTransaction = transaction
         return transaction
@@ -56,11 +65,16 @@ public final class EditCoordinator {
     /// トランザクションをキャンセルし、蓄積した変更を開始状態へ
     /// 巻き戻す。履歴には残らない。有効なトランザクション以外への
     /// 呼び出しは無視する。
+    ///
+    /// 巻き戻しは、適用クロージャからの再入（同じトランザクションへの
+    /// 再キャンセル等）と組み合わさっても再帰的な巻き戻しにならない
+    /// よう、コマンドの実行前に終了状態を確定させてから行う
+    /// （FE-R5-119-02）。
     public func cancel(_ transaction: EditTransaction) {
         guard activeTransaction === transaction, !transaction.isFinished else { return }
-        transaction.rollback()
         transaction.finish()
         activeTransaction = nil
+        transaction.rollback()
     }
 
     /// Undo できるか。
@@ -68,11 +82,20 @@ public final class EditCoordinator {
     /// Redo できるか。
     public var canRedo: Bool { history.canRedo }
 
-    /// 最新の履歴エントリを Undo する。対象が無ければ false。
+    /// 最新の履歴エントリを Undo する。未確定のトランザクションが
+    /// ある間は実行せず false を返す（FE-R5-119-01）。対象が無ければ
+    /// false。
     @discardableResult
-    public func undo() -> Bool { history.undo() }
+    public func undo() -> Bool {
+        guard activeTransaction == nil else { return false }
+        return history.undo()
+    }
 
-    /// 最新の履歴エントリを Redo する。対象が無ければ false。
+    /// 最新の履歴エントリを Redo する。未確定のトランザクションが
+    /// ある間は実行せず false を返す。対象が無ければ false。
     @discardableResult
-    public func redo() -> Bool { history.redo() }
+    public func redo() -> Bool {
+        guard activeTransaction == nil else { return false }
+        return history.redo()
+    }
 }

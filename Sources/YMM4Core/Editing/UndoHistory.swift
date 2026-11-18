@@ -19,13 +19,25 @@ import Foundation
 /// - 本家はモデルの自動監視でコマンドを集めるが、こちらへの投入は
 ///   `EditCoordinator` 経由の明示トランザクションに限る（投入経路を
 ///   1つに保つため、`record` はモジュール内に閉じる）。
+/// - 履歴の操作（確定・Undo・Redo）の入口も `EditCoordinator` へ
+///   一本化する。未確定トランザクションとの排他や再入防止は
+///   Coordinator 側の責務であり、こちら側の `undo` / `redo` も
+///   モジュール内に閉じて、アプリ層からは Coordinator 経由でのみ
+///   実行できる形にする（FE-R5-119-01）。
 public final class UndoHistory {
     /// 履歴容量の既定値（本家の上限既定値と同じ100）。
     public static let defaultCapacity = 100
 
+    /// 容量の実値。0未満にはならない（不変条件は代入の全経路で保証
+    /// する。FE-R5-119-03）。
+    private var capacityStorage: Int
+
     /// 保持する履歴エントリの上限。変更すると直ちに最古から切り詰める。
+    /// 負の値を代入した場合は 0 として扱う。
     public var capacity: Int {
-        didSet {
+        get { capacityStorage }
+        set {
+            capacityStorage = max(0, newValue)
             if trimExcess() {
                 onHistoryChanged?()
             }
@@ -45,7 +57,7 @@ public final class UndoHistory {
     public var onHistoryChanged: (() -> Void)?
 
     public init(capacity: Int = UndoHistory.defaultCapacity) {
-        self.capacity = max(0, capacity)
+        self.capacityStorage = max(0, capacity)
     }
 
     /// Undo できるエントリがあるか。
@@ -69,24 +81,30 @@ public final class UndoHistory {
     }
 
     /// 最新のエントリを Undo し、Redo 側へ移す。対象が無ければ false。
+    /// 適用中（コマンドの適用クロージャからの再入）は実行せず false
+    /// を返す（FE-R5-119-02）。入口は `EditCoordinator` 経由に一本化
+    /// するためモジュール内に閉じる。
     @discardableResult
-    public func undo() -> Bool {
+    func undo() -> Bool {
+        guard !isApplying else { return false }
         guard let entry = undoStack.popLast() else { return false }
         isApplying = true
+        defer { isApplying = false }
         entry.undoAll()
-        isApplying = false
         redoStack.append(entry)
         onHistoryChanged?()
         return true
     }
 
     /// 最新の Redo エントリを再適用し、Undo 側へ戻す。対象が無ければ false。
+    /// 再入の扱いは `undo` と同じ。
     @discardableResult
-    public func redo() -> Bool {
+    func redo() -> Bool {
+        guard !isApplying else { return false }
         guard let entry = redoStack.popLast() else { return false }
         isApplying = true
+        defer { isApplying = false }
         entry.redoAll()
-        isApplying = false
         undoStack.append(entry)
         onHistoryChanged?()
         return true
