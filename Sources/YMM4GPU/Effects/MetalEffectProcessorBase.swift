@@ -256,12 +256,16 @@ final class MetalEffectDefinition: VideoEffectDefinition {
 public class MetalEffectProcessor: VideoEffectProcessor {
     /// 描画に使う文脈（供給元が所有し、処理器間で共有する）。
     let context: MetalGraphicsContext
+    /// ブラシ塗りのレンダラ（BRUSH46。ビットマップのキャッシュを
+    /// 処理器の生存期間で保持する）。
+    let brushRenderer: MetalBrushFillRenderer
     private var inputReference: ImageReference?
     private let outputReference = ImageReference(label: "metal-effect")
     private var hasOutput = false
 
     public init(context: MetalGraphicsContext) {
         self.context = context
+        self.brushRenderer = MetalBrushFillRenderer(context: context)
     }
 
     public var output: ImageReference? {

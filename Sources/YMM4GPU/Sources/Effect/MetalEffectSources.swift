@@ -234,7 +234,10 @@ public final class MetalEffectItemDrawingEffect: DrawingEffectProcessor,
             strokeThickness: parameter.strokeThickness.value(
                 atFrame: frame, length: length, fps: fps
             ),
-            color: MetalShapeSource.fillColor(for: parameter)
+            fill: MetalShapeSource.fill(
+                for: parameter, width: size.width, height: size.height,
+                frame: frame, length: length, fps: fps
+            )
         )
         if cachedShapeKey != key {
             cachedShapeKey = key

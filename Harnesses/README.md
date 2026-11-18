@@ -36,6 +36,7 @@ swift run -c release
 | mac0033-harness | GPU テクスチャ確保失敗が素通しと区別され MetalRenderError として伝播すること（GPU28-03） | 引数なし。失敗ケースは環境変数 `MAC0033_RUN_FAILURE_CASE=1` のときだけ実行し、既定では SKIP と表示する | 通常ケース PASS。失敗ケースは macOS 26 の Metal 検証層がプロセスを abort するため完走しない（既知の制約。throw 経路の担保はコード監査に拠る） |
 | mac0034-harness | EffectItem 描画（本家 EffectSource）とクリッピングのアルファマスク | 引数なし | 25 件全 PASS |
 | mac0035-harness | 画面遷移（TransitionSource の配線、ブレンド9種のうち8種） | 引数なし | 27 件全 PASS |
+| brush46-harness | ブラシ基盤（BRUSH46）: 型付きブラシの GPU 塗りを4エフェクトと図形へ適用し、本家幾何から手計算した期待値と画素を照合。未対応ブラシの素通し回帰を含む | 引数なし。ビットマップブラシ用タイルは実行時に生成 | 42 件全 PASS |
 
 ## 材料について
 

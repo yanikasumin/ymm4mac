@@ -21,6 +21,8 @@
           ShapeParameter.swift 図形パラメータ（RectangleShapeParameter と Brush を型付き、
                                それ以外の $type は生保持。旧 ShapeType の変換表を含む）
           Brush.swift          Brush の型付き部（ShapeParameter から分離）
+          BrushParameters.swift ブラシパラメータ9種の型付きモデル（BRUSH46。
+                               グラデーションメッシュと未知 $type は生保持）
         Animation/             時間変化と補間の評価
           Animation.swift      数値プロパティの時間変化と値評価（本家 GetValue の全分岐、分割連動を含む）
           AnimationType.swift  補間・イージング種別の数値テーブルと分類規則
@@ -256,6 +258,10 @@
           MetalEffectProcessorsGeometry.swift 幾何変換系（MAC-0028）
           MetalEffectProcessorsBlurMask.swift ぼかし／マスク系（MAC-0028）
           MetalEffectProcessorsShadowFill.swift 影／塗り／枠線系（MAC-0028）
+          MetalBrushFill.swift ブラシ塗り（BRUSH46: 型付きブラシを
+                               フレーム評価して ymm4BrushFragment の
+                               ユニフォームへ変換する MetalBrushFillRenderer。
+                               影／塗り／枠線の処理器と図形 Source が共有）
           MetalEffectProcessorsWarp.swift ワープ系（MAC-0028）
           MetalEffectProcessorsInOut.swift イン／アウト系（MAC-0028）
           MetalEffectProcessorsRandomRepeat.swift ランダム／反復系

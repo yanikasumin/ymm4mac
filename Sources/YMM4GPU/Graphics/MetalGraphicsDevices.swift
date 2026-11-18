@@ -27,6 +27,8 @@ public final class MetalGraphicsDevices {
     let mosaicPipeline: MTLComputePipelineState
     /// ワープ系エフェクトのパス（MAC-0028: アルファマスク・色収差・タイリング）。
     let warpPipeline: MTLRenderPipelineState
+    /// ブラシ塗りのパス（BRUSH46: グラデーション・パターン・ビットマップ）。
+    let brushPipeline: MTLRenderPipelineState
     /// 合成系エフェクトのパス（MAC-0028: 影・塗り・枠線・複写反転）。
     let compositePipeline: MTLRenderPipelineState
     /// モルフォロジーのコンピュートカーネル（MAC-0028）。
@@ -37,6 +39,8 @@ public final class MetalGraphicsDevices {
     let borderSampler: MTLSamplerState
     /// 範囲外を鏡像として読むサンプラ（ぼかしの Hard 境界用）。
     let mirrorSampler: MTLSamplerState
+    /// 範囲外を繰り返しとして読むサンプラ（ビットマップブラシの Wrap 用）。
+    let repeatSampler: MTLSamplerState
 
     /// 1×1 完全透明のテクスチャ（読み込み失敗時の代替・空出力の実体）。
     public let transparentTexture: MTLTexture
@@ -63,6 +67,7 @@ public final class MetalGraphicsDevices {
               let blurFunction = library.makeFunction(name: "ymm4BlurFragment"),
               let mosaicFunction = library.makeFunction(name: "ymm4MosaicKernel"),
               let warpFunction = library.makeFunction(name: "ymm4WarpFragment"),
+              let brushFunction = library.makeFunction(name: "ymm4BrushFragment"),
               let compositeFunction = library.makeFunction(name: "ymm4CompositeFragment"),
               let morphologyFunction = library.makeFunction(name: "ymm4MorphologyKernel")
         else { return nil }
@@ -118,6 +123,7 @@ public final class MetalGraphicsDevices {
               let blur = makeEffectPipeline(fragment: blurFunction),
               let mosaic = try? device.makeComputePipelineState(function: mosaicFunction),
               let warp = makeEffectPipeline(fragment: warpFunction),
+              let brush = makeEffectPipeline(fragment: brushFunction),
               let composite = makeEffectPipeline(fragment: compositeFunction),
               let morphology = try? device.makeComputePipelineState(function: morphologyFunction)
         else { return nil }
@@ -125,6 +131,7 @@ public final class MetalGraphicsDevices {
         blurPipeline = blur
         mosaicPipeline = mosaic
         warpPipeline = warp
+        brushPipeline = brush
         compositePipeline = composite
         morphologyPipeline = morphology
 
@@ -156,10 +163,12 @@ public final class MetalGraphicsDevices {
             return device.makeSamplerState(descriptor: descriptor)
         }
         guard let border = makeBorderSampler(address: .clampToBorderColor),
-              let mirror = makeBorderSampler(address: .mirrorRepeat)
+              let mirror = makeBorderSampler(address: .mirrorRepeat),
+              let repeatWrap = makeBorderSampler(address: .repeat)
         else { return nil }
         borderSampler = border
         mirrorSampler = mirror
+        repeatSampler = repeatWrap
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: 1, height: 1, mipmapped: false
@@ -729,6 +738,175 @@ public final class MetalGraphicsDevices {
                 for (int x = x0; x < x1; x++) {
                     output.write(average, uint2(uint(x), uint(y)));
                 }
+            }
+        }
+
+        // ブラシ塗り（BRUSH46）。本家の D2D ブラシ（グラデーション・
+        // パターン・ビットマップ）を平面座標で解析的に評価する。
+        // 幾何の根拠は MetalBrushFill.swift のコメントに記す。
+        // mode: 0=線形グラデーション, 1=放射グラデーション,
+        //       2=市松, 3=ドット, 4=格子線, 5=ビットマップ
+        // グラデーションの分岐点は直色（非 Premultiplied）で渡し、
+        // 成分線形補間（本家の Gamma.StandardRgb = 成分線形空間での
+        // 補間）の後に Premultiplied 化する。パターン色は Premultiplied
+        // で渡す。
+        // pointA/pointB: 線形 = 始点/終点、放射 = 中心/焦点。
+        // invA/invC/invT: パターン座標への逆変換
+        //   q = (invA.x・px + invC.x・py + invT.x,
+        //        invA.y・px + invC.y・py + invT.y)。
+        // pattern: 市松 = (セル寸法, 0, 0, 0)、ドット = (間隔, 半径, 0, 0)、
+        //   格子線 = (タイル幅, タイル高さ, 線の太さ, 0)。
+        struct BrushUniforms {
+            float2 outputOrigin;
+            float2 outputSize;
+            float2 pointA;
+            float2 pointB;
+            float2 radii;
+            float2 invA;
+            float2 invC;
+            float2 invT;
+            float4 color1;
+            float4 color2;
+            float4 pattern;
+            uint mode;
+            uint extendMode;
+            uint stopCount;
+            float pad0;
+        };
+
+        float ymm4BrushExtend(float t, uint extendMode) {
+            if (extendMode == 1) {
+                // Wrap
+                return t - floor(t);
+            }
+            if (extendMode == 2) {
+                // Mirror（三角波）
+                float m = fmod(fabs(t), 2.0);
+                return m <= 1.0 ? m : 2.0 - m;
+            }
+            return clamp(t, 0.0, 1.0);
+        }
+
+        float4 ymm4BrushGradient(
+            float t,
+            constant BrushUniforms &uniforms,
+            constant float4 *stopColors,
+            constant float *stopOffsets
+        ) {
+            uint count = uniforms.stopCount;
+            if (count == 0) {
+                return float4(0.0);
+            }
+            float4 straight = stopColors[count - 1];
+            if (count > 1) {
+                float et = ymm4BrushExtend(t, uniforms.extendMode);
+                if (et <= stopOffsets[0]) {
+                    straight = stopColors[0];
+                } else if (et < stopOffsets[count - 1]) {
+                    for (uint i = 0; i + 1 < count; i++) {
+                        if (et >= stopOffsets[i] && et <= stopOffsets[i + 1]) {
+                            float span = stopOffsets[i + 1] - stopOffsets[i];
+                            float f = span > 0.0 ? (et - stopOffsets[i]) / span : 0.0;
+                            straight = mix(stopColors[i], stopColors[i + 1], f);
+                            break;
+                        }
+                    }
+                }
+            }
+            return float4(straight.rgb * straight.a, straight.a);
+        }
+
+        fragment float4 ymm4BrushFragment(
+            VertexOut in [[stage_in]],
+            texture2d<float> tile [[texture(0)]],
+            sampler tileSampler [[sampler(0)]],
+            constant BrushUniforms &uniforms [[buffer(0)]],
+            constant float4 *stopColors [[buffer(1)]],
+            constant float *stopOffsets [[buffer(2)]]
+        ) {
+            float2 point = uniforms.outputOrigin + in.uv * uniforms.outputSize;
+            float2 q = float2(
+                uniforms.invA.x * point.x + uniforms.invC.x * point.y + uniforms.invT.x,
+                uniforms.invA.y * point.x + uniforms.invC.y * point.y + uniforms.invT.y);
+            switch (uniforms.mode) {
+                case 0: {
+                    // 線形: t = (p − A)・(B − A) / |B − A|^2。
+                    float2 axis = uniforms.pointB - uniforms.pointA;
+                    float denom = dot(axis, axis);
+                    if (denom <= 0.0) {
+                        // 始点=終点（縮退）。本家の D2D はグラデーション
+                        // 軸が潰れた場合に終端色で塗る。
+                        if (uniforms.stopCount == 0) {
+                            return float4(0.0);
+                        }
+                        float4 last = stopColors[uniforms.stopCount - 1];
+                        return float4(last.rgb * last.a, last.a);
+                    }
+                    float t = dot(point - uniforms.pointA, axis) / denom;
+                    return ymm4BrushGradient(t, uniforms, stopColors, stopOffsets);
+                }
+                case 1: {
+                    // 放射: 楕円族 center(t) = F + t・(C − F)、
+                    // radii(t) = t・(rx, ry) が q を通る t を二次方程式で解く。
+                    float2 radii = uniforms.radii;
+                    if (radii.x <= 0.0 || radii.y <= 0.0 || uniforms.stopCount == 0) {
+                        if (uniforms.stopCount == 0) {
+                            return float4(0.0);
+                        }
+                        float4 last = stopColors[uniforms.stopCount - 1];
+                        return float4(last.rgb * last.a, last.a);
+                    }
+                    float2 du = q - uniforms.pointB;
+                    float2 dc = uniforms.pointA - uniforms.pointB;
+                    float2 r2 = radii * radii;
+                    float a = (dc.x * dc.x) / r2.x + (dc.y * dc.y) / r2.y - 1.0;
+                    float b = -2.0 * ((du.x * dc.x) / r2.x + (du.y * dc.y) / r2.y);
+                    float c = (du.x * du.x) / r2.x + (du.y * du.y) / r2.y;
+                    float t;
+                    if (fabs(a) < 1e-6) {
+                        t = fabs(b) > 1e-6 ? -c / b : 0.0;
+                    } else {
+                        float disc = max(b * b - 4.0 * a * c, 0.0);
+                        float sq = sqrt(disc);
+                        float t1 = (-b + sq) / (2.0 * a);
+                        float t2 = (-b - sq) / (2.0 * a);
+                        t = max(t1, t2);
+                    }
+                    return ymm4BrushGradient(t, uniforms, stopColors, stopOffsets);
+                }
+                case 2: {
+                    // 市松: セル寸法で割った床の和のパリティ。
+                    float size = max(uniforms.pattern.x, 1.0);
+                    float cell = floor(q.x / size) + floor(q.y / size);
+                    return (int(cell) & 1) != 0 ? uniforms.color2 : uniforms.color1;
+                }
+                case 3: {
+                    // ドット: タイル中心からの距離で円の内外。
+                    float span = max(uniforms.pattern.x, 1.0);
+                    float2 local = q - span * floor(q / span);
+                    float d = length(local - span * 0.5);
+                    return d <= uniforms.pattern.y ? uniforms.color1 : uniforms.color2;
+                }
+                case 4: {
+                    // 格子線: タイル境界からの最短距離が太さの半分未満。
+                    float w = max(uniforms.pattern.x, 1.0);
+                    float h = max(uniforms.pattern.y, 1.0);
+                    float fx = q.x - w * floor(q.x / w);
+                    float fy = q.y - h * floor(q.y / h);
+                    float edge = min(min(fx, w - fx), min(fy, h - fy));
+                    return edge < uniforms.pattern.z * 0.5
+                        ? uniforms.color1 : uniforms.color2;
+                }
+                case 5: {
+                    // ビットマップ: q はビットマップの画素座標。
+                    float2 size = float2(tile.get_width(), tile.get_height());
+                    if (size.x <= 0.0 || size.y <= 0.0) {
+                        return float4(0.0);
+                    }
+                    return tile.sample(tileSampler, q / size);
+                }
+                default:
+                    return float4(0.0);
             }
         }
         """

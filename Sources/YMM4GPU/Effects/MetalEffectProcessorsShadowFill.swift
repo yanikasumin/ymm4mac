@@ -3,7 +3,7 @@ import Foundation
 import Metal
 import YMM4Core
 
-// MARK: - 影・塗り・枠線系（単色ブラシのみ）
+// MARK: - 影・塗り・枠線系（ブラシ全般。BRUSH46）
 
 /// 角丸矩形の塗りをテクスチャへ描く（FillBackground の下地用）。
 /// 図形シェーダ（SDF）の全面塗りを使い、`outputBounds` を張る
@@ -94,13 +94,13 @@ func renderRoundedRectFill(
 }
 
 /// 影。本家 `ShadowEffect`。
-/// 連鎖: シルエット（白 × 入力α）をブラシでマスク（単色ブラシでは
-/// ブラシ色 × 入力α と等しい）→ ガウスぼかし σ = Blur（BorderMode は
-/// 未設定のため Soft とする。記録）→ 回転（中心は IsRotateAtCenter で
-/// 境界中心、それ以外は原点）・拡縮 Zoom/100 ・平行移動 (X, Y) →
+/// 連鎖: シルエット（ブラシ塗り × 入力α。本家は入力境界でブラシを
+/// 塗って AlphaMask する。単色ブラシではブラシ色 × 入力α と等しい）
+/// → ガウスぼかし σ = Blur（BorderMode は未設定のため Soft と
+/// する。記録）→ 回転（中心は IsRotateAtCenter で境界中心、
+/// それ以外は原点）・拡縮 Zoom/100 ・平行移動 (X, Y) →
 /// 不透明度 Opacity/100 → 原画の下へ SourceOver。
-/// 単色ブラシ以外（グラデーション等）は素通し（ブラシサブシステムが
-/// 差し替え点）。
+/// GPU で描けないブラシ（グラデーションメッシュ・ノイズ等）は素通し。
 public final class MetalShadowProcessor: MetalEffectProcessor {
     private let definition: ShadowEffectDefinition
 
@@ -110,14 +110,24 @@ public final class MetalShadowProcessor: MetalEffectProcessor {
     }
 
     override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
-        guard let brushColor = solidBrushColor(definition.brush) else {
+        // シルエット（ブラシ塗り × 入力α）。本家がブラシの Update へ
+        // 渡す境界は影の出力境界 = 入力境界。
+        let silhouette: MetalImage
+        if let brushColor = solidBrushColor(definition.brush) {
+            silhouette = try renderWarp(
+                input: input, mask: nil, outputBounds: input.bounds, mode: 5,
+                param0: premultipliedVector(brushColor)
+            )
+        } else if let fill = try brushFillImage(
+            brush: definition.brush, patternBounds: input.bounds,
+            outputBounds: input.bounds, description: description
+        ) {
+            silhouette = try renderWarp(
+                input: fill, mask: input, outputBounds: input.bounds, mode: 3
+            )
+        } else {
             return input
         }
-        // シルエット（ブラシ色 × 入力α）。
-        let silhouette = try renderWarp(
-            input: input, mask: nil, outputBounds: input.bounds, mode: 5,
-            param0: premultipliedVector(brushColor)
-        )
         let blur = evaluate(definition.blur, description)
         let blurred = try renderGaussianBlurred(
             input: silhouette, sigma: blur, hardBorder: false
@@ -171,9 +181,6 @@ public final class MetalFillBackgroundProcessor: MetalEffectProcessor {
     }
 
     override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
-        guard let brushColor = solidBrushColor(definition.brush) else {
-            return input
-        }
         let width = input.bounds.right - input.bounds.left
         let height = input.bounds.bottom - input.bounds.top
         guard width > 1, height > 1 else { return input }
@@ -188,11 +195,30 @@ public final class MetalFillBackgroundProcessor: MetalEffectProcessor {
             right: max(expanded.left, expanded.right), bottom: max(expanded.top, expanded.bottom)
         )
         let outputBounds = input.bounds.union(fillRect)
-        guard let fill = try renderRoundedRectFill(
-            context: context, rect: fillRect,
-            radius: evaluate(definition.round, description),
-            color: brushColor, outputBounds: outputBounds
-        ) else { return nil }
+        let round = evaluate(definition.round, description)
+        // 塗り。本家がブラシの Update へ渡す境界は塗り矩形（正規化済み）。
+        // 単色以外はブラシ塗りを角丸の被覆率で切り取る。
+        let fill: MetalImage
+        if let brushColor = solidBrushColor(definition.brush) {
+            guard let solid = try renderRoundedRectFill(
+                context: context, rect: fillRect, radius: round,
+                color: brushColor, outputBounds: outputBounds
+            ) else { return nil }
+            fill = solid
+        } else if let pattern = try brushFillImage(
+            brush: definition.brush, patternBounds: fillRect,
+            outputBounds: outputBounds, description: description
+        ) {
+            guard let coverage = try renderRoundedRectFill(
+                context: context, rect: fillRect, radius: round,
+                color: .white, outputBounds: outputBounds
+            ) else { return nil }
+            fill = try renderWarp(
+                input: pattern, mask: coverage, outputBounds: outputBounds, mode: 3
+            )
+        } else {
+            return input
+        }
         let opacity = evaluate(definition.opacity, description) / 100
         if definition.isBackgroundOnly {
             return try renderComposite(
@@ -208,9 +234,10 @@ public final class MetalFillBackgroundProcessor: MetalEffectProcessor {
 }
 
 /// 前景塗りつぶし。本家 `FillForegroundEffect`。
-/// ブラシ色を入力境界で塗り、入力αでマスク（AlphaMask）し、
+/// ブラシを入力境界で塗り、入力αでマスク（AlphaMask）し、
 /// 不透明度 Opacity/100 を掛ける。IsBrushOnly でなければ入力の上へ
 /// 通常合成する（混合モード通常以外は通常合成へ落とす。既存方針）。
+/// 本家がブラシの Update へ渡す境界は入力境界。
 public final class MetalFillForegroundProcessor: MetalEffectProcessor {
     private let definition: FillForegroundEffectDefinition
 
@@ -220,13 +247,21 @@ public final class MetalFillForegroundProcessor: MetalEffectProcessor {
     }
 
     override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
-        guard let brushColor = solidBrushColor(definition.brush) else {
+        let fill: MetalImage
+        if let brushColor = solidBrushColor(definition.brush) {
+            guard let solid = try renderRoundedRectFill(
+                context: context, rect: input.bounds, radius: 0,
+                color: brushColor, outputBounds: input.bounds
+            ) else { return nil }
+            fill = solid
+        } else if let pattern = try brushFillImage(
+            brush: definition.brush, patternBounds: input.bounds,
+            outputBounds: input.bounds, description: description
+        ) {
+            fill = pattern
+        } else {
             return input
         }
-        guard let fill = try renderRoundedRectFill(
-            context: context, rect: input.bounds, radius: 0,
-            color: brushColor, outputBounds: input.bounds
-        ) else { return nil }
         let masked = try renderWarp(
             input: fill, mask: input, outputBounds: input.bounds, mode: 3
         )
@@ -263,9 +298,6 @@ public final class MetalFrameLineProcessor: MetalEffectProcessor {
     }
 
     override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
-        guard let brushColor = solidBrushColor(definition.brush) else {
-            return input
-        }
         let bounds = input.bounds
         guard bounds.right - bounds.left > 1 else { return input }
         let left = Double(Int(evaluate(definition.left, description)))
@@ -321,9 +353,57 @@ public final class MetalFrameLineProcessor: MetalEffectProcessor {
         guard !rects.isEmpty, thickness > 0 else { return input }
         var outputBounds = bounds
         for rect in rects { outputBounds = outputBounds.union(rect) }
-        guard let lineImage = try renderSolidRects(
-            rects: rects, color: brushColor, outputBounds: outputBounds
-        ) else { return nil }
+        // 本家がブラシの Update へ渡す境界は種別ごとの帯の外接矩形
+        // （全方向のときは余白＋太さで広げた矩形 = 出力境界と一致）。
+        let patternBounds: RectF
+        switch type {
+        case .top:
+            patternBounds = RectF(
+                left: bounds.left - left, top: bounds.top - top - thickness,
+                right: bounds.right + right, bottom: bounds.top - top
+            )
+        case .bottom:
+            patternBounds = RectF(
+                left: bounds.left - left, top: bounds.bottom + bottom,
+                right: bounds.right + right, bottom: bounds.bottom + bottom + thickness
+            )
+        case .left:
+            patternBounds = RectF(
+                left: bounds.left - left - thickness, top: bounds.top - top,
+                right: bounds.left - left, bottom: bounds.bottom + bottom
+            )
+        case .right:
+            patternBounds = RectF(
+                left: bounds.right + right, top: bounds.top - top,
+                right: bounds.right + right + thickness, bottom: bounds.bottom + bottom
+            )
+        case .all, .unknown:
+            patternBounds = RectF(
+                left: bounds.left - left - thickness, top: bounds.top - top - thickness,
+                right: bounds.right + right + thickness,
+                bottom: bounds.bottom + bottom + thickness
+            )
+        }
+        // 帯の塗り。単色以外はブラシ塗りを帯の被覆率で切り取る。
+        let lineImage: MetalImage
+        if let brushColor = solidBrushColor(definition.brush) {
+            guard let solid = try renderSolidRects(
+                rects: rects, color: brushColor, outputBounds: outputBounds
+            ) else { return nil }
+            lineImage = solid
+        } else if let pattern = try brushFillImage(
+            brush: definition.brush, patternBounds: patternBounds,
+            outputBounds: outputBounds, description: description
+        ) {
+            guard let coverage = try renderSolidRects(
+                rects: rects, color: .white, outputBounds: outputBounds
+            ) else { return nil }
+            lineImage = try renderWarp(
+                input: pattern, mask: coverage, outputBounds: outputBounds, mode: 3
+            )
+        } else {
+            return input
+        }
         let opacity = evaluate(definition.opacity, description) / 100
         if definition.renderPlacement == .front {
             return try renderComposite(
