@@ -777,13 +777,25 @@ public final class GradientMeshBrushParameter {
         rebuilt.reserveCapacity(h * v)
         for row in 0..<v {
             for column in 0..<h {
-                let oldIndex = row * oldHorizontal + column
-                if row < oldVertical, column < oldHorizontal,
-                   oldPoints.indices.contains(oldIndex) {
-                    rebuilt.append(oldPoints[oldIndex])
-                } else {
-                    rebuilt.append(GradientMeshPointValue())
+                // 旧寸法は decode で JSON の値をそのまま採用するため
+                // 保証がなく、極端な値（Int.max 等）では素朴な
+                // `row * oldHorizontal + column` がオーバーフローで
+                // trap する。範囲内であることを先に確認し、添字計算は
+                // オーバーフロー報告付き演算で行う。不正な旧寸法の位置は
+                // 既存点を引かず既定点で埋め、新寸法へ復元する
+                // （R23-117-01）。
+                var reused: GradientMeshPointValue?
+                if row < oldVertical, column < oldHorizontal {
+                    let (product, multiplyOverflow) =
+                        row.multipliedReportingOverflow(by: oldHorizontal)
+                    let (oldIndex, addOverflow) =
+                        product.addingReportingOverflow(column)
+                    if !multiplyOverflow, !addOverflow,
+                       oldPoints.indices.contains(oldIndex) {
+                        reused = oldPoints[oldIndex]
+                    }
                 }
+                rebuilt.append(reused ?? GradientMeshPointValue())
             }
         }
         horizontalCount = h

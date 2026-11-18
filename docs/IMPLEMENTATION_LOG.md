@@ -1601,3 +1601,9 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 #### FXMETA-R22 — 第22ラウンド指摘への処分（PR #117 へ追加）
 
 - **R22-117-01（P2、コレクション挿入/削除が無変更でも成功を報告する）**: `PropertyAccess.collection` の `insert` / `remove` クロージャの戻り値を `Bool` へ変更し、「状態が実際に変わったか」を返す契約にした（`PropertyDescriptor.collection` ファクトリと `insertCollectionElement` / `removeCollectionElement(at:)` も連動）。各ビルダの処分: グラデーションメッシュの Points は行追加が上限50行へ丸め込まれた場合と、最小2行での行削除・範囲外削除で false を返す。グラデーションの Stops、メッシュ変形の Points、モーショントラッキングの Rects は範囲外削除で false を返す（追加と通常の削除は true）。UI（`CollectionRowView`）は true の場合にだけ世代カウンタの増加と `onEdited` 通知を行う。試験はメッシュの最小行数での削除・最大行数での追加が false で状態不変であること、上限・下限までの通常操作が true であること、Stops とメッシュ変形 Points の範囲外削除が false であることを固定した。
+
+#### FXMETA-R23 — 第23ラウンド指摘への処分（PR #117 へ追加）
+
+- **R23-117-01（P2、不正な既存格子寸法で resizeGrid がオーバーフローする）**: `GradientMeshBrushParameter.decode` は JSON の HorizontalCount / VerticalCount をそのまま採用するため、読み込み済みの旧寸法には範囲の保証がない。従来の `resizeGrid` は `row * oldHorizontal + column` を無検査で計算しており、oldHorizontal=Int.max 等の壊れた保存ファイル由来の値で乗算・加算がオーバーフローして trap し得た（`indices.contains` の検査は添字計算の後だった）。処分: 旧添字を求める前に行・列が旧寸法の範囲内であることを確認し、添字計算を `multipliedReportingOverflow` / `addingReportingOverflow` へ置き換えた。オーバーフローする位置は既存点を引かず既定点で埋め、正常な新寸法へ復元する（例外・trap で落とさない）。decode 側の丸めは行わない（正当な範囲の寸法・点列のラウンドトリップ保持を優先し、安全化は resizeGrid 側に集約）。
+
+検証: 新規テスト2件を BrushParameterTests へ追加し Mac で合格 — `testGradientMeshResizeGridWithCorruptOldDimensions`（horizontalCount=Int.max・verticalCount=2・点列2件で resizeGrid が trap せず 3×3 へ復元され、旧添字が安全に求まる行0は既存点を保持し、オーバーフローする行は既定点で埋まる）と `testGradientMeshResizeGridPreservesPointsByPosition`（2×2→3×2 で既存点が (行, 列) 位置どおり保持される回帰）。あわせて BrushParameterTests 全18件、EffectPropertyMetadataTests 16件、PropertyMetadataTests 17件が Mac で全合格（いずれも方式名フィルタで実行）。
