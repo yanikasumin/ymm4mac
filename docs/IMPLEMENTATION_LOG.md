@@ -1194,6 +1194,20 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **未解決。** Seed と本家の GetHashCode の対応（対応付け自体が不可能で、散らばりの再現性は本家にも無い）。Delaunay の非凸四角形・境界での本家 winding 判定との等価性（参照実装同士の一致までで、本家実出力との比較は Seed 不定のため実施不能）。矩形の5点平均への是正は別件。
 
+#### FXMETA — エフェクトプロパティメタデータの全種別化（IMPLEMENTED / VERIFIED）
+
+**何を実装したか。** プロパティエディタが編集 UI を生成するためのメタデータ（`EffectPropertyMetadata`、MAC-0029 で基盤と代表3種のみ実装済み）を、レジストリ登録の内蔵エフェクト全95種に揃えた。従来は拡大縮小・不透明度・描画位置の3種だけが固有パラメータの記述子を持ち、残り92種は共通プロパティ（IsEnabled / Remark）のみだった。今回の追加は固有パラメータ記述子500件（全95種の合計は共通を除き509件）。
+
+**どこを変更したか。** `Sources/YMM4Core/Editing/EffectPropertyMetadata.swift`（本体の振り分けへ `specificDescriptors(for:)` の呼び出しを追加し、冒頭コメントを実態へ更新）、新規 `EffectPropertyMetadataCatalog.swift`（具象定義別の振り分け、列挙型の選択肢一覧、イージング専用経路）、新規カテゴリ別ビルダーファイル5件（`EffectPropertyMetadataDraw.swift` / `EffectPropertyMetadataGPUTransform.swift` / `EffectPropertyMetadataGPUColor.swift` / `EffectPropertyMetadataGPUShadowMask.swift` / `EffectPropertyMetadataGPUInOut.swift`、定義側のファイル編成に対応）、新規テスト `Tests/YMM4CoreTests/Editing/EffectPropertyMetadataTests.swift`（5件）。
+
+**どう実装したか。** 記述子の並びは各定義の保存形式のキー順（`encodeKnownFields` の並び、中間基底のキーは具象側の後に続く。本家ファイルの並びと一致）とした。表示名・グループは本家の各エフェクトクラスの `Display` 属性が指す `Texts` リソースの文言、数値範囲は本家の `Range` 属性（無ければスライダ属性の上下限）、列挙の選択肢は本家の列挙メンバの `Display` 属性の文言を使った。根拠が取れない表示名はプロパティ名そのままにする（従来方針どおり）。`EasingFamily` / `EasingMode` と `BillboardMode` は `HonkeEnum` に適合しないため、保存名への変換を定義層の既存変換（`effectHonkeName`、Billboard は定義の encode と同じ対応表）で行う専用経路をカタログに置いた。Billboard の未知 Mode 名は定義側に原文保持があるため読み取りでは原文を返し、書き込みは既知3値のみを対象とする（未知値を消す公開口が定義側に無いための制約。既知の値を選べば通常どおり反映される）。`TextureEffect.ContentOffset`（本家 `TimeSpan`）は記述子体系に時刻型が無いため、秒の数値として読み書きする（値の意味は同一。tick 単位の保持は定義側が担う）。
+
+**本家との差分。** 本家で `AutoGenerateField` により入れ子の専用エディタを生成する複合プロパティは、単一記述子の対象外とした（18件）: ブラシ（Shadow / InnerShadow / FillBackground / FillForeground / FrameLine の各 Brush、Outline の StrokeBrush、DisplacementMap の Brush）、DisplacementMap / NoiseColorShift / NoiseDisplacementMap の Transform、Noise 系3種の NoiseParameter、Mosaic の MosaicParameter、Mask の ShapeParameter、Gradient の Stops（色停止点列）、MeshDeformation の Points（点列）、MotionTracking の Path。これらは本家でも単一フィールドでは編集しない対象であり、値そのものは定義層で保持されている（MosaicParameter は型付き、その他は生保持）。RepeatOpacity の IsCentering は本家では固定 false・保存対象外（`JsonIgnore`）のダミー上書きであるため対象外とした。本家の旧 API プロパティ（`[Obsolete]`、例: Sepia の Intensity、ChromaKey2 の Threshold、Gradient の ColorFrom / ColorTo）は定義層が保存キーとして持たないため、もともと対象外である。
+
+**検証。** 棚卸しの実数: 定義層は95種、メタデータ既存は3種、今回92種を追加し全95種が揃った。保存キーと本家プロパティの照合では、差分は全て旧 API プロパティ・decode 専用の互換キー（CenterPoint の Mode）・入れ子列挙の宣言として説明が付いた。Animation の既定値・最小・最大は本家 `new Animation(...)` の初期化子と264件照合し、不一致0。Blend の選択肢33件はアイテム側メタデータの既存一覧と集合一致。新規テスト5件（全95種の網羅＝記述子 ID 列と保存キーの一致、ID 一意性、対象外キーの不在、全記述子の書き込み往復、アニメーション既定値の範囲内確認）と既存 PropertyMetadataTests 17件が、Linux と Mac の双方で全合格（計22件・0失敗）。Mac 実機でルートパッケージのビルド成功・警告0。フルスイートは他作業と並行中のため未実施（対象テストのみ実行）。
+
+**未解決。** 対象外とした複合プロパティ18件を編集 UI から扱うには、記述子体系へ入れ子オブジェクト用の種別を足す設計判断が別途必要（現行体系の範囲では未確定）。数値プロパティのうち本家に `Range` もスライダ属性も無いものは範囲なし（無制限）とした。本家の `ShowPropertyEditorWhen`（条件付き表示、3件）に対応する仕組みは記述子体系に無いため、該当プロパティも常時表示の前提で記述した。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
