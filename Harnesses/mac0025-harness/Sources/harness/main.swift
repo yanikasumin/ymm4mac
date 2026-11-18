@@ -92,7 +92,7 @@ final class ComposerBox {
         timeline: Timeline, timelines: [Timeline],
         tachieFactory: (any MetalTachieRendererFactory)? = nil
     ) {
-        devices = MetalGraphicsDevices()!
+        devices = try! MetalGraphicsDevices()
         context = devices.makeContext(
             targetSize: PixelSize(
                 width: timeline.videoInfo.width, height: timeline.videoInfo.height

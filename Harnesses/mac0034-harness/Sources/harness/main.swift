@@ -148,7 +148,7 @@ final class ComposerBox {
     let composer: TimelineComposer
 
     init(timeline: Timeline, timelines: [Timeline]? = nil) {
-        devices = MetalGraphicsDevices()!
+        devices = try! MetalGraphicsDevices()
         context = devices.makeContext(
             targetSize: PixelSize(
                 width: timeline.videoInfo.width, height: timeline.videoInfo.height

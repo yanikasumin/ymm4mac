@@ -33,7 +33,7 @@ func check(_ condition: Bool, _ label: String) {
     if !condition { failures += 1 }
 }
 
-let devices = MetalGraphicsDevices()!
+let devices = try! MetalGraphicsDevices()
 let context = devices.makeContext()
 
 // 入力: 64×64 のテクスチャを中心原点の境界で登録する。
