@@ -8,9 +8,11 @@ import YMM4Core
 /// 図形アイテムの Source。本家 ShapeSource（＋ GeometryShapeParameterSource）
 /// に対応する。
 ///
-/// MAC-0008 で型付け済みの RectangleShapeParameter と単色ブラシだけを
-/// 対象とし、それ以外のパラメータ（生保持）は透明を返す（未対応として
-/// 台帳に記録）。評価は本家 GetSize の式どおり:
+/// MAC-0008 で型付け済みの RectangleShapeParameter を対象とし、
+/// それ以外のパラメータ（生保持）は透明を返す（未対応として
+/// 台帳に記録）。塗りは単色ブラシに加え、BRUSH46 で型付きブラシ
+/// （グラデーション・パターン・ビットマップ）を GPU 塗りで描く。
+/// GPU で描けないブラシは白で代用する。評価は本家 GetSize の式どおり:
 /// - WidthHeight: 幅 = Width、高さ = Height
 /// - SizeAspect: 幅 = Size × (1 − max(0, AspectRate/100))、
 ///   高さ = Size × (1 + min(0, AspectRate/100))
@@ -30,12 +32,19 @@ public final class MetalShapeSource: Source {
     private var renderedTexture: MTLTexture?
     private var renderedKey: RenderKey?
 
+    /// 図形の塗り指定。再描画の判定キーに使うため、ブラシは
+    /// フレーム評価済みの仕様（BrushFillSpec）で保持する。
+    enum ShapeFill: Equatable {
+        case solid(Color)
+        case brush(BrushFillSpec)
+    }
+
     struct RenderKey: Equatable {
         var width: Double
         var height: Double
         var round: Double
         var strokeThickness: Double
-        var color: Color
+        var fill: ShapeFill
     }
 
     /// 図形テクスチャの寸法上限。
@@ -59,10 +68,13 @@ public final class MetalShapeSource: Source {
         let size = Self.evaluateSize(parameter: parameter, frame: frame, length: length, fps: fps)
         let round = parameter.round.value(atFrame: frame, length: length, fps: fps)
         let stroke = parameter.strokeThickness.value(atFrame: frame, length: length, fps: fps)
-        let color = Self.fillColor(for: parameter)
         let key = RenderKey(
             width: size.width, height: size.height,
-            round: round, strokeThickness: stroke, color: color
+            round: round, strokeThickness: stroke,
+            fill: Self.fill(
+                for: parameter, width: size.width, height: size.height,
+                frame: frame, length: length, fps: fps
+            )
         )
         if renderedKey != key {
             renderedKey = key
@@ -130,13 +142,29 @@ public final class MetalShapeSource: Source {
         ensureOutputs()
     }
 
-    /// 塗りの色。単色ブラシ以外のブラシは未対応のため白で代用する
-    /// （本家の既定ブラシも単色・白）。
-    static func fillColor(for parameter: RectangleShapeParameter) -> Color {
-        if case .solidColor(let solid) = parameter.brush.parameter {
-            return solid.color
+    /// 塗りの決定。単色ブラシはその色、GPU で描ける型付きブラシは
+    /// 評価済み仕様、それ以外（グラデーションメッシュ・ノイズ・
+    /// 生保持）は白で代用する（本家の既定ブラシも単色・白）。
+    /// 本家がブラシの Update へ渡す境界は図形の境界。
+    static func fill(
+        for parameter: RectangleShapeParameter,
+        width: Double, height: Double,
+        frame: Int, length: Int, fps: Int
+    ) -> ShapeFill {
+        if parameter.brush.nonObjectRawValue == nil,
+           case .solidColor(let solid) = parameter.brush.parameter {
+            return .solid(solid.color)
         }
-        return .white
+        let bounds = RectF(
+            left: -width / 2, top: -height / 2, right: width / 2, bottom: height / 2
+        )
+        if let spec = MetalBrushFillRenderer.spec(
+            brush: parameter.brush, patternBounds: bounds,
+            frame: frame, length: length, fps: fps
+        ) {
+            return .brush(spec)
+        }
+        return .solid(.white)
     }
 
     /// パラメータを評価して図形テクスチャを描く（EffectItem のマスク
@@ -153,7 +181,10 @@ public final class MetalShapeSource: Source {
             strokeThickness: parameter.strokeThickness.value(
                 atFrame: frame, length: length, fps: fps
             ),
-            color: fillColor(for: parameter)
+            fill: fill(
+                for: parameter, width: size.width, height: size.height,
+                frame: frame, length: length, fps: fps
+            )
         )
         guard let texture = rasterize(context: context, key: key) else { return nil }
         return (texture, size.width, size.height)
@@ -166,6 +197,41 @@ public final class MetalShapeSource: Source {
     }
 
     static func rasterize(context: MetalGraphicsContext, key: RenderKey) -> MTLTexture? {
+        switch key.fill {
+        case .solid(let color):
+            return rasterizeSolid(context: context, key: key, color: color)
+        case .brush(let spec):
+            // 被覆率（白で描いた図形）をマスクにブラシ塗りを切り取る。
+            guard let coverage = rasterizeSolid(context: context, key: key, color: .white)
+            else { return nil }
+            let bounds = RectF(
+                left: -key.width / 2, top: -key.height / 2,
+                right: key.width / 2, bottom: key.height / 2
+            )
+            let renderer = MetalBrushFillRenderer(context: context)
+            do {
+                guard let fill = try renderer.render(spec: spec, outputBounds: bounds)
+                else {
+                    // 塗りが描けない場合（ビットマップ読み込み失敗等）は
+                    // 白の代用へ倒す（従来の未対応ブラシの代用方針）。
+                    return coverage
+                }
+                let masked = try renderer.maskedByAlpha(
+                    fill: fill,
+                    mask: MetalImage(texture: coverage, bounds: bounds)
+                )
+                return masked.texture
+            } catch {
+                return coverage
+            }
+        }
+    }
+
+    /// 図形を単色でテクスチャへ描き込む。完了まで待つ（合成全体が
+    /// 同期実行のため、この段も同期で確定させる）。
+    static func rasterizeSolid(
+        context: MetalGraphicsContext, key: RenderKey, color: Color
+    ) -> MTLTexture? {
         guard key.width > 0, key.height > 0 else { return nil }
         let width = max(1, min(Self.maxTextureDimension, Int(ceil(key.width))))
         let height = max(1, min(Self.maxTextureDimension, Int(ceil(key.height))))
@@ -208,7 +274,7 @@ public final class MetalShapeSource: Source {
             var aaScale: Float
             var color: SIMD4<Float>
         }
-        let alpha = Double(key.color.alpha) / 255
+        let alpha = Double(color.alpha) / 255
         let isFilled = key.strokeThickness
             > min(key.width, key.height) / 2 + 0.25
         var uniforms = ShapeUniforms(
@@ -217,9 +283,9 @@ public final class MetalShapeSource: Source {
             bandWidth: isFilled ? -1 : Float(key.strokeThickness),
             aaScale: Float(max(key.width / Double(width), key.height / Double(height))),
             color: SIMD4<Float>(
-                Float(Double(key.color.red) / 255 * alpha),
-                Float(Double(key.color.green) / 255 * alpha),
-                Float(Double(key.color.blue) / 255 * alpha),
+                Float(Double(color.red) / 255 * alpha),
+                Float(Double(color.green) / 255 * alpha),
+                Float(Double(color.blue) / 255 * alpha),
                 Float(alpha)
             )
         )

@@ -90,7 +90,7 @@ func measure(projectPath: String) {
         exit(2)
     }
     let timeline = project.timelines[0]
-    let devices = MetalGraphicsDevices()!
+    let devices = try! MetalGraphicsDevices()
     let context = devices.makeContext(
         targetSize: PixelSize(
             width: timeline.videoInfo.width, height: timeline.videoInfo.height
@@ -220,7 +220,7 @@ final class ChainBox {
     let composer: TimelineComposer
 
     init(image: MetalImage, effects: [PreservedObject]) {
-        devices = MetalGraphicsDevices()!
+        devices = try! MetalGraphicsDevices()
         context = devices.makeContext(targetSize: PixelSize(width: 64, height: 64))
         let timeline = Timeline()
         timeline.videoInfo = VideoInfo(fps: 30, hz: 44_100, width: 64, height: 64)
@@ -292,7 +292,7 @@ if let index = arguments.firstIndex(of: "--measure"), index + 1 < arguments.coun
 // 期待値は (28, 78, 103, 128)。旧ガードの素通しでは反転されず
 // (100, 50, 25, 128) 相当（最終描画で不透明度が適用される）になる。
 do {
-    let probe = MetalGraphicsDevices()!
+    let probe = try! MetalGraphicsDevices()
     let image = solidImage(
         devices: probe, r: 200, g: 100, b: 50, a: 255, opacity: 0.5
     )
@@ -317,7 +317,7 @@ do {
 // 下半分が黄 (255,255,0)。旧ガードの素通しでは配置が左右のままで
 // 反転もされない。
 do {
-    let probe = MetalGraphicsDevices()!
+    let probe = try! MetalGraphicsDevices()
     let texture = makeTexture(devices: probe, width: 64, height: 64) { x, _ in
         x < 32 ? (b: 0, g: 0, r: 255, a: 255) : (b: 255, g: 0, r: 0, a: 255)
     }
@@ -351,7 +351,7 @@ do {
 // 画面端は黒・白のまま。旧ガードではぼかしが効かず中心の両側は
 // 0 / 255 のままになる。
 do {
-    let probe = MetalGraphicsDevices()!
+    let probe = try! MetalGraphicsDevices()
     let texture = makeTexture(devices: probe, width: 64, height: 64) { x, _ in
         x < 32 ? (b: 0, g: 0, r: 0, a: 255) : (b: 255, g: 255, r: 255, a: 255)
     }
@@ -392,7 +392,7 @@ do {
 // 一様色のため中心の期待値はケース A と同じ (28, 78, 103, 128)。
 // 変換と不透明度が両方あっても実体化は1件として数えられる。
 do {
-    let probe = MetalGraphicsDevices()!
+    let probe = try! MetalGraphicsDevices()
     let image = solidImage(
         devices: probe, r: 200, g: 100, b: 50, a: 255,
         transform: Matrix4x4.createRotationZ(.pi / 4), opacity: 0.5
@@ -415,7 +415,7 @@ do {
 // ケース E: プレーンな入力 + Invert（回帰）。
 // 従来どおり反転が効き、実体化は発動しない。
 do {
-    let probe = MetalGraphicsDevices()!
+    let probe = try! MetalGraphicsDevices()
     let image = solidImage(devices: probe, r: 200, g: 100, b: 50, a: 255)
     let box = ChainBox(image: image, effects: [raw(InvertEffectDefinition())])
     let before = box.devices.materializedInputCount
@@ -438,7 +438,7 @@ do {
 // なる（旧ガードの素通しと同じ見た目だが、実体化済みであることが
 // カウンタで区別できる）。
 do {
-    let probe = MetalGraphicsDevices()!
+    let probe = try! MetalGraphicsDevices()
     let image = solidImage(
         devices: probe, r: 200, g: 100, b: 50, a: 255, opacity: 0.5
     )

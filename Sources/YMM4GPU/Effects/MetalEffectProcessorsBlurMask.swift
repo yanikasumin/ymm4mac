@@ -89,4 +89,139 @@ public final class MetalChromaticAberrationProcessor: MetalEffectProcessor {
     }
 }
 
+/// ハーフトーンのユニフォーム（MetalGraphics の HalfToneUniforms と一致）。
+struct HalfTonePassUniforms {
+    var inputPlane: SIMD4<Float>
+    var color: SIMD4<Float>
+    var inputOffset: SIMD2<Float>
+    var outputOrigin: SIMD2<Float>
+    var outputSize: SIMD2<Float>
+    var texelSize: SIMD2<Float>
+    var distance: Float
+    var size: Float
+    var strength: Float
+    var mode: Int32
+}
+
+/// ハーフトーンシャドウ。本家 `HalfToneShadowEffect`（Issue #45）。
+/// 連鎖（HalfToneShadowEffect.cs の実測）: ガウスぼかし σ = Blur →
+/// 単色化（色は白 (1,1,1,1)、Strength = 1、KeepBrightness は
+/// アイテムのフラグ）→ HalfTone カスタムシェーダ（Distance は
+/// そのまま、Size = Size/100、Strength = Strength/100、Color は
+/// Premultiplied、Mode = Layout。出力境界は各辺
+/// ceil((Distance/2)・√2) 拡大）→ 不透明度 Opacity/100 →
+/// 回転（中心は IsRotateAtCenter で入力境界中心、それ以外は原点）
+/// ＋平行移動 (X, Y) → 原画の下へ SourceOver。
+/// 配置が unknown の場合は素通し。恒等変形のパスは省略する。
+public final class MetalHalfToneShadowProcessor: MetalEffectProcessor {
+    private let definition: HalfToneShadowEffectDefinition
+
+    public init(context: MetalGraphicsContext, definition: HalfToneShadowEffectDefinition) {
+        self.definition = definition
+        super.init(context: context)
+    }
+
+    override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
+        let mode: Int32
+        switch definition.layout {
+        case .triangle: mode = 0
+        case .rectangle: mode = 1
+        case .rhombus: mode = 2
+        case .unknown: return input
+        }
+        let distance = evaluate(definition.distance, description)
+        guard distance > 0 else { return input }
+        var chain = input
+        let blur = evaluate(definition.blur, description)
+        if blur > 0 {
+            chain = try renderGaussianBlurred(input: chain, sigma: blur, hardBorder: false)
+        }
+        chain = try renderColorEffect(
+            input: chain,
+            uniforms: ColorEffectUniforms(
+                mode: 1,
+                param0: premultipliedVector(.white),
+                param1: SIMD4<Float>(1, definition.keepBrightness ? 1 : 0, 1, 0)
+            )
+        )
+        let expand = ceil(distance / 2 * sqrt(2.0))
+        let halftoneBounds = RectF(
+            left: chain.bounds.left - expand, top: chain.bounds.top - expand,
+            right: chain.bounds.right + expand, bottom: chain.bounds.bottom + expand
+        )
+        var uniforms = HalfTonePassUniforms(
+            inputPlane: planeVector(chain),
+            color: premultipliedVector(definition.color),
+            inputOffset: SIMD2<Float>(
+                Float(chain.planeOffset.x), Float(chain.planeOffset.y)),
+            outputOrigin: SIMD2<Float>(
+                Float(halftoneBounds.left), Float(halftoneBounds.top)),
+            outputSize: SIMD2<Float>(
+                Float(halftoneBounds.right - halftoneBounds.left),
+                Float(halftoneBounds.bottom - halftoneBounds.top)),
+            texelSize: SIMD2<Float>(
+                1 / Float(chain.texture.width), 1 / Float(chain.texture.height)),
+            distance: Float(distance),
+            size: Float(evaluate(definition.size, description) / 100),
+            strength: Float(evaluate(definition.strength, description) / 100),
+            mode: mode
+        )
+        let halftoneTexture = try makeTexture(
+            width: Int(ceil(halftoneBounds.right - halftoneBounds.left)),
+            height: Int(ceil(halftoneBounds.bottom - halftoneBounds.top)),
+            usage: [.renderTarget, .shaderRead]
+        )
+        try executeRenderPass(
+            output: halftoneTexture, pipeline: context.devices.halftonePipeline
+        ) { encoder in
+            encoder.setFragmentTexture(chain.texture, index: 0)
+            // 入力境界の外は透明（D2D の画像意味論）。clampToEdge では
+            // 縁の色が外側へ漏れてドットが画像外へ伸びる。
+            encoder.setFragmentSamplerState(context.devices.borderSampler, index: 0)
+            encoder.setFragmentBytes(
+                &uniforms, length: MemoryLayout<HalfTonePassUniforms>.size, index: 0
+            )
+        }
+        chain = MetalImage(texture: halftoneTexture, bounds: halftoneBounds)
+        let opacity = evaluate(definition.opacity, description) / 100
+        if opacity != 1 {
+            chain = try renderColorEffect(
+                input: chain,
+                uniforms: ColorEffectUniforms(
+                    mode: 7,
+                    param0: SIMD4<Float>(
+                        Float(opacity), Float(opacity), Float(opacity), Float(opacity)),
+                    param1: .zero
+                )
+            )
+        }
+        let angle = evaluate(definition.angle, description)
+        let x = evaluate(definition.x, description)
+        let y = evaluate(definition.y, description)
+        if angle != 0 || x != 0 || y != 0 {
+            let center = definition.isRotateAtCenter
+                ? Vector3(
+                    x: (input.bounds.left + input.bounds.right) / 2,
+                    y: (input.bounds.top + input.bounds.bottom) / 2, z: 0)
+                : Vector3.zero
+            let rotation = Matrix4x4.createTranslation(
+                    Vector3(x: -center.x, y: -center.y, z: 0))
+                * Matrix4x4.createRotationZ(angle * Double.pi / 180)
+                * Matrix4x4.createTranslation(center)
+            let matrix = rotation * Matrix4x4.createTranslation(x: x, y: y, z: 0)
+            let transformedBounds = MetalDrawingEffect.boundingRect(
+                of: chain.bounds, transformedBy: matrix
+            )
+            chain = try renderTransformed(
+                input: chain, matrix: matrix, outputBounds: transformedBounds,
+                interpolation: .linear
+            )
+        }
+        return try renderComposite(
+            top: input, bottom: chain,
+            outputBounds: input.bounds.union(chain.bounds), mode: 0
+        )
+    }
+}
+
 #endif

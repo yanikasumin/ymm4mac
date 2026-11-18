@@ -9,8 +9,10 @@ import Foundation
 ///    ループ有効で Loop、ContentOffset があれば ContentOffset
 /// 3. Echo（有効な場合）
 /// 4. 速度 >100% かつソース Hz < 20000 のとき Resampler（倍率）
-/// 5. 定数速度 != 100% のとき PlaybackRate（SOLA は差し替え点として
-///    リサンプリング方式で代替）
+/// 5. 定数速度 != 100% のとき PlaybackRate（方式が SOLA なら
+///    `SolaTimeStretchStream`、それ以外はリサンプリング方式）。
+///    可変速度で方式が SOLA なら 2 に
+///    `VariableSolaPitchCorrectionStream` が続く
 /// 6. VoiceItem のみ Upsampler（方式が MediaFoundation 以外の場合）
 /// 7. Resampler（タイムライン Hz。Hz = 0 のときは挿入しない）
 /// 8. ユーザー指定 AudioEffects（有効なもののみ、供給元経由）
@@ -53,8 +55,17 @@ public final class EffectedAudioItemSource: AudioStream {
                     isLooped: audio.isLooped
                 )
             )
-            // SOLA の場合は本家では VariableSolaPitchCorrectionEffect が
-            // 続く。差し替え点として未実装（台帳に記録）。
+            // 本家 `CreateVariablePlaybackRateEffects`: 方式が SOLA の
+            // ときだけピッチ補正が続く（長さは変えず音程だけ戻す）。
+            if audio.playbackRateAudioProcessingMode == .sola {
+                processors.append(
+                    VariableSolaPitchCorrectionStream(
+                        rateMap: rateMap,
+                        itemLength: item.length,
+                        fps: fps
+                    )
+                )
+            }
         } else {
             if firstRate < 0 {
                 processors.append(ReverseAudioStream())
@@ -78,10 +89,16 @@ public final class EffectedAudioItemSource: AudioStream {
             processors.append(ResamplerStream(byRate: max(1, firstRate / 100)))
         }
         if rateMap.isConstant, firstRate != 100 {
-            // 本家は SOLA 方式なら PlaybackRateSolaTimeStretchEffect を
-            // 使う。差し替え点として、ここでは方式によらず
-            // リサンプリング方式（PlaybackRateStream）で代替する。
-            processors.append(PlaybackRateStream(rate: abs(firstRate) / 100))
+            // 本家 `CreateFixedPlaybackRateEffects`: 方式が SOLA なら
+            // PlaybackRateSolaTimeStretchEffect（ピッチ保持）、それ
+            // 以外は PlaybackRateEffect（リサンプリング）。速度 0 の
+            // ときは方式によらずリサンプリング側（本家は
+            // PlaybackRateEffect(0) を返す）。
+            if audio.playbackRateAudioProcessingMode == .sola, firstRate != 0 {
+                processors.append(SolaTimeStretchStream(tempo: abs(firstRate) / 100))
+            } else {
+                processors.append(PlaybackRateStream(rate: abs(firstRate) / 100))
+            }
         }
         if item is VoiceItem, hz != 0 {
             switch options.voiceUpsampling {

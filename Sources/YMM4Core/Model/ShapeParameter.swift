@@ -90,6 +90,7 @@ public final class RectangleShapeParameter {
         body(&width)
         body(&height)
         body(&round)
+        brush.forEachAnimation(body)
     }
 
     func encodeToJSONValue() -> JSONValue {

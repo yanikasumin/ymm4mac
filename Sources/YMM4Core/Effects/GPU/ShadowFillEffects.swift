@@ -6,11 +6,12 @@ import Foundation
 // `GPUEffectPassthroughProcessor`）であり、画像の加工はまだ行われない。
 // パラメータの型・既定値・範囲は本家定義クラスの実測に基づく。
 //
-// ブラシ（本家 `YukkuriMovieMaker.Plugin.Brush.Brush`）はプラグイン型
-// のため生保持に倒す。旧互換の set 専用 `Color` / `StrokeColor` は
-// ブラシ内部の単色パラメータへ転送されるもので、生保持の内部は
-// 書き換えないため、追加フィールドとしてそのまま保持する
-// （変換は行わない）。
+// ブラシ（本家 `YukkuriMovieMaker.Plugin.Brush.Brush`）は、影・
+// 背景塗り・前景塗り・枠線では型付きモデル（`Brush`）で保持する
+// （BRUSH46）。輪郭の StrokeBrush は処理器が未実装のため生保持の
+// まま。旧互換の set 専用 `Color` / `StrokeColor` はブラシ内部の
+// 単色パラメータへ転送されるもので、生保持の内部は書き換えない
+// ため、追加フィールドとしてそのまま保持する（変換は行わない）。
 
 /// 輪郭。本家 `OutlineEffect`。
 /// パラメータ（実測）: StrokeThickness は Animation(既定 3, 0〜500)、
@@ -130,7 +131,8 @@ public final class OutlineEffectDefinition: GPUEffectDefinitionBase {
 /// パラメータ（実測）: X / Y / Angle は Animation(既定 0,
 /// -100000〜100000)、Opacity は Animation(既定 50, 0〜100)、Zoom は
 /// Animation(既定 100, 0〜100000)、Blur は Animation(既定 3, 0〜250)、
-/// IsRotateAtCenter は bool（既定 false）。Brush は生保持。
+/// IsRotateAtCenter は bool（既定 false）。Brush は型付きモデル
+/// （`Brush`。パラメータ内の Animation も走査対象に含める）。
 public final class ShadowEffectDefinition: GPUEffectDefinitionBase {
     public override class var typeName: String {
         "YukkuriMovieMaker.Project.Effects.ShadowEffect, YukkuriMovieMaker"
@@ -150,8 +152,8 @@ public final class ShadowEffectDefinition: GPUEffectDefinitionBase {
     public var blur = Animation(defaultValue: 3, minValue: 0, maxValue: 250)
     /// 中心で回転するか。
     public var isRotateAtCenter: Bool = false
-    /// 影のブラシ（生保持）。
-    public var brush: PreservedObject?
+    /// 影のブラシ。
+    public var brush: Brush?
 
     public override func forEachAnimation(_ body: (inout Animation) -> Void) {
         body(&x)
@@ -160,6 +162,7 @@ public final class ShadowEffectDefinition: GPUEffectDefinitionBase {
         body(&zoom)
         body(&angle)
         body(&blur)
+        brush?.forEachAnimation(body)
     }
 
     public override func decodeKnownField(_ key: String, _ value: JSONValue) -> Bool {
@@ -186,7 +189,7 @@ public final class ShadowEffectDefinition: GPUEffectDefinitionBase {
             isRotateAtCenter = CodecSupport.bool(value, default: false)
             return true
         case "Brush":
-            brush = CodecSupport.preservedObject(value)
+            brush = value == .null ? nil : Brush.decode(from: value)
             return true
         default:
             return super.decodeKnownField(key, value)
@@ -204,7 +207,7 @@ public final class ShadowEffectDefinition: GPUEffectDefinitionBase {
             (key: "IsRotateAtCenter", value: .bool(isRotateAtCenter)),
         ]
         if let brush {
-            fields.append((key: "Brush", value: brush.value))
+            fields.append((key: "Brush", value: brush.encodeToJSONValue()))
         }
         return fields + super.encodeKnownFields()
     }
@@ -284,7 +287,7 @@ public final class InnerShadowEffectDefinition: GPUEffectDefinitionBase {
 /// Round は Animation(既定 0, 0〜100000)、BlendMode は Blend
 /// （既定 Normal）、IsBackgroundOnly は bool（既定 false）、
 /// Top / Bottom / Left / Right は Animation(既定 0, -100000〜100000)。
-/// Brush は生保持。
+/// Brush は型付きモデル（`Brush`）。
 public final class FillBackgroundEffectDefinition: GPUEffectDefinitionBase {
     public override class var typeName: String {
         "YukkuriMovieMaker.Project.Effects.FillBackgroundEffect, YukkuriMovieMaker"
@@ -298,8 +301,8 @@ public final class FillBackgroundEffectDefinition: GPUEffectDefinitionBase {
     public var blendMode: Blend = .normal
     /// 背景だけにするか。
     public var isBackgroundOnly: Bool = false
-    /// 塗りのブラシ（生保持）。
-    public var brush: PreservedObject?
+    /// 塗りのブラシ。
+    public var brush: Brush?
     /// 上の余白。
     public var top = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
     /// 下の余白。
@@ -316,6 +319,7 @@ public final class FillBackgroundEffectDefinition: GPUEffectDefinitionBase {
         body(&bottom)
         body(&left)
         body(&right)
+        brush?.forEachAnimation(body)
     }
 
     public override func decodeKnownField(_ key: String, _ value: JSONValue) -> Bool {
@@ -333,7 +337,7 @@ public final class FillBackgroundEffectDefinition: GPUEffectDefinitionBase {
             isBackgroundOnly = CodecSupport.bool(value, default: false)
             return true
         case "Brush":
-            brush = CodecSupport.preservedObject(value)
+            brush = value == .null ? nil : Brush.decode(from: value)
             return true
         case "Top":
             CodecSupport.decodeAnimation(value, into: &top)
@@ -360,7 +364,7 @@ public final class FillBackgroundEffectDefinition: GPUEffectDefinitionBase {
             (key: "IsBackgroundOnly", value: .bool(isBackgroundOnly)),
         ]
         if let brush {
-            fields.append((key: "Brush", value: brush.value))
+            fields.append((key: "Brush", value: brush.encodeToJSONValue()))
         }
         fields += [
             (key: "Top", value: CodecSupport.encodeAnimation(top)),
@@ -375,7 +379,7 @@ public final class FillBackgroundEffectDefinition: GPUEffectDefinitionBase {
 /// 前景塗りつぶし。本家 `FillForegroundEffect`。
 /// パラメータ（実測）: Opacity は Animation(既定 100, 0〜100)、
 /// BlendMode は Blend（既定 Normal）、IsBrushOnly は bool
-/// （既定 false）。Brush は生保持。
+/// （既定 false）。Brush は型付きモデル（`Brush`）。
 public final class FillForegroundEffectDefinition: GPUEffectDefinitionBase {
     public override class var typeName: String {
         "YukkuriMovieMaker.Project.Effects.FillForegroundEffect, YukkuriMovieMaker"
@@ -387,11 +391,12 @@ public final class FillForegroundEffectDefinition: GPUEffectDefinitionBase {
     public var blendMode: Blend = .normal
     /// ブラシだけにするか。
     public var isBrushOnly: Bool = false
-    /// 塗りのブラシ（生保持）。
-    public var brush: PreservedObject?
+    /// 塗りのブラシ。
+    public var brush: Brush?
 
     public override func forEachAnimation(_ body: (inout Animation) -> Void) {
         body(&opacity)
+        brush?.forEachAnimation(body)
     }
 
     public override func decodeKnownField(_ key: String, _ value: JSONValue) -> Bool {
@@ -406,7 +411,7 @@ public final class FillForegroundEffectDefinition: GPUEffectDefinitionBase {
             isBrushOnly = CodecSupport.bool(value, default: false)
             return true
         case "Brush":
-            brush = CodecSupport.preservedObject(value)
+            brush = value == .null ? nil : Brush.decode(from: value)
             return true
         default:
             return super.decodeKnownField(key, value)
@@ -420,7 +425,7 @@ public final class FillForegroundEffectDefinition: GPUEffectDefinitionBase {
             (key: "IsBrushOnly", value: .bool(isBrushOnly)),
         ]
         if let brush {
-            fields.append((key: "Brush", value: brush.value))
+            fields.append((key: "Brush", value: brush.encodeToJSONValue()))
         }
         return fields + super.encodeKnownFields()
     }
@@ -430,7 +435,8 @@ public final class FillForegroundEffectDefinition: GPUEffectDefinitionBase {
 /// パラメータ（実測）: Opacity は Animation(既定 100, 0〜100)、
 /// Thickness は Animation(既定 10, 0〜100000)、RenderPlacement は
 /// 既定 Back、Type は FrameLineType（既定 All）、Top / Bottom /
-/// Left / Right は Animation(既定 0, -100000〜100000)。Brush は生保持。
+/// Left / Right は Animation(既定 0, -100000〜100000)。Brush は
+/// 型付きモデル（`Brush`）。
 public final class FrameLineEffectDefinition: GPUEffectDefinitionBase {
     public override class var typeName: String {
         "YukkuriMovieMaker.Project.Effects.FrameLineEffect, YukkuriMovieMaker"
@@ -452,8 +458,8 @@ public final class FrameLineEffectDefinition: GPUEffectDefinitionBase {
     public var left = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
     /// 右の位置。
     public var right = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
-    /// 線のブラシ（生保持）。
-    public var brush: PreservedObject?
+    /// 線のブラシ。
+    public var brush: Brush?
 
     public override func forEachAnimation(_ body: (inout Animation) -> Void) {
         body(&opacity)
@@ -462,6 +468,7 @@ public final class FrameLineEffectDefinition: GPUEffectDefinitionBase {
         body(&bottom)
         body(&left)
         body(&right)
+        brush?.forEachAnimation(body)
     }
 
     public override func decodeKnownField(_ key: String, _ value: JSONValue) -> Bool {
@@ -491,7 +498,7 @@ public final class FrameLineEffectDefinition: GPUEffectDefinitionBase {
             CodecSupport.decodeAnimation(value, into: &right)
             return true
         case "Brush":
-            brush = CodecSupport.preservedObject(value)
+            brush = value == .null ? nil : Brush.decode(from: value)
             return true
         default:
             return super.decodeKnownField(key, value)
@@ -510,7 +517,7 @@ public final class FrameLineEffectDefinition: GPUEffectDefinitionBase {
             (key: "Right", value: CodecSupport.encodeAnimation(right)),
         ]
         if let brush {
-            fields.append((key: "Brush", value: brush.value))
+            fields.append((key: "Brush", value: brush.encodeToJSONValue()))
         }
         return fields + super.encodeKnownFields()
     }
