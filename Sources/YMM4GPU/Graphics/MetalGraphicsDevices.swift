@@ -2015,11 +2015,16 @@ public final class MetalGraphicsDevices {
                 float3 hash3 = fract(seedVec * pairSums);
                 float3 q = p * uniforms.warpScale * 0.015625 + hash3 * 289.0;
                 float2 w = float2(
-                    ymm4Snoise01(q),
+                    ymm4Snoise01(q + float3(19.1, 7.3, 3.7)),
                     ymm4Snoise01(q + float3(47.2, 31.6, 11.9)));
                 p.xy += uniforms.warpStrength * (w * 2.0 - 1.0);
             }
             p *= float3(uniforms.scaleX, uniforms.scaleY, uniforms.scaleZ);
+            // ×(1/64) は Fractal / Curl のシェーダにだけある
+            // （Random のシェーダには無い。逆アセンブルで確認）。
+            if (uniforms.noiseType != 1) {
+                p *= 0.015625;
+            }
             float cs = cos(uniforms.angle);
             float sn = sin(uniforms.angle);
             p = float3(
@@ -2036,7 +2041,7 @@ public final class MetalGraphicsDevices {
                 float ampSum = 0.0;
                 float freq = 1.0;
                 float amp = 1.0;
-                for (int octave = 0; octave < uniforms.octaves; octave++) {
+                for (int octave = 0; octave <= uniforms.octaves; octave++) {
                     float3 q = p * freq;
                     float diff = ymm4Snoise01(q + float3(0.0, 0.1, 0.0))
                         - ymm4Snoise01(q - float3(0.0, 0.1, 0.0));
@@ -2054,7 +2059,7 @@ public final class MetalGraphicsDevices {
                 float ampSum = 0.0;
                 float freq = 1.0;
                 float amp = 1.0;
-                for (int octave = 0; octave < uniforms.octaves; octave++) {
+                for (int octave = 0; octave <= uniforms.octaves; octave++) {
                     float n = ymm4ValueNoise(p * freq, uniforms.seed);
                     sum += ymm4FractalShape(n, uniforms.fractalMode) * amp;
                     ampSum += amp;
