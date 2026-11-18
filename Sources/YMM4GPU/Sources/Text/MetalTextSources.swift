@@ -131,7 +131,9 @@ public final class MetalTextSource: Source {
             hideIntervalMs: values.hideIntervalMs,
             hideDirectionName: values.hideDirection.honkeName,
             visibleStart: visible.start, visibleEnd: visible.end,
-            timeMs: values.isDevidedPerCharacter ? timeMs : 0,
+            // 制御タグを含むテキストはタイミングで表示が時刻変化する
+            // ため、非分割でも時刻をキーに含める。
+            timeMs: (values.isDevidedPerCharacter || text.contains("<")) ? timeMs : 0,
             durationMs: values.isDevidedPerCharacter ? durationMs : 0
         )
         if key == cachedKey {
@@ -316,7 +318,9 @@ public final class MetalJimakuSource: Source {
             hideIntervalMs: values.hideIntervalMs,
             hideDirectionName: values.hideDirection.honkeName,
             visibleStart: visible.start, visibleEnd: visible.end,
-            timeMs: values.isDevidedPerCharacter ? timeMs : 0,
+            // 制御タグを含むセリフはタイミングで表示が時刻変化する
+            // ため、非分割でも時刻をキーに含める。
+            timeMs: (values.isDevidedPerCharacter || item.serif.contains("<")) ? timeMs : 0,
             durationMs: values.isDevidedPerCharacter ? durationMs : 0
         )
         if key == textSource.cachedKey {

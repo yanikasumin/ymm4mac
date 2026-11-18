@@ -22,7 +22,9 @@ import YMM4Core
 ///   読み始めて、返ってくるサンプルバッファの時刻（PTS）で目標位置へ
 ///   着地する。目標位置から直接読み始めると、形式によっては
 ///   （MP3 で実測）デコーダの遅延補正が外れて内容が提示時刻から
-///   ずれるため、直接開始はしない。
+///   ずれるため、直接開始はしない。目標位置が提示区間の終端以降なら
+///   リーダーを作らず終端として扱う（終端は提示区間から既知であり、
+///   先頭から読み直す理由がない）。
 /// - 論理時刻 0 は素材の提示開始位置（最初の非空セグメントの
 ///   提示開始時刻）とする。本家も `streamStartTime`（ストリームの
 ///   開始時刻 / 最初のサンプルの提示時刻）を保持して同じ補正を
@@ -169,6 +171,26 @@ public final class AVFoundationStreamingPCMProvider: PCMProvider {
     /// 現在位置から読むためのリーダーを用意する。
     private func ensureReader() -> AVAssetReaderTrackOutput? {
         if let output { return output }
+        // 終端判定は要求位置そのもので行う。提示区間の終端は
+        // `duration` と同じ出所で既知であり、要求位置が終端以降なら
+        // リーダーを作らずに終端として扱う。時間範囲を設定しない
+        // リーダーは素材全体を先頭からデコードし、読み取りループが
+        // 提示時刻で全量を捨てることになるため、長い素材では終端外
+        // シーク 1 回で全デコードの負荷がかかる（R6-05）。判定には
+        // プリロール後の開始位置ではなく要求位置を使う。プリロール
+        // 後の位置で判定すると、終端以降の要求でもプリロール分だけ
+        // 前からリーダーが作られてしまう（レビュー第7ラウンドの
+        // 統合条件: #95 の終端判定を #96 の提示時刻モデルへ適応）。
+        let startFrame = max(0, nextSample) / AudioStream.channelCount
+        let requestedTime = CMTimeAdd(
+            presentation.start,
+            CMTime(value: Int64(startFrame), timescale: CMTimeScale(hz))
+        )
+        let endTime = CMTimeAdd(presentation.start, presentation.duration)
+        guard requestedTime < endTime else {
+            reachedEnd = true
+            return nil
+        }
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVLinearPCMBitDepthKey: 32,
@@ -182,23 +204,21 @@ public final class AVFoundationStreamingPCMProvider: PCMProvider {
             reachedEnd = true
             return nil
         }
-        // 読み取り開始位置は、次に返す位置からプリロール分だけ前
-        // （提示開始位置とトラック範囲の先頭より前へは行かない）。
-        // 目標位置から直接読み始めると、形式によってはデコーダの
-        // 遅延補正が外れて内容が提示時刻からずれる（MP3 で実測）。
-        // 前から読んで提示時刻で着地するのが本家の方式である。
-        let startFrame = max(0, nextSample) / AudioStream.channelCount
+        // 読み取り開始位置は、要求位置からプリロール分だけ前
+        // （トラック範囲の先頭より前へは行かない）。要求位置から
+        // 直接読み始めると、形式によってはデコーダの遅延補正が
+        // 外れて内容が提示時刻からずれる（MP3 で実測）。前から
+        // 読んで提示時刻で着地するのが本家の方式である。開始位置は
+        // 要求位置以下にしかならないため、上で要求位置 < 終端が
+        // 確定していれば読み取り範囲は常に対象区間と重なる。
         let prerollFrames = Int(Self.seekPrerollSeconds * Double(hz))
         let readerStartFrame = max(0, startFrame - prerollFrames)
-        let startTime = CMTimeAdd(
+        let readerStartTime = CMTimeAdd(
             presentation.start,
             CMTime(value: Int64(readerStartFrame), timescale: CMTimeScale(hz))
         )
-        let boundedStart = max(startTime, timeRange.start)
-        let endTime = CMTimeAdd(presentation.start, presentation.duration)
-        if boundedStart < endTime {
-            newReader.timeRange = CMTimeRange(start: boundedStart, end: endTime)
-        }
+        let boundedStart = max(readerStartTime, timeRange.start)
+        newReader.timeRange = CMTimeRange(start: boundedStart, end: endTime)
         newReader.add(newOutput)
         guard newReader.startReading() else {
             reachedEnd = true

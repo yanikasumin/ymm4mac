@@ -241,14 +241,23 @@ func raw(_ definition: VideoEffectDefinitionBase) -> PreservedObject {
     VideoEffectRegistry.encode(definition)
 }
 
-func solidBrush(_ colorText: String) -> PreservedObject {
-    PreservedObject(.object([
-        (key: "Type", value: .string("YukkuriMovieMaker.Plugin.Brush.SolidColorBrushPlugin, YukkuriMovieMaker")),
-        (key: "Parameter", value: .object([
-            (key: "$type", value: .string("YukkuriMovieMaker.Plugin.Brush.SolidColorBrushParameter, YukkuriMovieMaker")),
-            (key: "Color", value: .string(colorText)),
-        ])),
-    ]))
+func solidBrush(_ colorText: String) -> Brush {
+    // BRUSH46 で定義側の brush は型付きモデル（Brush）になったため、
+    // ハーネスも型付きで組み立てる（往復は VideoEffectRegistry.encode
+    // が担う）。
+    let brush = Brush()
+    let parameter = SolidColorBrushParameter()
+    var hex = colorText
+    if hex.hasPrefix("#") { hex.removeFirst() }
+    let value = UInt32(hex, radix: 16) ?? 0
+    parameter.color = Color(
+        alpha: UInt8((value >> 24) & 0xFF),
+        red: UInt8((value >> 16) & 0xFF),
+        green: UInt8((value >> 8) & 0xFF),
+        blue: UInt8(value & 0xFF)
+    )
+    brush.parameter = .solidColor(parameter)
+    return brush
 }
 
 /// 画像アイテム1つのタイムラインを合成して指定フレームを返す。

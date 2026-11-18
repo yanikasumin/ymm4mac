@@ -27,16 +27,30 @@ public final class MetalGraphicsDevices {
     let mosaicPipeline: MTLComputePipelineState
     /// ワープ系エフェクトのパス（MAC-0028: アルファマスク・色収差・タイリング）。
     let warpPipeline: MTLRenderPipelineState
+    /// ブラシ塗りのパス（BRUSH46: グラデーション・パターン・ビットマップ）。
+    let brushPipeline: MTLRenderPipelineState
     /// 合成系エフェクトのパス（MAC-0028: 影・塗り・枠線・複写反転）。
     let compositePipeline: MTLRenderPipelineState
     /// モルフォロジーのコンピュートカーネル（MAC-0028）。
     let morphologyPipeline: MTLComputePipelineState
+    /// グラデーション生成のパス（Issue #45 第1弾）。
+    let gradientPipeline: MTLRenderPipelineState
+    /// 輪郭（OutlineLite／FeatherAlpha）のパス（Issue #45 第1弾）。
+    let outlinePipeline: MTLRenderPipelineState
+    /// ノイズ合成（NoiseBlend）のパス（Issue #45 第1弾）。
+    let noiseBlendPipeline: MTLRenderPipelineState
+    /// ハーフトーン（HalfTone カスタムシェーダ）のパス（Issue #45 第1弾）。
+    let halftonePipeline: MTLRenderPipelineState
+    /// ノイズ生成器（値ノイズ／フラクタル／カール）のパス（Issue #45 第1弾）。
+    let noisePipeline: MTLRenderPipelineState
     let nearestSampler: MTLSamplerState
     let linearSampler: MTLSamplerState
     /// 範囲外を透明黒として読むサンプラ（ぼかしの Soft 境界用）。
     let borderSampler: MTLSamplerState
     /// 範囲外を鏡像として読むサンプラ（ぼかしの Hard 境界用）。
     let mirrorSampler: MTLSamplerState
+    /// 範囲外を繰り返しとして読むサンプラ（ビットマップブラシの Wrap 用）。
+    let repeatSampler: MTLSamplerState
 
     /// 1×1 完全透明のテクスチャ（読み込み失敗時の代替・空出力の実体）。
     public let transparentTexture: MTLTexture
@@ -44,28 +58,74 @@ public final class MetalGraphicsDevices {
     private var registry: [ObjectIdentifier: MetalImage] = [:]
     private let registryLock = NSLock()
 
-    /// デバイスと共有資源を生成する。Metal が使えない環境では nil。
-    public init?() {
-        guard let device = MTLCreateSystemDefaultDevice() else { return nil }
+    /// 診断カウンタ: 共通規則（TRANSFORM47 / Issue #47）で実体化された
+    /// エフェクト処理器入力の累計。実プロジェクトでの発動頻度の測定に
+    /// 使う（現行の Source・処理器・描画先はいずれもプレーンな画像しか
+    /// 出さないため、通常の合成では 0 のままであることが期待値）。
+    private var materializedInputCounter = 0
+    private let materializedInputCounterLock = NSLock()
+
+    /// 実体化された処理器入力の累計（診断用）。
+    public var materializedInputCount: Int {
+        materializedInputCounterLock.lock()
+        defer { materializedInputCounterLock.unlock() }
+        return materializedInputCounter
+    }
+
+    /// 処理器入力の実体化を1件記録する（診断用）。
+    func noteMaterializedProcessorInput() {
+        materializedInputCounterLock.lock()
+        materializedInputCounter += 1
+        materializedInputCounterLock.unlock()
+    }
+
+    /// デバイスと共有資源を生成する。
+    public convenience init() throws {
+        try self.init(shaderSource: Self.shaderSource)
+    }
+
+    /// シェーダソースを指定して生成する。通常は `init()` を使う。
+    /// この入口は、初期化失敗の診断（Issue #50）を検証するために
+    /// 壊れたシェーダを人為的に渡せるようにするための差し替え点。
+    ///
+    /// 失敗は握りつぶさず、`MetalInitializationError` として種別と
+    /// 下位のエラー内容を保持して投げる（MAC-0021 の通知契約）。
+    public init(shaderSource: String) throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw MetalInitializationError.deviceUnavailable
+        }
         self.device = device
 
         let library: MTLLibrary
         do {
-            library = try device.makeLibrary(source: Self.shaderSource, options: nil)
+            library = try device.makeLibrary(source: shaderSource, options: nil)
         } catch {
-            return nil
+            throw MetalInitializationError.shaderLibraryFailed(
+                underlying: String(describing: error)
+            )
         }
-        guard let vertexFunction = library.makeFunction(name: "ymm4Vertex"),
-              let texturedFunction = library.makeFunction(name: "ymm4TexturedFragment"),
-              let solidFunction = library.makeFunction(name: "ymm4SolidFragment"),
-              let shapeFunction = library.makeFunction(name: "ymm4ShapeFragment"),
-              let effectFunction = library.makeFunction(name: "ymm4ColorEffectFragment"),
-              let blurFunction = library.makeFunction(name: "ymm4BlurFragment"),
-              let mosaicFunction = library.makeFunction(name: "ymm4MosaicKernel"),
-              let warpFunction = library.makeFunction(name: "ymm4WarpFragment"),
-              let compositeFunction = library.makeFunction(name: "ymm4CompositeFragment"),
-              let morphologyFunction = library.makeFunction(name: "ymm4MorphologyKernel")
-        else { return nil }
+        func shaderFunction(_ name: String) throws -> MTLFunction {
+            guard let function = library.makeFunction(name: name) else {
+                throw MetalInitializationError.shaderFunctionMissing(name: name)
+            }
+            return function
+        }
+        let vertexFunction = try shaderFunction("ymm4Vertex")
+        let texturedFunction = try shaderFunction("ymm4TexturedFragment")
+        let solidFunction = try shaderFunction("ymm4SolidFragment")
+        let shapeFunction = try shaderFunction("ymm4ShapeFragment")
+        let effectFunction = try shaderFunction("ymm4ColorEffectFragment")
+        let blurFunction = try shaderFunction("ymm4BlurFragment")
+        let mosaicFunction = try shaderFunction("ymm4MosaicKernel")
+        let warpFunction = try shaderFunction("ymm4WarpFragment")
+        let brushFunction = try shaderFunction("ymm4BrushFragment")
+        let compositeFunction = try shaderFunction("ymm4CompositeFragment")
+        let morphologyFunction = try shaderFunction("ymm4MorphologyKernel")
+        let gradientFunction = try shaderFunction("ymm4GradientFragment")
+        let outlineFunction = try shaderFunction("ymm4OutlineFragment")
+        let noiseBlendFunction = try shaderFunction("ymm4NoiseBlendFragment")
+        let halftoneFunction = try shaderFunction("ymm4HalfToneFragment")
+        let noiseFunction = try shaderFunction("ymm4NoiseFragment")
 
         let vertexDescriptor = MTLVertexDescriptor()
         vertexDescriptor.attributes[0].format = .float4
@@ -78,7 +138,9 @@ public final class MetalGraphicsDevices {
         // パディングが入るため 24 ではなく 32）。ずらすと頂点が壊れる。
         vertexDescriptor.layouts[0].stride = MemoryLayout<QuadVertex>.stride
 
-        func makePipeline(fragment: MTLFunction) -> MTLRenderPipelineState? {
+        func makePipeline(
+            name: String, fragment: MTLFunction
+        ) throws -> MTLRenderPipelineState {
             let descriptor = MTLRenderPipelineDescriptor()
             descriptor.vertexFunction = vertexFunction
             descriptor.fragmentFunction = fragment
@@ -94,56 +156,84 @@ public final class MetalGraphicsDevices {
             attachment?.sourceAlphaBlendFactor = .one
             attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
             attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-            return try? device.makeRenderPipelineState(descriptor: descriptor)
+            do {
+                return try device.makeRenderPipelineState(descriptor: descriptor)
+            } catch {
+                throw MetalInitializationError.pipelineCreationFailed(
+                    name: name, underlying: String(describing: error)
+                )
+            }
         }
-        guard let textured = makePipeline(fragment: texturedFunction),
-              let solid = makePipeline(fragment: solidFunction),
-              let shape = makePipeline(fragment: shapeFunction)
-        else { return nil }
-        texturedPipeline = textured
-        solidPipeline = solid
-        shapePipeline = shape
+        texturedPipeline = try makePipeline(name: "textured", fragment: texturedFunction)
+        solidPipeline = try makePipeline(name: "solid", fragment: solidFunction)
+        shapePipeline = try makePipeline(name: "shape", fragment: shapeFunction)
 
         // エフェクト系のパスは中間画像への書き込みであり、合成（ブレンド）
         // は行わない。入力を加工した結果で置き換える。
-        func makeEffectPipeline(fragment: MTLFunction) -> MTLRenderPipelineState? {
+        func makeEffectPipeline(
+            name: String, fragment: MTLFunction
+        ) throws -> MTLRenderPipelineState {
             let descriptor = MTLRenderPipelineDescriptor()
             descriptor.vertexFunction = vertexFunction
             descriptor.fragmentFunction = fragment
             descriptor.vertexDescriptor = vertexDescriptor
             descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-            return try? device.makeRenderPipelineState(descriptor: descriptor)
+            do {
+                return try device.makeRenderPipelineState(descriptor: descriptor)
+            } catch {
+                throw MetalInitializationError.pipelineCreationFailed(
+                    name: name, underlying: String(describing: error)
+                )
+            }
         }
-        guard let effect = makeEffectPipeline(fragment: effectFunction),
-              let blur = makeEffectPipeline(fragment: blurFunction),
-              let mosaic = try? device.makeComputePipelineState(function: mosaicFunction),
-              let warp = makeEffectPipeline(fragment: warpFunction),
-              let composite = makeEffectPipeline(fragment: compositeFunction),
-              let morphology = try? device.makeComputePipelineState(function: morphologyFunction)
-        else { return nil }
-        effectPipeline = effect
-        blurPipeline = blur
-        mosaicPipeline = mosaic
-        warpPipeline = warp
-        compositePipeline = composite
-        morphologyPipeline = morphology
+        func makeComputePipeline(
+            name: String, function: MTLFunction
+        ) throws -> MTLComputePipelineState {
+            do {
+                return try device.makeComputePipelineState(function: function)
+            } catch {
+                throw MetalInitializationError.pipelineCreationFailed(
+                    name: name, underlying: String(describing: error)
+                )
+            }
+        }
+        effectPipeline = try makeEffectPipeline(name: "effect", fragment: effectFunction)
+        blurPipeline = try makeEffectPipeline(name: "blur", fragment: blurFunction)
+        mosaicPipeline = try makeComputePipeline(name: "mosaic", function: mosaicFunction)
+        warpPipeline = try makeEffectPipeline(name: "warp", fragment: warpFunction)
+        brushPipeline = try makeEffectPipeline(name: "brush", fragment: brushFunction)
+        compositePipeline = try makeEffectPipeline(
+            name: "composite", fragment: compositeFunction
+        )
+        morphologyPipeline = try makeComputePipeline(
+            name: "morphology", function: morphologyFunction
+        )
+        gradientPipeline = try makeEffectPipeline(name: "gradient", fragment: gradientFunction)
+        outlinePipeline = try makeEffectPipeline(name: "outline", fragment: outlineFunction)
+        noiseBlendPipeline = try makeEffectPipeline(name: "noiseBlend", fragment: noiseBlendFunction)
+        halftonePipeline = try makeEffectPipeline(name: "halftone", fragment: halftoneFunction)
+        noisePipeline = try makeEffectPipeline(name: "noise", fragment: noiseFunction)
 
-        func makeSampler(filter: MTLSamplerMinMagFilter) -> MTLSamplerState? {
+        func makeSampler(
+            name: String, filter: MTLSamplerMinMagFilter
+        ) throws -> MTLSamplerState {
             let descriptor = MTLSamplerDescriptor()
             descriptor.minFilter = filter
             descriptor.magFilter = filter
             descriptor.mipFilter = .notMipmapped
             descriptor.sAddressMode = .clampToEdge
             descriptor.tAddressMode = .clampToEdge
-            return device.makeSamplerState(descriptor: descriptor)
+            guard let sampler = device.makeSamplerState(descriptor: descriptor) else {
+                throw MetalInitializationError.samplerCreationFailed(name: name)
+            }
+            return sampler
         }
-        guard let nearest = makeSampler(filter: .nearest),
-              let linear = makeSampler(filter: .linear)
-        else { return nil }
-        nearestSampler = nearest
-        linearSampler = linear
+        nearestSampler = try makeSampler(name: "nearest", filter: .nearest)
+        linearSampler = try makeSampler(name: "linear", filter: .linear)
 
-        func makeBorderSampler(address: MTLSamplerAddressMode) -> MTLSamplerState? {
+        func makeBorderSampler(
+            name: String, address: MTLSamplerAddressMode
+        ) throws -> MTLSamplerState {
             let descriptor = MTLSamplerDescriptor()
             descriptor.minFilter = .linear
             descriptor.magFilter = .linear
@@ -153,20 +243,23 @@ public final class MetalGraphicsDevices {
             if address == .clampToBorderColor {
                 descriptor.borderColor = .transparentBlack
             }
-            return device.makeSamplerState(descriptor: descriptor)
+            guard let sampler = device.makeSamplerState(descriptor: descriptor) else {
+                throw MetalInitializationError.samplerCreationFailed(name: name)
+            }
+            return sampler
         }
-        guard let border = makeBorderSampler(address: .clampToBorderColor),
-              let mirror = makeBorderSampler(address: .mirrorRepeat)
-        else { return nil }
-        borderSampler = border
-        mirrorSampler = mirror
+        borderSampler = try makeBorderSampler(name: "border", address: .clampToBorderColor)
+        mirrorSampler = try makeBorderSampler(name: "mirror", address: .mirrorRepeat)
+        repeatSampler = try makeBorderSampler(name: "repeat", address: .repeat)
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: 1, height: 1, mipmapped: false
         )
         descriptor.usage = [.shaderRead]
         descriptor.storageMode = .shared
-        guard let transparent = device.makeTexture(descriptor: descriptor) else { return nil }
+        guard let transparent = device.makeTexture(descriptor: descriptor) else {
+            throw MetalInitializationError.textureCreationFailed(width: 1, height: 1)
+        }
         var zero: UInt32 = 0
         transparent.replace(
             region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0,
@@ -511,6 +604,89 @@ public final class MetalGraphicsDevices {
             return (plane + offset - rect.xy) / rect.zw;
         }
 
+        // モザイク系 (mode 7〜11) の共通部品。本家のカスタムシェーダ
+        // (CircleMosaic / TriangleMosaic / HexagonMosaic / VoronoiMosaic /
+        // DelaunayMosaic) の逆アセンブルから抽出した式を再実装したもの。
+        // いずれも「現在画素が属するセルの代表点を求め、その点の色で
+        // セルを塗る」形であり、代表点の決め方だけが形状ごとに異なる。
+
+        // Voronoi / Delaunay の seed 前処理。本家字面: seed の符号で
+        // ±(1234.5677, 1234.9012) を選び、frac(±0.00081 * seed) 等との
+        // 積をハッシュ入力への加算オフセットとする。
+        float2 ymm4MosaicSeedOffset(float seed) {
+            float2 s = seed >= 0.0
+                ? float2(1234.5677490234375, 1234.9012451171875)
+                : float2(-1234.5677490234375, -1234.9012451171875);
+            float2 f = fract(float2(
+                (seed >= 0.0 ? 0.0008100001141428947 : -0.0008100001141428947) * seed,
+                (seed >= 0.0 ? 0.0008097813697531819 : -0.0008097813697531819) * seed));
+            return float2(s.x * f.x, s.y * f.y);
+        }
+
+        // ハッシュ用の sin。本家シェーダは dot の結果 (絶対値で数百〜
+        // 数十万) をそのまま sin に渡し fract で小数部を取るため、sin の
+        // 引数削減の精度が結果を支配する。Metal の sin は引数が大きいと
+        // 粗い近似になる (実測: fract(sin(x)*43758.546875) が 1/128 刻みに
+        // 量子化された) ため、2π の高精度分割 (Cody-Waite) で剰余を
+        // 取ってから sin を計算し、数学的に正しい値に寄せる。本家
+        // Direct2D 側の値も GPU の sin 実装に依存し、機種が変われば
+        // 散らばり自体が変わる性質のもの (台帳に記録)。
+        float ymm4MosaicHashSin(float x) {
+            const float twoPiHi = 6.2831854820251465;
+            const float twoPiLo = -1.7484556000744526e-07;
+            float n = round(x * 0.15915494309189535);
+            float r = fma(-n, twoPiHi, x);
+            r = fma(-n, twoPiLo, r);
+            return sin(r);
+        }
+
+        // セル座標から [0, 1) の乱数2成分を作るハッシュ (本家字面:
+        // frac(sin(dot) * 43758.546875) の2定数版)。
+        float2 ymm4MosaicHashRand(float2 cellPoint) {
+            return float2(
+                fract(ymm4MosaicHashSin(dot(cellPoint, float2(127.0999984741211, 311.70001220703125))) * 43758.546875),
+                fract(ymm4MosaicHashSin(dot(cellPoint, float2(269.5, 183.3000030517578))) * 43758.546875));
+        }
+
+        // 3x3 近傍セルの特徴点 (セル座標系の連続値)。
+        // index = (dy + 1) * 3 + (dx + 1)。
+        void ymm4MosaicFeaturePoints(float2 q, float seed, thread float2 *points) {
+            float2 cell = round(q);
+            float2 offset = ymm4MosaicSeedOffset(seed);
+            int index = 0;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    float2 base = cell + float2(float(dx), float(dy));
+                    points[index] = base + ymm4MosaicHashRand(base + offset);
+                    index++;
+                }
+            }
+        }
+
+        float ymm4MosaicCross(float2 a, float2 b) {
+            return a.x * b.y - a.y * b.x;
+        }
+
+        bool ymm4MosaicInTriangle(float2 q, float2 a, float2 b, float2 c) {
+            float d1 = ymm4MosaicCross(b - a, q - a);
+            float d2 = ymm4MosaicCross(c - b, q - b);
+            float d3 = ymm4MosaicCross(a - c, q - c);
+            return (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0)
+                || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0);
+        }
+
+        // 点 d が三角形 abc の外接円内にあるか (Delaunay 判定)。
+        bool ymm4MosaicInCircle(float2 a, float2 b, float2 c, float2 d) {
+            float2 pa = a - d;
+            float2 pb = b - d;
+            float2 pc = c - d;
+            float det = dot(pa, pa) * ymm4MosaicCross(pb, pc)
+                - dot(pb, pb) * ymm4MosaicCross(pa, pc)
+                + dot(pc, pc) * ymm4MosaicCross(pa, pb);
+            float orient = ymm4MosaicCross(b - a, c - a);
+            return orient > 0.0 ? det > 0.0 : det < 0.0;
+        }
+
         fragment float4 ymm4WarpFragment(
             VertexOut in [[stage_in]],
             texture2d<float> input [[texture(0)]],
@@ -608,6 +784,130 @@ public final class MetalGraphicsDevices {
                     float adjusted = (uniforms.param0.x > 0.5
                         ? 1.0 - maskAlpha : maskAlpha) * uniforms.param0.y;
                     return color * adjusted;
+                }
+                case 7: case 8: case 9: case 10: case 11: {
+                    // 非矩形モザイク: param0.x = セル寸法 (本家の setter
+                    // クランプ済みの値が渡る), param0.y = seed
+                    // (Voronoi / Delaunay のみ使用)。
+                    // 本家シェーダは SCENE_POSITION (入力平面座標) で
+                    // セルを決めるため、point に入力の planeOffset を
+                    // 加えた座標を基準にする。サンプルは代表点の UV を
+                    // 入力平面から直接引く (本家は現在 UV からの相対
+                    // オフセットで引くが、線形サンプルでは等価)。
+                    float size = max(uniforms.param0.x, 1.0);
+                    float seed = uniforms.param0.y;
+                    float2 pos = point + uniforms.inputOffset;
+                    float2 samplePoint = pos;
+                    if (uniforms.mode == 7) {
+                        // 円形: 中心 = (round(pos/size) + 0.5) * size。
+                        // 中心から size/2 を超える画素は透明になる
+                        // (本家字面どおり。格子の位相は中心側に寄る)。
+                        float2 center = (round(pos / size) + 0.5) * size;
+                        float2 offset = pos - center;
+                        if (dot(offset, offset) > 0.25 * size * size) {
+                            return float4(0.0);
+                        }
+                        samplePoint = center;
+                    } else if (uniforms.mode == 8) {
+                        // 三角形: 斜交座標へ写し、frac の和で三角形の
+                        // 重心 (1/3 か 2/3) を選ぶ (本家字面どおり)。
+                        float2 q = pos / size;
+                        float sx = q.x - q.y * 0.5773502588272095;
+                        float sy = q.y * 1.154700517654419;
+                        float o = (fract(sx) + fract(sy) <= 1.0)
+                            ? 0.3333333432674408 : 0.6666666865348816;
+                        float2 base = round(float2(sx, sy)) + o;
+                        samplePoint = float2(
+                            (base.x + 0.5 * base.y) * size,
+                            base.y * size * 0.8660253882408142);
+                    } else if (uniforms.mode == 9) {
+                        // 六角形: 2方向の格子座標と frac の補正で中心を
+                        // 選ぶ (本家字面どおり)。
+                        float2 q = pos / size;
+                        float a = -q.x + q.y * 0.5773502588272095;
+                        float b = 2.0 * q.x;
+                        float fa = fract(a);
+                        float fb = fract(b);
+                        float c = (3.0 * fa + fb <= 2.0) ? 0.0 : 1.0;
+                        float fa2 = fa + c * (1.0 - 2.0 * fa);
+                        float fb2 = fb + c * (1.0 - 2.0 * fb);
+                        float d = ((3.0 * fb2 + 2.0 * fa2 <= 1.0) ? -1.0 : 0.0) + c;
+                        float baseA = round(b) - abs(d) + 1.0;
+                        float baseB = c + round(a);
+                        samplePoint = float2(
+                            baseA * size * 0.5,
+                            (0.8660253882408142 * baseA
+                             + 1.7320507764816284 * baseB) * size);
+                    } else if (uniforms.mode == 10) {
+                        // ボロノイ: 3x3 近傍の特徴点のうち frac 座標から
+                        // 最も近い点の絶対位置をサンプルする
+                        // (本家字面どおり。初期の最良距離は 2.0)。
+                        float2 q = pos / size;
+                        float2 cell = round(q);
+                        float2 f = fract(q);
+                        float2 offset = ymm4MosaicSeedOffset(seed);
+                        float bestDist = 2.0;
+                        float2 best = float2(0.0);
+                        for (int dy = -1; dy <= 1; dy++) {
+                            for (int dx = -1; dx <= 1; dx++) {
+                                float2 delta = float2(float(dx), float(dy));
+                                float2 p = delta + ymm4MosaicHashRand(
+                                    cell + delta + offset);
+                                float dist = length(p - f);
+                                if (dist < bestDist) {
+                                    bestDist = dist;
+                                    best = p;
+                                }
+                            }
+                        }
+                        samplePoint = (cell + best) * size;
+                    } else {
+                        // ドロネー: 特徴点は mode 10 と共通。2x2 ブロック
+                        // (z = 0, 1, 3, 4 の順に探索) の4点について
+                        // 外接円判定で対角線を選び、現在画素を含む
+                        // 三角形の重心をサンプルする。本家字面の
+                        // ブロック選択は角度和 (winding) 判定であり、
+                        // ここでは三角形所属による等価判定へ置き換えた
+                        // (非凸四角形と境界での差は台帳に記録)。
+                        float2 q = pos / size;
+                        float2 points[9];
+                        ymm4MosaicFeaturePoints(q, seed, points);
+                        int blockStarts[4] = {0, 1, 3, 4};
+                        float2 a = points[0];
+                        float2 b = points[1];
+                        float2 c = points[3];
+                        float2 d = points[4];
+                        for (int i = 0; i < 4; i++) {
+                            int z = blockStarts[i];
+                            float2 ba = points[z];
+                            float2 bb = points[z + 1];
+                            float2 bc = points[z + 3];
+                            float2 bd = points[z + 4];
+                            if (ymm4MosaicInTriangle(q, ba, bb, bd)
+                                || ymm4MosaicInTriangle(q, ba, bd, bc)) {
+                                a = ba; b = bb; c = bc; d = bd;
+                                break;
+                            }
+                        }
+                        // どちらの三角形にも属さない場合 (非凸四角形で
+                        // 起きる) は対角線ペアの第1三角形へ倒す。
+                        float2 g;
+                        if (ymm4MosaicInCircle(a, b, c, d)) {
+                            g = ymm4MosaicInTriangle(q, a, b, c)
+                                ? (a + b + c) / 3.0
+                                : (ymm4MosaicInTriangle(q, b, c, d)
+                                    ? (b + c + d) / 3.0 : (a + b + c) / 3.0);
+                        } else {
+                            g = ymm4MosaicInTriangle(q, a, b, d)
+                                ? (a + b + d) / 3.0
+                                : (ymm4MosaicInTriangle(q, a, d, c)
+                                    ? (a + d + c) / 3.0 : (a + b + d) / 3.0);
+                        }
+                        samplePoint = g * size;
+                    }
+                    float2 sampleUV = (samplePoint - uniforms.inputPlane.xy)
+                        / uniforms.inputPlane.zw;
+                    return input.sample(inputSampler, sampleUV);
                 }
                 default:
                     return float4(0.0);
@@ -729,6 +1029,681 @@ public final class MetalGraphicsDevices {
                 for (int x = x0; x < x1; x++) {
                     output.write(average, uint2(uint(x), uint(y)));
                 }
+            }
+        }
+
+        // グラデーション生成（Issue #45）。本家 Gradient のブラシ幾何:
+        // 線形は回転したブラシ空間で t = (−dx・sinθ + dy・cosθ) / (2h) + 0.5
+        // （h = max(サイズ/2, 0.01)、中心 = (X, Y)）、円形は
+        // t = 中心からの距離 / (サイズ/2)。ストップ間は格納値のまま
+        // （sRGB ガンマ空間で）線形補間し、Premultiplied 化してブラシ
+        // 不透明度を掛ける。拡張モードは t へ適用する
+        // （0=Clamp, 1=Wrap, 2=Mirror）。
+        struct GradientUniforms {
+            float2 outputOrigin;
+            float2 outputSize;
+            float2 center;
+            float2 sinCos;
+            float halfSize;
+            float opacity;
+            uint type;
+            uint extendMode;
+            uint stopCount;
+            float pad0;
+        };
+
+        fragment float4 ymm4GradientFragment(
+            VertexOut in [[stage_in]],
+            constant GradientUniforms &uniforms [[buffer(0)]],
+            constant float4 *stopColors [[buffer(1)]],
+            constant float *stopOffsets [[buffer(2)]]
+        ) {
+            float2 point = uniforms.outputOrigin + in.uv * uniforms.outputSize;
+            float2 rel = point - uniforms.center;
+            float t;
+            if (uniforms.type == 1) {
+                t = length(rel) / uniforms.halfSize;
+            } else {
+                t = (-rel.x * uniforms.sinCos.x + rel.y * uniforms.sinCos.y)
+                    / (2.0 * uniforms.halfSize) + 0.5;
+            }
+            if (uniforms.extendMode == 1) {
+                t = fract(t);
+            } else if (uniforms.extendMode == 2) {
+                float m = fmod(t, 2.0);
+                if (m < 0.0) { m += 2.0; }
+                t = m <= 1.0 ? m : 2.0 - m;
+            } else {
+                t = clamp(t, 0.0, 1.0);
+            }
+            float4 color = stopColors[0];
+            if (t >= stopOffsets[uniforms.stopCount - 1]) {
+                color = stopColors[uniforms.stopCount - 1];
+            } else if (t > stopOffsets[0]) {
+                for (uint i = 0; i + 1 < uniforms.stopCount; i++) {
+                    if (t <= stopOffsets[i + 1]) {
+                        float span = stopOffsets[i + 1] - stopOffsets[i];
+                        float f = span > 0.0 ? (t - stopOffsets[i]) / span : 0.0;
+                        color = mix(stopColors[i], stopColors[i + 1], f);
+                        break;
+                    }
+                }
+            }
+            float4 premultiplied = float4(color.rgb * color.a, color.a);
+            return premultiplied * uniforms.opacity;
+        }
+
+        // 輪郭の2段（Issue #45）。mode 0 = OutlineLite: 中心と Samples 本の
+        // 方向サンプルの α 最大値を (m, m, m, m) で出す。サンプル距離は
+        // 本家シェーダの実測どおり両軸とも StepPx / 入力テクスチャ高さ
+        // （TEXCOORD.w の一律適用）。角形は方向を最大成分で割って
+        // 正方形リングにする。mode 1 = FeatherAlpha: s = Smoothness とし
+        // lo = (1 − s) / 2、t = clamp((α − lo) / s)、f = t²(3 − 2t) を
+        // 非 Premultiplied 化した色へ掛ける（s ≤ 0 では α ≥ 0.5 の段差）。
+        struct OutlineUniforms {
+            float4 inputPlane;
+            float2 inputOffset;
+            float2 outputOrigin;
+            float2 outputSize;
+            float stepUV;
+            float smoothness;
+            uint samples;
+            uint mode;
+            uint isAngular;
+            float pad0;
+        };
+
+        fragment float4 ymm4OutlineFragment(
+            VertexOut in [[stage_in]],
+            texture2d<float> input [[texture(0)]],
+            sampler inputSampler [[sampler(0)]],
+            constant OutlineUniforms &uniforms [[buffer(0)]]
+        ) {
+            float2 point = uniforms.outputOrigin + in.uv * uniforms.outputSize;
+            float2 uv = (point + uniforms.inputOffset - uniforms.inputPlane.xy)
+                / uniforms.inputPlane.zw;
+            if (uniforms.mode == 1) {
+                float4 c = input.sample(inputSampler, uv);
+                float a = c.a;
+                float f;
+                if (uniforms.smoothness <= 0.0) {
+                    f = a >= 0.5 ? 1.0 : 0.0;
+                } else {
+                    float lo = (1.0 - uniforms.smoothness) * 0.5;
+                    float t = clamp((a - lo) / uniforms.smoothness, 0.0, 1.0);
+                    f = t * t * (3.0 - 2.0 * t);
+                }
+                if (a <= 0.0) {
+                    return float4(0.0);
+                }
+                return float4(c.rgb / a, 1.0) * f;
+            }
+            float m = input.sample(inputSampler, uv).a;
+            uint count = max(uniforms.samples, 1u);
+            for (uint i = 0; i < count; i++) {
+                float theta = 6.283185307179586 * float(i) / float(count);
+                float2 dir = float2(sin(theta), cos(theta));
+                if (uniforms.isAngular != 0) {
+                    float mc = max(abs(dir.x), abs(dir.y));
+                    if (mc > 0.0) { dir /= mc; }
+                }
+                float sampled = input.sample(
+                    inputSampler, uv + dir * uniforms.stepUV).a;
+                m = max(m, sampled);
+            }
+            return float4(m);
+        }
+
+        // ノイズ合成（Issue #45）。本家 NoiseBlend の実測式:
+        // out = A.r × (入力.r × R.r, 入力.g × G.r, 入力.b × B.r, 入力.α)。
+        // 各ノイズテクスチャは赤成分だけを使い、それぞれ自分の平面
+        // 写像でサンプルする。
+        struct NoiseBlendUniforms {
+            float4 planeIn;
+            float4 planeA;
+            float4 planeR;
+            float4 planeG;
+            float4 planeB;
+            float2 offsetIn;
+            float2 offsetA;
+            float2 offsetR;
+            float2 offsetG;
+            float2 offsetB;
+            float2 outputOrigin;
+            float2 outputSize;
+        };
+
+        fragment float4 ymm4NoiseBlendFragment(
+            VertexOut in [[stage_in]],
+            texture2d<float> texIn [[texture(0)]],
+            texture2d<float> texA [[texture(1)]],
+            texture2d<float> texR [[texture(2)]],
+            texture2d<float> texG [[texture(3)]],
+            texture2d<float> texB [[texture(4)]],
+            sampler texSampler [[sampler(0)]],
+            constant NoiseBlendUniforms &uniforms [[buffer(0)]]
+        ) {
+            float2 point = uniforms.outputOrigin + in.uv * uniforms.outputSize;
+            float4 src = texIn.sample(
+                texSampler, (point + uniforms.offsetIn - uniforms.planeIn.xy)
+                    / uniforms.planeIn.zw);
+            float a = texA.sample(
+                texSampler, (point + uniforms.offsetA - uniforms.planeA.xy)
+                    / uniforms.planeA.zw).r;
+            float r = texR.sample(
+                texSampler, (point + uniforms.offsetR - uniforms.planeR.xy)
+                    / uniforms.planeR.zw).r;
+            float g = texG.sample(
+                texSampler, (point + uniforms.offsetG - uniforms.planeG.xy)
+                    / uniforms.planeG.zw).r;
+            float b = texB.sample(
+                texSampler, (point + uniforms.offsetB - uniforms.planeB.xy)
+                    / uniforms.planeB.zw).r;
+            return a * float4(src.r * r, src.g * g, src.b * b, src.a);
+        }
+
+        // ハーフトーン（Issue #45）。本家 HalfTone カスタムシェーダの
+        // 数学: 格子候補の中心ごとに、その中心で入力をサンプルした
+        // 輝度 lum から cov = clamp(K・lum・Size − 中心までの距離) を
+        // 求め、最大の候補が勝つ。出力 = cov × (勝者のサンプル色 ×
+        // (1 − Strength) + Color × Strength)。
+        // K はモード係数（Triangle: 1 + Distance/√3、Rectangle /
+        // Rhombus: 1 + Distance/√2）。候補集合は逆アセンブルから
+        // 読み取った格子オフセットそのまま:
+        // Rectangle = セル中心の 3×3 近傍、Rhombus = √2・Distance
+        // 四方のセル四隅＋中心、Triangle = パリティ調整した基点 B へ
+        // {(±0.5, 0.866), (±1, 0), (0.5, 0.433), (0, −0.433),
+        // (1, −0.433)}・Distance を加えた7点。
+        // モード 1 以外の未知値は本家どおり Rhombus の分岐へ落ちる。
+        struct HalfToneUniforms {
+            float4 inputPlane;
+            float4 color;
+            float2 inputOffset;
+            float2 outputOrigin;
+            float2 outputSize;
+            float2 texelSize;
+            float distance;
+            float size;
+            float strength;
+            int mode;
+        };
+
+        float ymm4HalfToneAdjustedIndex(float f) {
+            float f1 = fract(abs(f));
+            float f2 = f >= 0.0 ? f1 : (f1 == 0.0 ? 0.0 : 1.0 - f1);
+            return floor(f) + (f2 < 0.5 ? -0.5 : 0.5);
+        }
+
+        fragment float4 ymm4HalfToneFragment(
+            VertexOut in [[stage_in]],
+            texture2d<float> input [[texture(0)]],
+            sampler inputSampler [[sampler(0)]],
+            constant HalfToneUniforms &uniforms [[buffer(0)]]
+        ) {
+            float2 point = uniforms.outputOrigin + in.uv * uniforms.outputSize;
+            float2 uv = (point + uniforms.inputOffset - uniforms.inputPlane.xy)
+                / uniforms.inputPlane.zw;
+            float d = uniforms.distance;
+            float k;
+            float2 centers[9];
+            int count;
+            if (uniforms.mode == 1) {
+                k = 1.0 + d * 0.70710678;
+                float2 c = (floor(point / d) + 0.5) * d;
+                count = 0;
+                for (int j = -1; j <= 1; j++) {
+                    for (int i = -1; i <= 1; i++) {
+                        centers[count++] = c + float2(float(i), float(j)) * d;
+                    }
+                }
+            } else if (uniforms.mode == 0) {
+                k = 1.0 + d * 0.57735027;
+                float fx = point.x / d;
+                float fy = point.y / (d * 0.8660254);
+                float iy = floor(fy);
+                bool odd = fract(abs(iy) * 0.5) != 0.0;
+                float cx = odd ? ymm4HalfToneAdjustedIndex(fx) : floor(fx);
+                float2 b = float2(cx * d, iy * d * 0.8660254);
+                centers[0] = b + d * float2(0.5, 0.8660254);
+                centers[1] = b + d * float2(-0.5, 0.8660254);
+                centers[2] = b + d * float2(1.0, 0.0);
+                centers[3] = b + d * float2(0.5, 0.4330127);
+                centers[4] = b + d * float2(-1.0, 0.0);
+                centers[5] = b + d * float2(0.0, -0.4330127);
+                centers[6] = b + d * float2(1.0, -0.4330127);
+                count = 7;
+            } else {
+                k = 1.0 + d * 0.70710678;
+                float dx = d * 1.4142135;
+                float dy = d * 0.70710678;
+                float fx = point.x / dx;
+                float fy = point.y / dy;
+                float iy = floor(fy);
+                bool odd = fract(abs(iy) * 0.5) != 0.0;
+                float cx = odd ? ymm4HalfToneAdjustedIndex(fx) : floor(fx);
+                float2 p = float2(cx * dx, iy * dy);
+                centers[0] = p;
+                centers[1] = p + float2(dx, 0.0);
+                centers[2] = p + float2(0.0, dx);
+                centers[3] = p + float2(dx, dx);
+                centers[4] = p + float2(dy, dy);
+                count = 5;
+            }
+            float gate = k * uniforms.size;
+            float bestCov = 0.0;
+            float4 bestColor = float4(0.0);
+            for (int i = 0; i < count; i++) {
+                float2 delta = centers[i] - point;
+                float dist = length(delta);
+                float cov = 0.0;
+                float4 s = float4(0.0);
+                if (gate >= dist) {
+                    s = input.sample(inputSampler, uv + delta * uniforms.texelSize);
+                    float lum = dot(s.rgb, float3(0.299, 0.587, 0.114))
+                        * (s.a != 0.0 ? 1.0 : 0.0);
+                    cov = clamp(k * lum * uniforms.size - dist, 0.0, 1.0);
+                }
+                if (i == 0 || cov > bestCov) {
+                    bestCov = cov;
+                    bestColor = s;
+                }
+            }
+            return bestCov * (bestColor * (1.0 - uniforms.strength)
+                + uniforms.color * uniforms.strength);
+        }
+
+        // ノイズ生成器（Issue #45）。本家 NoiseBase の定数ブロック
+        // （96 バイト）と生成シェーダの逆アセンブルからの抽出。
+        // 値ノイズの格子ハッシュは整数演算そのまま:
+        // h = (cell + seed + corner) × C（C は成分ごとの定数）、
+        // h ^= h.wxyz ^ (h >> 13)、s = Σ h_i・C_i、s ^= s >> 11、
+        // s ^= s・s、値 = s / 2^32。負の格子座標は +999999 で
+        // 持ち上げる（本家シェーダの実測）。
+        struct NoiseUniforms {
+            float x;
+            float y;
+            float z;
+            float threshold;
+            float scaleX;
+            float scaleY;
+            float scaleZ;
+            float strength;
+            int octaves;
+            int seed;
+            int levels;
+            float angle;
+            float warpStrength;
+            float warpScale;
+            int fractalMode;
+            int distanceMode;
+            int cellOutput;
+            float lacunarity;
+            float gain;
+            float pad2;
+            float stripeInterval;
+            float stripeWarpAmount;
+            float flowAmount;
+            float pad3;
+            float2 outputOrigin;
+            float2 outputSize;
+            int noiseType;
+            float padA;
+            float padB;
+            float padC;
+        };
+
+        float ymm4NoiseHash(uint3 cell) {
+            uint4 h = uint4(cell, 0u);
+            h *= uint4(0xAE3CC725u, 0x9FE72885u, 0xAE36BFB5u, 0x82C1FCADu);
+            h ^= h.wxyz ^ (h >> 13u);
+            uint s = h.x * 0xAE3CC725u + h.y * 0x9FE72885u
+                + h.z * 0xAE36BFB5u + h.w * 0x82C1FCADu;
+            s ^= s >> 11u;
+            s ^= s * s;
+            return float(s) * 2.3283064365386963e-10;
+        }
+
+        float ymm4ValueNoise(float3 p, int seed) {
+            float3 cell = floor(p);
+            float3 f = p - cell;
+            float3 w = f * f * (3.0 - 2.0 * f);
+            float values[8];
+            for (int i = 0; i < 8; i++) {
+                float3 corner = float3(
+                    float(i & 1), float((i >> 1) & 1), float((i >> 2) & 1));
+                float3 h = cell + float(seed) + corner;
+                if (h.x < 0.0) { h.x += 999999.0; }
+                if (h.y < 0.0) { h.y += 999999.0; }
+                if (h.z < 0.0) { h.z += 999999.0; }
+                values[i] = ymm4NoiseHash(uint3(h));
+            }
+            float x00 = mix(values[0], values[1], w.x);
+            float x10 = mix(values[2], values[3], w.x);
+            float x01 = mix(values[4], values[5], w.x);
+            float x11 = mix(values[6], values[7], w.x);
+            return mix(mix(x00, x10, w.y), mix(x01, x11, w.y), w.z);
+        }
+
+        // シンプレックスノイズ（ワープと Curl 用）。本家変種の定数:
+        // permute は ((x・34) + 10)・x mod 289、勾配は
+        // (成分 × 2/7 − 13/14)、減衰は (0.5 − |x|²)⁴、
+        // 出力は Σ × 52.5 + 0.5 で [0, 1] 帯へ写す。
+        float3 ymm4Mod2893(float3 x) {
+            return x - floor(x * (1.0 / 289.0)) * 289.0;
+        }
+
+        float4 ymm4Mod2894(float4 x) {
+            return x - floor(x * (1.0 / 289.0)) * 289.0;
+        }
+
+        float4 ymm4NoisePermute(float4 x) {
+            return ymm4Mod2894(((x * 34.0) + 10.0) * x);
+        }
+
+        float ymm4Snoise01(float3 v) {
+            const float2 c = float2(1.0 / 6.0, 1.0 / 3.0);
+            float3 i = floor(v + dot(v, c.yyy));
+            float3 x0 = v - i + dot(i, c.xxx);
+            float3 g = step(x0.yzx, x0.xyz);
+            float3 l = 1.0 - g;
+            float3 i1 = min(g.xyz, l.zxy);
+            float3 i2 = max(g.xyz, l.zxy);
+            float3 x1 = x0 - i1 + c.xxx;
+            float3 x2 = x0 - i2 + c.yyy;
+            float3 x3 = x0 - 0.5;
+            i = ymm4Mod2893(i);
+            float4 p = ymm4NoisePermute(ymm4NoisePermute(ymm4NoisePermute(
+                float4(0.0, i1.z, i2.z, 1.0) + i.z)
+                + float4(0.0, i1.y, i2.y, 1.0) + i.y)
+                + float4(0.0, i1.x, i2.x, 1.0) + i.x);
+            float4 j = p - 49.0 * floor(p * (1.0 / 49.0));
+            float4 gx = floor(j * (1.0 / 7.0)) * (2.0 / 7.0) - 13.0 / 14.0;
+            float4 gy = floor(j - 7.0 * floor(j * (1.0 / 7.0)))
+                * (2.0 / 7.0) - 13.0 / 14.0;
+            float4 gz = 1.0 - abs(gx) - abs(gy);
+            float4 fold = floor(gx) * 2.0 + 1.0;
+            float4 foldY = floor(gy) * 2.0 + 1.0;
+            gx = select(gx, gx - fold, gz <= 0.0);
+            gy = select(gy, gy - foldY, gz <= 0.0);
+            float3 g0 = float3(gx.x, gy.x, gz.x);
+            float3 g1 = float3(gx.y, gy.y, gz.y);
+            float3 g2 = float3(gx.z, gy.z, gz.z);
+            float3 g3 = float3(gx.w, gy.w, gz.w);
+            float4 norm = 1.7928428649902344 - 0.8537347316741943 * float4(
+                dot(g0, g0), dot(g1, g1), dot(g2, g2), dot(g3, g3));
+            g0 *= norm.x;
+            g1 *= norm.y;
+            g2 *= norm.z;
+            g3 *= norm.w;
+            float4 m = max(0.5 - float4(
+                dot(x0, x0), dot(x1, x1), dot(x2, x2), dot(x3, x3)), 0.0);
+            m *= m;
+            m *= m;
+            float4 dots = float4(
+                dot(g0, x0), dot(g1, x1), dot(g2, x2), dot(g3, x3));
+            return dot(m, dots) * 52.5 + 0.5;
+        }
+
+        // 後処理連鎖（全生成器共通、本家シェーダ尾部の実測）:
+        // Threshold で引き伸ばし、Strength で白への寄せ／反転側の
+        // 伸長、Levels で量子化（255 のときだけ素通し）。
+        float ymm4NoisePost(float v, constant NoiseUniforms &uniforms) {
+            v = (v - uniforms.threshold) / max(1.0 - uniforms.threshold, 1e-6);
+            float s = uniforms.strength;
+            v = s < 1.0 ? (1.0 - s) + s * v : (2.0 - s) * v;
+            if (uniforms.levels != 255) {
+                float lv = float(uniforms.levels - 1);
+                v = rint(v * lv) / lv;
+            }
+            return clamp(v, 0.0, 1.0);
+        }
+
+        // FractalMode の整形（0 = そのまま、1 = |2v − 1|、
+        // それ以外 = (1 − |2v − 1|)²）。
+        float ymm4FractalShape(float v, int mode) {
+            if (mode == 0) { return v; }
+            float n = abs(clamp(v, 0.0, 1.0) * 2.0 - 1.0);
+            if (mode == 1) { return n; }
+            float r = 1.0 - n;
+            return r * r;
+        }
+
+        fragment float4 ymm4NoiseFragment(
+            VertexOut in [[stage_in]],
+            constant NoiseUniforms &uniforms [[buffer(0)]]
+        ) {
+            float2 point = uniforms.outputOrigin + in.uv * uniforms.outputSize;
+            float3 p = float3(point, 0.0)
+                - float3(uniforms.x, uniforms.y, uniforms.z);
+            if (uniforms.warpStrength != 0.0) {
+                float seedF = float(uniforms.seed);
+                float3 seedVec = fract(seedF
+                    * float3(0.09730000048875809, 0.10300000011920929,
+                             0.1031000018119812));
+                seedVec += dot(seedVec.zyx, seedVec.yxz + 33.33);
+                float3 pairSums = float3(
+                    seedVec.y + seedVec.z, seedVec.x + seedVec.z,
+                    seedVec.x + seedVec.y);
+                float3 hash3 = fract(seedVec * pairSums);
+                float3 q = p * uniforms.warpScale * 0.015625 + hash3 * 289.0;
+                float2 w = float2(
+                    ymm4Snoise01(q),
+                    ymm4Snoise01(q + float3(47.2, 31.6, 11.9)));
+                p.xy += uniforms.warpStrength * (w * 2.0 - 1.0);
+            }
+            p *= float3(uniforms.scaleX, uniforms.scaleY, uniforms.scaleZ);
+            float cs = cos(uniforms.angle);
+            float sn = sin(uniforms.angle);
+            p = float3(
+                p.x * cs - p.y * sn, p.x * sn + p.y * cs, p.z);
+            float v;
+            if (uniforms.noiseType == 1) {
+                v = clamp(ymm4ValueNoise(p, uniforms.seed), 0.0, 1.0);
+            } else if (uniforms.noiseType == 2) {
+                // Curl: オクターブごとに ±0.1 ずらした2点の
+                // シンプレックス値の差を 0.78125 倍して中央へ寄せ、
+                // Fractal と同じ整形・蓄積を行う（評価点の組は
+                // 逆アセンブルからの近似。実装記録に明記）。
+                float sum = 0.0;
+                float ampSum = 0.0;
+                float freq = 1.0;
+                float amp = 1.0;
+                for (int octave = 0; octave < uniforms.octaves; octave++) {
+                    float3 q = p * freq;
+                    float diff = ymm4Snoise01(q + float3(0.0, 0.1, 0.0))
+                        - ymm4Snoise01(q - float3(0.0, 0.1, 0.0));
+                    float shaped = ymm4FractalShape(
+                        clamp(diff * 0.78125 + 0.5, 0.0, 1.0),
+                        uniforms.fractalMode);
+                    sum += shaped * amp;
+                    ampSum += amp;
+                    freq *= uniforms.lacunarity;
+                    amp *= uniforms.gain;
+                }
+                v = ampSum > 0.0 ? sum / ampSum : 0.0;
+            } else {
+                float sum = 0.0;
+                float ampSum = 0.0;
+                float freq = 1.0;
+                float amp = 1.0;
+                for (int octave = 0; octave < uniforms.octaves; octave++) {
+                    float n = ymm4ValueNoise(p * freq, uniforms.seed);
+                    sum += ymm4FractalShape(n, uniforms.fractalMode) * amp;
+                    ampSum += amp;
+                    freq *= uniforms.lacunarity;
+                    amp *= uniforms.gain;
+                }
+                v = ampSum > 0.0 ? clamp(sum / ampSum, 0.0, 1.0) : 0.0;
+            }
+            float result = ymm4NoisePost(v, uniforms);
+            return float4(result, result, result, 1.0);
+        }
+        // ブラシ塗り（BRUSH46）。本家の D2D ブラシ（グラデーション・
+        // パターン・ビットマップ）を平面座標で解析的に評価する。
+        // 幾何の根拠は MetalBrushFill.swift のコメントに記す。
+        // mode: 0=線形グラデーション, 1=放射グラデーション,
+        //       2=市松, 3=ドット, 4=格子線, 5=ビットマップ
+        // グラデーションの分岐点は直色（非 Premultiplied）で渡し、
+        // 成分線形補間（本家の Gamma.StandardRgb = 成分線形空間での
+        // 補間）の後に Premultiplied 化する。パターン色は Premultiplied
+        // で渡す。
+        // pointA/pointB: 線形 = 始点/終点、放射 = 中心/焦点。
+        // invA/invC/invT: パターン座標への逆変換
+        //   q = (invA.x・px + invC.x・py + invT.x,
+        //        invA.y・px + invC.y・py + invT.y)。
+        // pattern: 市松 = (セル寸法, 0, 0, 0)、ドット = (間隔, 半径, 0, 0)、
+        //   格子線 = (タイル幅, タイル高さ, 線の太さ, 0)。
+        struct BrushUniforms {
+            float2 outputOrigin;
+            float2 outputSize;
+            float2 pointA;
+            float2 pointB;
+            float2 radii;
+            float2 invA;
+            float2 invC;
+            float2 invT;
+            float4 color1;
+            float4 color2;
+            float4 pattern;
+            uint mode;
+            uint extendMode;
+            uint stopCount;
+            float pad0;
+        };
+
+        float ymm4BrushExtend(float t, uint extendMode) {
+            if (extendMode == 1) {
+                // Wrap
+                return t - floor(t);
+            }
+            if (extendMode == 2) {
+                // Mirror（三角波）
+                float m = fmod(fabs(t), 2.0);
+                return m <= 1.0 ? m : 2.0 - m;
+            }
+            return clamp(t, 0.0, 1.0);
+        }
+
+        float4 ymm4BrushGradient(
+            float t,
+            constant BrushUniforms &uniforms,
+            constant float4 *stopColors,
+            constant float *stopOffsets
+        ) {
+            uint count = uniforms.stopCount;
+            if (count == 0) {
+                return float4(0.0);
+            }
+            float4 straight = stopColors[count - 1];
+            if (count > 1) {
+                float et = ymm4BrushExtend(t, uniforms.extendMode);
+                if (et <= stopOffsets[0]) {
+                    straight = stopColors[0];
+                } else if (et < stopOffsets[count - 1]) {
+                    for (uint i = 0; i + 1 < count; i++) {
+                        if (et >= stopOffsets[i] && et <= stopOffsets[i + 1]) {
+                            float span = stopOffsets[i + 1] - stopOffsets[i];
+                            float f = span > 0.0 ? (et - stopOffsets[i]) / span : 0.0;
+                            straight = mix(stopColors[i], stopColors[i + 1], f);
+                            break;
+                        }
+                    }
+                }
+            }
+            return float4(straight.rgb * straight.a, straight.a);
+        }
+
+        fragment float4 ymm4BrushFragment(
+            VertexOut in [[stage_in]],
+            texture2d<float> tile [[texture(0)]],
+            sampler tileSampler [[sampler(0)]],
+            constant BrushUniforms &uniforms [[buffer(0)]],
+            constant float4 *stopColors [[buffer(1)]],
+            constant float *stopOffsets [[buffer(2)]]
+        ) {
+            float2 point = uniforms.outputOrigin + in.uv * uniforms.outputSize;
+            float2 q = float2(
+                uniforms.invA.x * point.x + uniforms.invC.x * point.y + uniforms.invT.x,
+                uniforms.invA.y * point.x + uniforms.invC.y * point.y + uniforms.invT.y);
+            switch (uniforms.mode) {
+                case 0: {
+                    // 線形: t = (p − A)・(B − A) / |B − A|^2。
+                    float2 axis = uniforms.pointB - uniforms.pointA;
+                    float denom = dot(axis, axis);
+                    if (denom <= 0.0) {
+                        // 始点=終点（縮退）。本家の D2D はグラデーション
+                        // 軸が潰れた場合に終端色で塗る。
+                        if (uniforms.stopCount == 0) {
+                            return float4(0.0);
+                        }
+                        float4 last = stopColors[uniforms.stopCount - 1];
+                        return float4(last.rgb * last.a, last.a);
+                    }
+                    float t = dot(point - uniforms.pointA, axis) / denom;
+                    return ymm4BrushGradient(t, uniforms, stopColors, stopOffsets);
+                }
+                case 1: {
+                    // 放射: 楕円族 center(t) = F + t・(C − F)、
+                    // radii(t) = t・(rx, ry) が q を通る t を二次方程式で解く。
+                    float2 radii = uniforms.radii;
+                    if (radii.x <= 0.0 || radii.y <= 0.0 || uniforms.stopCount == 0) {
+                        if (uniforms.stopCount == 0) {
+                            return float4(0.0);
+                        }
+                        float4 last = stopColors[uniforms.stopCount - 1];
+                        return float4(last.rgb * last.a, last.a);
+                    }
+                    float2 du = q - uniforms.pointB;
+                    float2 dc = uniforms.pointA - uniforms.pointB;
+                    float2 r2 = radii * radii;
+                    float a = (dc.x * dc.x) / r2.x + (dc.y * dc.y) / r2.y - 1.0;
+                    float b = -2.0 * ((du.x * dc.x) / r2.x + (du.y * dc.y) / r2.y);
+                    float c = (du.x * du.x) / r2.x + (du.y * du.y) / r2.y;
+                    float t;
+                    if (fabs(a) < 1e-6) {
+                        t = fabs(b) > 1e-6 ? -c / b : 0.0;
+                    } else {
+                        float disc = max(b * b - 4.0 * a * c, 0.0);
+                        float sq = sqrt(disc);
+                        float t1 = (-b + sq) / (2.0 * a);
+                        float t2 = (-b - sq) / (2.0 * a);
+                        t = max(t1, t2);
+                    }
+                    return ymm4BrushGradient(t, uniforms, stopColors, stopOffsets);
+                }
+                case 2: {
+                    // 市松: セル寸法で割った床の和のパリティ。
+                    float size = max(uniforms.pattern.x, 1.0);
+                    float cell = floor(q.x / size) + floor(q.y / size);
+                    return (int(cell) & 1) != 0 ? uniforms.color2 : uniforms.color1;
+                }
+                case 3: {
+                    // ドット: タイル中心からの距離で円の内外。
+                    float span = max(uniforms.pattern.x, 1.0);
+                    float2 local = q - span * floor(q / span);
+                    float d = length(local - span * 0.5);
+                    return d <= uniforms.pattern.y ? uniforms.color1 : uniforms.color2;
+                }
+                case 4: {
+                    // 格子線: タイル境界からの最短距離が太さの半分未満。
+                    float w = max(uniforms.pattern.x, 1.0);
+                    float h = max(uniforms.pattern.y, 1.0);
+                    float fx = q.x - w * floor(q.x / w);
+                    float fy = q.y - h * floor(q.y / h);
+                    float edge = min(min(fx, w - fx), min(fy, h - fy));
+                    return edge < uniforms.pattern.z * 0.5
+                        ? uniforms.color1 : uniforms.color2;
+                }
+                case 5: {
+                    // ビットマップ: q はビットマップの画素座標。
+                    float2 size = float2(tile.get_width(), tile.get_height());
+                    if (size.x <= 0.0 || size.y <= 0.0) {
+                        return float4(0.0);
+                    }
+                    return tile.sample(tileSampler, q / size);
+                }
+                default:
+                    return float4(0.0);
             }
         }
         """
