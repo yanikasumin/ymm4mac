@@ -74,7 +74,10 @@ struct NumberRowView: View {
         // 表示桁への丸めをモデルへ戻すと小数の精度が失われる
         // （FE-R1-019）。
         guard text != uneditedText else { return }
-        guard let value = Double(text) else {
+        // 非有限値（"nan" / "inf" は Double として解釈できてしまう）も
+        // 確定しない。モデルへ入れると保存時に 0.0 へ化ける
+        // （FE-R3-118-02）。解釈できない入力と同じく表示を現在値へ戻す。
+        guard let value = Double(text), value.isFinite else {
             text = formatNumber(descriptor.numberValue ?? 0)
             uneditedText = text
             return
@@ -405,9 +408,11 @@ struct AnimationRowView: View {
         // 未編集（フォーカス時点のテキストのまま）なら書き戻さない
         // （FE-R1-019。表示桁への丸めが区間の値へ戻ると精度が失われる）。
         guard text != uneditedText else { return }
-        guard let value = Double(text) else {
-            // 解釈できない入力（全角数字など）は確定せず、表示を
-            // モデルの現在値へ戻す（未確定の入力が残って見えないように）。
+        guard let value = Double(text), value.isFinite else {
+            // 解釈できない入力（全角数字など）と非有限値（"nan" /
+            // "inf"）は確定せず、表示をモデルの現在値へ戻す
+            // （未確定の入力が残って見えないように。非有限値をモデルへ
+            // 入れると保存時に 0.0 へ化ける。FE-R3-118-02）。
             text = formatNumber(displayedValue)
             uneditedText = text
             return

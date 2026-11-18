@@ -2178,7 +2178,7 @@ struct ProjectView: View {
     /// `hh:mm:ss.ff` / `mm:ss.ff` / 秒数 のいずれかをフレームへ変換する。
     /// Double は "nan" / "inf" も受理するため、有限でない値は各段階で
     /// 弾く（FE-R1-005。NaN や無限大の Int 変換は trap する）。有限でも
-    /// Int の範囲を超える結果は変換前に弾く。
+    /// Int の範囲を超える結果は nil を返す。
     private func parseTimeText(_ text: String, fps: Int) -> Int? {
         let parts = text.split(separator: ":")
         guard !parts.isEmpty, parts.count <= 3 else { return nil }
@@ -2189,10 +2189,12 @@ struct ProjectView: View {
             guard seconds.isFinite else { return nil }
         }
         let frames = (seconds * Double(max(fps, 1))).rounded()
-        guard frames.isFinite,
-              frames >= Double(Int.min), frames <= Double(Int.max)
-        else { return nil }
-        return Int(frames)
+        guard frames.isFinite else { return nil }
+        // 範囲判定を Double の上限比較で行わない。Double(Int.max) は
+        // 2^63 へ丸められるため、2^63 ちょうどの値が比較をすり抜けて
+        // Int 変換で trap する（FE-R3-118-01）。変換はこの1か所のみで、
+        // 失敗は nil として扱う。
+        return Int(exactly: frames)
     }
 
     private var statusDivider: some View {
