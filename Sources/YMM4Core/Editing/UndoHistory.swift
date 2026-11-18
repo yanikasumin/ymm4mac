@@ -9,7 +9,11 @@ import Foundation
 ///   無いトランザクションの確定はエントリを作らず、Redo も破棄しない
 ///   （本家の空の `Record()` が何もしないことに対応）。
 /// - Undo/Redo の適用中は記録が抑制され、適用の副作用で生じた確定は
-///   破棄される（本家の `isUndoRedoing` による記録抑制）。
+///   破棄される（本家の `isUndoRedoing` による記録抑制）。ただし抑制が
+///   有効なのはコマンドの適用中だけで、履歴変更の通知は本家と同様に
+///   抑制を解除してから発火させる。通知の時点でも抑制が残っていると、
+///   通知から生じた新しい編集の確定が記録だけ黙って破棄され、Undo
+///   できない変更が生まれるためである（FE-R6-119-02）。
 ///
 /// 本家との意図的な差異:
 /// - 本家の Undo/Redo は非同期（非同期コマンドを含むため）。Mac 版の
@@ -84,30 +88,39 @@ public final class UndoHistory {
     /// 適用中（コマンドの適用クロージャからの再入）は実行せず false
     /// を返す（FE-R5-119-02）。入口は `EditCoordinator` 経由に一本化
     /// するためモジュール内に閉じる。
+    ///
+    /// 記録抑制はコマンドの適用中だけに限定し、スタックの更新を終えて
+    /// 抑制を解除してから履歴変更の通知を発火させる（FE-R6-119-02）。
     @discardableResult
     func undo() -> Bool {
         guard !isApplying else { return false }
         guard let entry = undoStack.popLast() else { return false }
-        isApplying = true
-        defer { isApplying = false }
-        entry.undoAll()
+        applySuppressingRecording { entry.undoAll() }
         redoStack.append(entry)
         onHistoryChanged?()
         return true
     }
 
     /// 最新の Redo エントリを再適用し、Undo 側へ戻す。対象が無ければ false。
-    /// 再入の扱いは `undo` と同じ。
+    /// 再入と通知の扱いは `undo` と同じ。
     @discardableResult
     func redo() -> Bool {
         guard !isApplying else { return false }
         guard let entry = redoStack.popLast() else { return false }
-        isApplying = true
-        defer { isApplying = false }
-        entry.redoAll()
+        applySuppressingRecording { entry.redoAll() }
         undoStack.append(entry)
         onHistoryChanged?()
         return true
+    }
+
+    /// コマンドの適用だけを記録抑制の範囲内で実行する。適用が終われば
+    /// 抑制は解除されるため、この後に発火する履歴変更通知の中から
+    /// 新しい編集を確定させても、その確定は記録される
+    /// （FE-R6-119-02）。
+    private func applySuppressingRecording(_ apply: () -> Void) {
+        isApplying = true
+        defer { isApplying = false }
+        apply()
     }
 
     /// 履歴を全て破棄する（プロジェクトの読み込み・新規作成時用）。

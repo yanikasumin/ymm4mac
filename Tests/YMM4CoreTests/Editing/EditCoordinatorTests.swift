@@ -359,12 +359,15 @@ final class EditCoordinatorTests: XCTestCase {
     }
 
     /// キャンセルの巻き戻し中に同じトランザクションを再キャンセル
-    /// しても再帰的な巻き戻しは起きず、新しいトランザクションの
-    /// 開始と組み合わさっても履歴・モデルが壊れない。
+    /// しても再帰的な巻き戻しは起きない。巻き戻し中は操作状態が復元
+    /// 処理中として保持されるため、新しいトランザクションの開始も
+    /// 拒否される（FE-R6-119-01）。巻き戻し完了後は通常どおり開始
+    /// できる。
     func testCancelReentryDoesNotRecurse() {
         let coordinator = EditCoordinator()
         let item = StubItem()
         var rollbackCount = 0
+        var nestedBeginWasRefused = false
 
         let transaction = beginTransaction(coordinator)
         item.frame = 10
@@ -375,15 +378,124 @@ final class EditCoordinatorTests: XCTestCase {
                 // 巻き戻し中: 同じトランザクションの再キャンセルと、
                 // 新しいトランザクションの開始を試みる。
                 coordinator.cancel(transaction)
-                _ = coordinator.beginTransaction()
+                nestedBeginWasRefused = coordinator.beginTransaction() == nil
             },
             redo: { item.frame = 10 }
         )
         coordinator.cancel(transaction)
 
         XCTAssertEqual(rollbackCount, 1)
+        XCTAssertTrue(nestedBeginWasRefused)
         XCTAssertEqual(item.frame, 0)
         XCTAssertTrue(transaction.isFinished)
+        XCTAssertNil(coordinator.activeTransaction)
         XCTAssertFalse(coordinator.canUndo)
+
+        // 巻き戻し完了後は操作状態が戻り、新しく開始できる。
+        let next = beginTransaction(coordinator)
+        coordinator.commit(next)
+        XCTAssertFalse(coordinator.canUndo)
+    }
+
+    // MARK: - FE-R6-119-01: 巻き戻し中の操作排他
+
+    /// レビュアーの再現条件そのもの: A 確定（Frame 0→10）→ B 開始
+    /// （Frame 20・Length 2）→ B のキャンセル巻き戻し中（Length の
+    /// 巻き戻し適用の中）から A の Undo と新規開始を試みる。どちらも
+    /// 拒否され、巻き戻し完了後は B の変更前（Frame 10 / Length 1）へ
+    /// 正しく戻り、履歴は A が Undo 可能な状態で整合する。
+    func testCancelRollbackBlocksUndoAndBegin() {
+        let coordinator = EditCoordinator()
+        let item = StubItem()
+        item.length = 1
+
+        // A を確定する（Frame 0→10）。状態は (Frame 10, Length 1)。
+        let a = beginTransaction(coordinator)
+        applyAndRegister(a, item, keyPath: \.frame, key: "Frame", to: 10)
+        coordinator.commit(a)
+        XCTAssertEqual(coordinator.history.undoCount, 1)
+
+        // B を開始し、Frame 10→20 と Length 1→2 を適用する。巻き戻し
+        // は登録の逆順（Length → Frame）に進む。
+        var nestedUndoResults: [Bool] = []
+        var nestedBeginWasRefused = false
+        let b = beginTransaction(coordinator)
+        applyAndRegister(b, item, keyPath: \.frame, key: "Frame", to: 20)
+        item.length = 2
+        b.addValueChange(
+            target: EditTargetKey(item, key: "Length"),
+            oldValue: 1, newValue: 2,
+            apply: { value in
+                item.length = value
+                guard value == 1 else { return }
+                // 巻き戻し中: 過去の履歴（A）の Undo と新規開始を試みる。
+                nestedUndoResults.append(coordinator.undo())
+                nestedBeginWasRefused = coordinator.beginTransaction() == nil
+            }
+        )
+        coordinator.cancel(b)
+
+        // 再入した操作はどちらも拒否され、巻き戻しは最後まで進む。
+        XCTAssertEqual(nestedUndoResults, [false])
+        XCTAssertTrue(nestedBeginWasRefused)
+        XCTAssertEqual(item.frame, 10)
+        XCTAssertEqual(item.length, 1)
+        XCTAssertNil(coordinator.activeTransaction)
+
+        // 履歴は A だけが Undo 可能な状態で整合している（A が Redo 側へ
+        // 逃げていない）。
+        XCTAssertEqual(coordinator.history.undoCount, 1)
+        XCTAssertEqual(coordinator.history.redoCount, 0)
+        XCTAssertTrue(coordinator.canUndo)
+        XCTAssertTrue(coordinator.undo())
+        XCTAssertEqual(item.frame, 0)
+    }
+
+    // MARK: - FE-R6-119-02: 履歴変更通知からの編集確定
+
+    /// 履歴変更の通知（Undo の発火）の中から新しい編集を確定させても、
+    /// その確定は履歴に登録され Undo できる。通知の時点でも記録抑制が
+    /// 残っていると、モデルへの変更は残るのに確定だけが黙って破棄
+    /// されていた。
+    func testEditCommittedFromHistoryChangedNotificationIsRecorded() {
+        let coordinator = EditCoordinator()
+        let item = StubItem()
+
+        // A を確定する（0→10）。
+        let a = beginTransaction(coordinator)
+        applyAndRegister(a, item, keyPath: \.frame, key: "Frame", to: 10)
+        coordinator.commit(a)
+        XCTAssertEqual(coordinator.history.undoCount, 1)
+
+        // Undo の通知の中で、戻った値（0）から新しい編集（0→42）を
+        // 確定させる。通知は記録のたびに再入するため、初回だけに
+        // 限定する。
+        var committedFromNotification = false
+        coordinator.onHistoryChanged = {
+            guard !committedFromNotification else { return }
+            guard let transaction = coordinator.beginTransaction() else { return }
+            committedFromNotification = true
+            let oldValue = item.frame
+            item.frame = 42
+            transaction.addValueChange(
+                target: EditTargetKey(item, key: "Frame"),
+                oldValue: oldValue, newValue: 42,
+                apply: { item.frame = $0 }
+            )
+            coordinator.commit(transaction)
+        }
+
+        // A を Undo すると値が 0 へ戻り、通知の中で新しい編集が
+        // 確定する。
+        XCTAssertTrue(coordinator.undo())
+        XCTAssertTrue(committedFromNotification)
+        XCTAssertEqual(item.frame, 42)
+
+        // 新しい編集は履歴に登録され（Redo の A は破棄され）、
+        // Undo できる。
+        XCTAssertEqual(coordinator.history.undoCount, 1)
+        XCTAssertEqual(coordinator.history.redoCount, 0)
+        XCTAssertTrue(coordinator.undo())
+        XCTAssertEqual(item.frame, 0)
     }
 }

@@ -23,11 +23,39 @@ import Foundation
 /// 変更と履歴エントリが混ざった状態で履歴を動かすと、その後の
 /// 確定・巻き戻しが履歴とモデルを乖離させるためである
 /// （FE-R5-119-01）。
+///
+/// キャンセルの巻き戻し中も同様で、巻き戻しの適用クロージャから
+/// 過去の履歴の Undo や新しいトランザクションの開始が交錯すると
+/// 履歴とモデルが乖離する。そのため Coordinator は「編集中」と
+/// 「復元処理中（巻き戻し中）」を操作状態として区別して一元管理し、
+/// 巻き戻しが完了するまでは他の操作（開始・確定・キャンセル・
+/// Undo/Redo）を全て拒否する（FE-R6-119-01）。R5 処分では巻き戻し
+/// 開始前に有効なトランザクションを解除していたため、巻き戻し中は
+/// Undo の排他条件（有効なトランザクションの存在）が消えていた。
 public final class EditCoordinator {
     /// 保持する Undo/Redo 履歴。
     public let history: UndoHistory
-    /// 現在有効なトランザクション（無ければ nil）。
-    public private(set) var activeTransaction: EditTransaction?
+
+    /// Coordinator の操作状態。状態遷移と操作の可否はこの1か所で
+    /// 管理する（FE-R6-119-01）。
+    private enum OperationState {
+        /// 有効なトランザクションは無く、巻き戻しもしていない。
+        case idle
+        /// トランザクションが有効（編集中）。
+        case editing(EditTransaction)
+        /// キャンセルの巻き戻しを実行中（復元処理中）。完了するまで
+        /// 他の操作は全て拒否する。
+        case restoring
+    }
+
+    private var operationState: OperationState = .idle
+
+    /// 現在有効なトランザクション（編集中でなければ nil。巻き戻し中
+    /// も nil だが、その間は `beginTransaction` も受け付けない）。
+    public var activeTransaction: EditTransaction? {
+        guard case .editing(let transaction) = operationState else { return nil }
+        return transaction
+    }
 
     public init(capacity: Int = UndoHistory.defaultCapacity) {
         self.history = UndoHistory(capacity: capacity)
@@ -41,13 +69,14 @@ public final class EditCoordinator {
     }
 
     /// 編集トランザクションを開始する。既に有効なトランザクションが
-    /// ある場合は開始を拒否し、nil を返す（前のトランザクションは
-    /// 巻き戻されず、そのまま有効であり続ける）。
+    /// ある場合、および巻き戻し中の場合は開始を拒否し、nil を返す
+    /// （前のトランザクションは巻き戻されず、そのまま有効であり
+    /// 続ける）。
     @discardableResult
     public func beginTransaction() -> EditTransaction? {
-        guard activeTransaction == nil else { return nil }
+        guard case .idle = operationState else { return nil }
         let transaction = EditTransaction()
-        activeTransaction = transaction
+        operationState = .editing(transaction)
         return transaction
     }
 
@@ -56,9 +85,10 @@ public final class EditCoordinator {
     /// 有効なトランザクション以外（終了済み・別系統）への呼び出しは
     /// 無視する。
     public func commit(_ transaction: EditTransaction) {
-        guard activeTransaction === transaction, !transaction.isFinished else { return }
+        guard case .editing(let active) = operationState,
+              active === transaction, !transaction.isFinished else { return }
         transaction.finish()
-        activeTransaction = nil
+        operationState = .idle
         history.record(transaction)
     }
 
@@ -69,11 +99,15 @@ public final class EditCoordinator {
     /// 巻き戻しは、適用クロージャからの再入（同じトランザクションへの
     /// 再キャンセル等）と組み合わさっても再帰的な巻き戻しにならない
     /// よう、コマンドの実行前に終了状態を確定させてから行う
-    /// （FE-R5-119-02）。
+    /// （FE-R5-119-02）。さらに巻き戻しの実行中は操作状態を復元処理中
+    /// として保持し、巻き戻しが完了するまで開始・Undo/Redo など他の
+    /// 操作を全て拒否する（FE-R6-119-01）。
     public func cancel(_ transaction: EditTransaction) {
-        guard activeTransaction === transaction, !transaction.isFinished else { return }
+        guard case .editing(let active) = operationState,
+              active === transaction, !transaction.isFinished else { return }
         transaction.finish()
-        activeTransaction = nil
+        operationState = .restoring
+        defer { operationState = .idle }
         transaction.rollback()
     }
 
@@ -83,19 +117,20 @@ public final class EditCoordinator {
     public var canRedo: Bool { history.canRedo }
 
     /// 最新の履歴エントリを Undo する。未確定のトランザクションが
-    /// ある間は実行せず false を返す（FE-R5-119-01）。対象が無ければ
-    /// false。
+    /// ある間、および巻き戻し中は実行せず false を返す
+    /// （FE-R5-119-01、FE-R6-119-01）。対象が無ければ false。
     @discardableResult
     public func undo() -> Bool {
-        guard activeTransaction == nil else { return false }
+        guard case .idle = operationState else { return false }
         return history.undo()
     }
 
     /// 最新の履歴エントリを Redo する。未確定のトランザクションが
-    /// ある間は実行せず false を返す。対象が無ければ false。
+    /// ある間、および巻き戻し中は実行せず false を返す。対象が
+    /// 無ければ false。
     @discardableResult
     public func redo() -> Bool {
-        guard activeTransaction == nil else { return false }
+        guard case .idle = operationState else { return false }
         return history.redo()
     }
 }
