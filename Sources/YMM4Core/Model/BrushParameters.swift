@@ -720,6 +720,12 @@ public final class GradientMeshPointValue {
 public final class GradientMeshBrushParameter {
     public static let typeName = "YukkuriMovieMaker.Brush.GradientMeshBrushParameter, YukkuriMovieMaker"
 
+    /// 描画に使う点数の上限（本家 UI の範囲 2〜50 の上限）。
+    /// 保存データは範囲外の値もそのまま保持するが、描画側は
+    /// 点数の乗算より前にこの上限で検証する。外部ファイル由来の
+    /// 極端な値で乗算がオーバーフローし、プロセスが停止するのを防ぐ。
+    public static let maximumPointCount = 50
+
     /// 横の点数（2〜50。本家 UI の範囲）。
     public var horizontalCount: Int = 2
     /// 縦の点数（2〜50）。

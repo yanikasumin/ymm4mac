@@ -66,6 +66,8 @@ enum GradientMeshGeometry {
         transform: BrushAffine
     ) -> (vertices: [GradientMeshVertex], indices: [UInt32]) {
         guard horizontalCount >= 2, verticalCount >= 2,
+              horizontalCount <= GradientMeshBrushParameter.maximumPointCount,
+              verticalCount <= GradientMeshBrushParameter.maximumPointCount,
               snapshots.count == horizontalCount * verticalCount
         else { return ([], []) }
 

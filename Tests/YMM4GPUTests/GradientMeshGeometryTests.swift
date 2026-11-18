@@ -177,5 +177,20 @@ final class GradientMeshGeometryTests: XCTestCase {
         XCTAssertTrue(result.vertices.isEmpty)
         XCTAssertTrue(result.indices.isEmpty)
     }
+
+    /// 外部ファイル由来の極端な点数では、点数の乗算がオーバーフローして
+    /// プロセスが停止してはならない（R7-01）。上限を超える点数は
+    /// 乗算より前に弾かれ、空のジオメトリが返る。
+    func testExtremeCountsProduceNoGeometryWithoutOverflow() {
+        let bounds = RectF(left: -16, top: -16, right: 16, bottom: 16)
+        let result = GradientMeshGeometry.build(
+            horizontalCount: 1_000_000_000, verticalCount: 1_000_000_000,
+            snapshots: [],
+            coordinateMode: .relative, extendOutside: false,
+            bounds: bounds, transform: .identity
+        )
+        XCTAssertTrue(result.vertices.isEmpty)
+        XCTAssertTrue(result.indices.isEmpty)
+    }
 }
 #endif

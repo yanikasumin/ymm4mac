@@ -402,6 +402,8 @@ final class MetalBrushFillRenderer {
             let verticalCount = parameter.verticalCount
             var snapshots: [GradientMeshSnapshot] = []
             if horizontalCount >= 2, verticalCount >= 2,
+               horizontalCount <= GradientMeshBrushParameter.maximumPointCount,
+               verticalCount <= GradientMeshBrushParameter.maximumPointCount,
                parameter.points.count == horizontalCount * verticalCount {
                 // 本家 GetLogicalPointSnapshots: 論理配置は
                 // -W/2 + W・列/(横点数-1) + 点オフセット・(W/100)。
