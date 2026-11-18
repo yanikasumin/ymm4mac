@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PreviewCore
 import YMM4Core
 import YMM4GPU
 

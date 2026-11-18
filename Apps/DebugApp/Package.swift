@@ -8,15 +8,36 @@ let package = Package(
     platforms: [
         .macOS("26.0"),
     ],
+    products: [
+        .library(name: "PreviewCore", targets: ["PreviewCore"]),
+    ],
     dependencies: [
         .package(path: "../.."),
     ],
     targets: [
-        .executableTarget(
-            name: "YMM4MacDebug",
+        // プレビュー合成のセッションと描画ワーカー。実行ファイルから
+        // 分離し、順序制御を単体テストで検証できるようにした（R6-02、
+        // 第11ラウンド R11-01 の処分）。
+        .target(
+            name: "PreviewCore",
             dependencies: [
                 .product(name: "YMM4Core", package: "YMM4Mac"),
                 .product(name: "YMM4GPU", package: "YMM4Mac"),
+            ]
+        ),
+        .executableTarget(
+            name: "YMM4MacDebug",
+            dependencies: [
+                "PreviewCore",
+                .product(name: "YMM4Core", package: "YMM4Mac"),
+                .product(name: "YMM4GPU", package: "YMM4Mac"),
+            ]
+        ),
+        .testTarget(
+            name: "PreviewCoreTests",
+            dependencies: [
+                "PreviewCore",
+                .product(name: "YMM4Core", package: "YMM4Mac"),
             ]
         ),
     ]
