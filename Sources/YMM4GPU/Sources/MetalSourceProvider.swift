@@ -78,6 +78,10 @@ public struct MetalSourceProvider {
     /// セッションへ届くようにする。未設定なら失敗は報告されない。
     public let diagnostics: RenderDiagnosticsCollector?
 
+    /// 立ち絵の口パク包絡の供給（声・fps・平滑化 → フレームごとの
+    /// 音量）。立ち絵 Source へ伝播する。未設定なら音量は本家の
+    /// フォールバック値になる。
+    public let tachieVolumeEnvelopeProvider: ((VoiceItem, Int, Int) -> [Double]?)?
     /// 書き出しジョブが開始時点で固定したユーザー辞書（D19-01）。
     /// テキスト・字幕の描画へ渡す。未設定なら共有ストアの最新を
     /// 読む（プレビュー経路）。子供給元へも同じ値を伝播させる。
@@ -92,6 +96,7 @@ public struct MetalSourceProvider {
         timeline: Timeline? = nil,
         effectProvider: (any EffectPairProvider)? = nil,
         diagnostics: RenderDiagnosticsCollector? = nil,
+        tachieVolumeEnvelopeProvider: ((VoiceItem, Int, Int) -> [Double]?)? = nil,
         dictionarySnapshot: UserDictionarySnapshot? = nil
     ) {
         self.devices = devices
@@ -102,6 +107,7 @@ public struct MetalSourceProvider {
         self.timeline = timeline
         self.effectProvider = effectProvider
         self.diagnostics = diagnostics
+        self.tachieVolumeEnvelopeProvider = tachieVolumeEnvelopeProvider
         self.dictionarySnapshot = dictionarySnapshot
     }
 
@@ -152,7 +158,8 @@ public struct MetalSourceProvider {
             )
         case let tachieItem as TachieItem:
             return MetalTachieSource(
-                devices: devices, item: tachieItem, rendererFactory: tachieRendererFactory
+                devices: devices, item: tachieItem, rendererFactory: tachieRendererFactory,
+                volumeEnvelopeProvider: tachieVolumeEnvelopeProvider
             )
         case let groupItem as GroupItem where groupItem.isComposite:
             // 合成グループは内部合成を持つ Source を返す。属するタイム
@@ -184,6 +191,7 @@ public struct MetalSourceProvider {
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
         let diagnostics = self.diagnostics
+        let tachieVolumeEnvelopeProvider = self.tachieVolumeEnvelopeProvider
         let dictionarySnapshot = self.dictionarySnapshot
         return { context in
             context.targetSize = PixelSize(
@@ -198,6 +206,7 @@ public struct MetalSourceProvider {
                 timeline: timeline,
                 effectProvider: effectProvider,
                 diagnostics: diagnostics,
+                tachieVolumeEnvelopeProvider: tachieVolumeEnvelopeProvider,
                 dictionarySnapshot: dictionarySnapshot
             )
             let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
@@ -230,6 +239,7 @@ public struct MetalSourceProvider {
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
         let diagnostics = self.diagnostics
+        let tachieVolumeEnvelopeProvider = self.tachieVolumeEnvelopeProvider
         let dictionarySnapshot = self.dictionarySnapshot
         return { beforeContext, afterContext in
             func makeComposer(
@@ -247,6 +257,7 @@ public struct MetalSourceProvider {
                     timeline: timeline,
                     effectProvider: effectProvider,
                     diagnostics: diagnostics,
+                    tachieVolumeEnvelopeProvider: tachieVolumeEnvelopeProvider,
                     dictionarySnapshot: dictionarySnapshot
                 )
                 let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)
@@ -306,6 +317,7 @@ public struct MetalSourceProvider {
         let tachieRendererFactory = self.tachieRendererFactory
         let effectProvider = self.effectProvider
         let diagnostics = self.diagnostics
+        let tachieVolumeEnvelopeProvider = self.tachieVolumeEnvelopeProvider
         let dictionarySnapshot = self.dictionarySnapshot
         return { sceneID, context in
             guard let timeline = sceneResolver?(sceneID) else { return nil }
@@ -322,6 +334,7 @@ public struct MetalSourceProvider {
                 timeline: timeline,
                 effectProvider: effectProvider,
                 diagnostics: diagnostics,
+                tachieVolumeEnvelopeProvider: tachieVolumeEnvelopeProvider,
                 dictionarySnapshot: dictionarySnapshot
             )
             let scene = TimelineScene(sceneID: timeline.id, timeline: timeline)

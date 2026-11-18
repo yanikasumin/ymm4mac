@@ -35,7 +35,15 @@ public final class VoiceItem: BaseItem {
     /// 音声の長さ。
     public var voiceLength: TimeSpanValue = .zero
     /// 音声キャッシュ（base64 で保存される）。
-    public var voiceCache: Data?
+    public var voiceCache: Data? {
+        didSet { voiceCacheGeneration += 1 }
+    }
+
+    /// 音声キャッシュの世代。差し替えのたびに増える単調カウンタで、
+    /// 保存対象ではない。バイト数では検出できない同サイズ差し替えを
+    /// 消費側（包絡キャッシュの署名など）が識別するために使う
+    /// （R22-116-02）。
+    public private(set) var voiceCacheGeneration: Int = 0
     /// 音量（%）。
     public var volume: Animation = Animation(defaultValue: 50, minValue: 0, maxValue: 10_000)
     /// パン（-100..100）。

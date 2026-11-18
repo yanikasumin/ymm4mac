@@ -1521,6 +1521,26 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 **#61（コンプレッサ Ratio≠1 の波形等価性）。** Issue 自身の定めどおり、本家を動かせる環境（Golden Master）が無い間は「未検証」のまま閉じない。係数法則（EnvelopeFollower）は再構成であり、本家の NWaves が逆コンパイル集合に無いことが制約の本体である。Ratio=1 の一致と BS.1770 側の検証済みという現状に変更はない。
 
 **InOutCrash（未実装の維持）。** 本家の CrashMeshBuilder は .NET のオブジェクト同一性ハッシュ（GetHashCode）を種にメッシュを破砕するため、本家の出力自体が実行ごとに非決定的であり、画素単位の一致は原理的に検証できない。加えて移植側の GPU 層には汎用メッシュ描画経路が無い（全面四角形とコンピュートのみ）。実装にはメッシュ描画基盤が前提であり、MeshDeformation の描画と同根の土台仕事として切り出す。現行の素通し（未実装の明示）を維持する。
+#### LIPSYNC — 口パクの振幅評価と口形の決定（IMPLEMENTED、Mac 検証済み）
+
+**本家の規則（逆コンパイルで確認）。** 口パクは2つの独立した経路からなる。(1) 音量: LipSyncEnvelope が声の音声（48kHz へリサンプル、音量・エコー・エフェクトなし）からフレームごとの RMS 包絡を計算する。窓の長さは Hz × smooth / fps × 2（インターリーブ済みサンプル数、上限 16,777,216）、窓の中心がフレーム位置に来るよう配置され、範囲外は 0 として数える（分母は常に窓長）。smooth はキャラクターの MouseSmooth（既定 4）。計算が無い場合の音量は、声の範囲内なら 0、範囲外・声なしなら −1。(2) 口形: 音量からは決まらず、声の LipSyncFrames（lab 解析由来の口形時系列。Pronounce 側が優先）から、その時刻以前の最後の要素の口形を取る。時系列が無ければ Silent。
+
+**何を実装したか。** (1) Core: `LipSyncEnvelopeCalculator`（Audio/LipSyncEnvelope.swift）。供給元（PCMProvider）のレートで本家と同じ窓規則の RMS 包絡を同期計算する。本家は 48kHz へリサンプルしてから計算するが、窓は時刻で定義されるためレートは粒度にだけ影響する。(2) Core: `MouthShapeValue` / `LipSyncFrameValue`（Items/LipSyncFrame.swift）。生 JSON のまま保持されている LipSyncFrames を評価時に復号する（Shape は名前文字列と数値の両形式を受ける。保存形式は変えない）。`VoiceItem.evaluatedLipSyncFrames`（Pronounce 優先、本家 GetLipSyncFrames と同じ）と `lipSyncShape(atFrame:fps:)`。(3) GPU: MetalTachieSource が、注入された包絡の供給から音量を取り、口形を評価結果で渡すようになった。包絡は声の同一性・長さ・fps・平滑化をキーにキャッシュする（本家の署名による再計算条件の簡約形。声の内容差し替えは Source の作り直しで解消する）。供給は `makeLipSyncEnvelopeProvider(baseDirectory:)`（声の PCM 解決＋計算）をプレビュー（PreviewBox）と書き出し（MetalExportVideoProvider）の両方へ配線し、MetalSourceProvider の子供給元へも伝播する。
+
+**残りの差分。** 本家は包絡を非同期に計算し、描画側は待ち時間つきで読み取る。こちらは同期計算＋キャッシュであり、長い声では初回表示で計算時間が出る。本家の対象音声はエフェクト適用前の声そのもの（EffectedItemSource で音量・エコー・エフェクトを無効化）であり、こちらの供給も声ファイルの素の PCM である点は一致する。立ち絵の描画器そのものはプラグイン境界（既定では描画器なし）のため、口パクが画面に出るかは描画器の有無に依存する（従来どおり）。
+
+**検証。** 新規テスト LipSyncTests 7件が Mac で合格（無音、一定振幅での窓端の半減と中央での一致、インパルスの窓内外、引数不正の nil、口形時系列の評価、数値形式の Shape、時系列なしの silent）。立ち絵系の既存テスト 9件も合格。ルートと DebugApp のビルド成功（Mac）。
+
+#### LIPSYNC-R20 — 第20ラウンド指摘への処分（PR #116 へ追加）
+
+- **R20-116-01（P1、包絡の入力音声が本家と異なる）**: 本家 TachieSource は包絡の入力として、声アイテムのエフェクトチェーンを通した音声（再生速度・ContentOffset を反映し、音量制御・エコー・音声エフェクトは除く）を 48kHz で生成する。従来は生ファイルの PCM をそのまま計算していたため、速度やオフセットがあると包絡の時間位置がずれていた。ホスト側の供給を AudioSourceFactory のチェーン（オプションで音量制御・エコー・エフェクトを無効化、48kHz）へ切り替え、計算器の入力を AudioStream 一般へ広げた。
+- **R20-116-02（P1、口形評価が速度・オフセットを無視）**: 本家 GetMouthShape の式どおりに変更した。定数速度では (アイテム内時刻 + ContentOffset) × 速度 / 100、可変速度では PlaybackRateMap の積分を使い、結果が負ならアイテム長の時刻から差し引く（負速度の折り返し）。
+- **R20-116-03（P2、フレーム時刻の丸め）**: tick 換算を本家 FrameTime.FrameToTime と同じ AwayFromZero の丸め（既存の AudioStream.frameToTicks）へ統一した。60fps のフレーム1が 166,667 tick になることを試験で固定した。
+- **R20-116-04（P2、未整列の時系列）**: 途中で打ち切らず、条件を満たす最後の要素を選ぶ本家 LastOrDefault の規則へ変更した。
+- **R20-116-05（P2、描画器が無くても全音声を計算）**: 立ち絵描画器が無い場合は包絡計算を行わないようにした（口形の評価は音声計算を伴わないため従来どおり）。
+- **R20-116-06（P2、平滑度の溢れ）**: 窓長の計算に溢れ検査を入れ、本家の checked 演算の失敗と同じく nil へ倒すようにした。
+
+検証: LipSync 試験 11 件（速度・オフセット・未整列・60fps 境界・溢れを追加）と立ち絵系が Mac で全合格。ルートのビルド成功。
 #### KEYFRAME-UI — キーフレーム編集 UI と値列連動の是正（IMPLEMENTED、Mac 検証済み）
 
 **問題（実コードで確認した不具合）。** タイムラインの右クリックメニューからのキーフレーム追加・削除・全削除が、位置だけを差し替える `BaseItem.setKeyFrames` を使っていた。`Animation` 側には値列を連動させる `insertKeyFrame` / `removeKeyFrame`（追加位置での現在値を挿入し曲線を保つ）が実装・試験済みだったが、アイテム層から呼ばれておらず、追加すると値列が不足して末尾が既定値で補われ（曲線が変わる）、削除すると値がずれる状態だった。全削除も同様。また、インスペクタのアニメーション行は先頭値しか編集できず、キーフレーム区間ごとの値編集は未対応と明記されていた。
@@ -1613,3 +1633,16 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 - **R24-117-01（P2、行追加の入口で不正な旧縦寸法が trap / 意図しない行削減になる）**: GradientMesh の Points コレクション insert クロージャ（`EffectPropertyMetadataComposite.swift`）は `vertical: parameter.verticalCount + 1` を呼び出し側で計算していた。`GradientMeshBrushParameter.decode` は旧寸法を丸めず復元するため、verticalCount=Int.max では +1 自体が trap し、verticalCount=51 では resizeGrid 内で 52 が上限50へ丸められ、「行追加」のつもりが末尾行を失うのに verticalCount が変化するため true（変更あり）を返していた。処分: insert の入口で旧寸法を検証し、正常範囲（縦は追加後に上限へ収まる 2〜49行、横は 2〜50）のときだけ +1 して進め、範囲外（50行以上・負数・0・1・巨大値、および横の異常値）では状態を変えず false を返す。成功報告は「縦がちょうど +1 され横が不変」という事後条件で確認する。不正な格子の安全化は resizeGrid 側の責務（R23-117-01）に残し、insert は修復を兼ねない。削除経路（remove）は既存のガード（verticalCount > 2、`rowStart + horizontalCount <= points.count`）で実質的に安全なため変更していない。
 
 検証: 新規テスト1件を EffectPropertyMetadataTests へ追加し Mac で合格 — `testGradientMeshInsertRejectsInvalidGridDimensions`（縦 Int.max で trap せず false・状態不変、縦51行で false・末尾行を失わない、縦1行で false、横51で縦が正常でも false・寸法不変、縦49行で true になり50行になる回帰）。縦50行での追加が false であることは既存の `testGradientMeshCollectionReportsNoChangeAtGridLimits` が覆うため流用した。あわせて EffectPropertyMetadataTests 全17件、BrushParameterTests 全18件、PropertyMetadataTests 全17件が Mac で全合格（いずれも方式名フィルタで実行）。
+#### LIPSYNC-R21 — 第21ラウンド指摘への処分（PR #116 へ追加）
+
+- **R21-116-01（P2、窓開始位置の溢れ）**: 窓長の検査に加え、開始位置の計算に使う (smooth + 1) と Int64 の乗算についても、ループ前に両端のフレームで溢れ検査を行い、溢れる場合は nil へ倒すようにした。窓長が偶然に範囲内へ収まる組合せ（Hz=1、fps と smooth が最大値）でも実行時トラップにならないことを試験で固定した。
+- **R21-116-02（P2、包絡キャッシュの失効条件）**: キャッシュの照合に、包絡を決定する入力の署名を加えた。署名は声の指定、生成済み音声の有無と大きさ、再生速度（種別・値列・キーフレーム・間隔）、ContentOffset、ContentLength、ループ有無からなる。本家の再計算署名（音声ファイル・ContentOffset・ContentLength・更新世代）に相当する範囲を、同一オブジェクトへの編集でも検出できるようにした。
+
+検証: LipSync 試験が Mac で全合格（溢れの組合せを追加）。ルートのビルド成功。あわせて main（PR #115・#113・#114）を取り込み、供給元の初期化引数（辞書スナップショットと包絡供給）の競合を両立する形で解消した。
+
+#### LIPSYNC-R22 — 第22ラウンド指摘への処分（PR #116 へ追加）
+
+- **R22-116-01（P2、包絡計算のオーバーフロー末尾）**: 従来の事前検査は `hz × (frame − centerOffset)` の乗算だけを見ており、`values.reserveCapacity(frameCount + 1)`、`windowStart + window`、`÷ fps × 2` のステップが無検査だった（反例: hz=1、fps=1、smooth=1、frameCount=Int.max は検査を通過して reserveCapacity でトラップ）。処分: (1) 窓の範囲 [開始, 終了) の導出を `windowRange(forFrame:)` へ集約し、減算・乗算・÷fps×2・窓長の加算の全ステップを溢れ検査つきにした。両端フレームの事前検査（R21-116-01）もこの導出へ一本化し、ループ内も同じ導出を通す。(2) 結果件数（frameCount + 1）に上限 16,777,216（窓長上限と同じ桁の安全弁）を設け、確保の前に nil へ倒すようにした。
+- **R22-116-02（P2、包絡キャッシュ署名の欠落3件）**: 署名が欠いていた (1) 再生速度のベジェ（点列の全成分と2次フラグを文字列化）、(2) 音声処理モード（`playbackRateAudioProcessingMode` の honkeName。SOLA かリサンプリングかでチェーン出力が変わる）、(3) 音声キャッシュの内容、を追加した。(3) はフレームごとの全データハッシュを避け、VoiceItem に世代カウンタ `voiceCacheGeneration`（`voiceCache` の didSet で増加する単調カウンタ、保存対象外）を新設して署名へ含める方式とした。従来のバイト数比較は世代へ置き換えた。あわせて署名関数を `MetalTachieSource.envelopeSignature(of:)`（static）へ変え、試験から直接検証できるようにした。
+
+検証: Mac で対象試験のみ実行（方式名フィルタ）。LipSyncTests の既存11件＋新規2件（異常フレーム数の nil、世代カウンタ）、EnvelopeSignatureTests 新規4件（署名の安定性、ベジェのみ・処理モードのみ・同サイズ差し替えでの署名変化）。結果は PR 本文に記録する。

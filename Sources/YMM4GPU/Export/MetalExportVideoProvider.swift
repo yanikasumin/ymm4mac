@@ -43,6 +43,9 @@ public final class MetalExportVideoProvider: VideoFrameProviding {
             sceneResolver: { id in timelines.first { $0.id == id } },
             timeline: timeline,
             effectProvider: effectProvider,
+            tachieVolumeEnvelopeProvider: makeLipSyncEnvelopeProvider(
+                baseDirectory: baseDirectory
+            ),
             dictionarySnapshot: dictionarySnapshot
         )
         self.composer = TimelineComposer(

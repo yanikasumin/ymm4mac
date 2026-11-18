@@ -69,7 +69,10 @@ public final class PreviewBox: PreviewRenderSession {
             // 合成グループの内部合成は、このタイムラインを再合成する。
             timeline: timeline,
             effectProvider: effectProvider,
-            diagnostics: diagnostics
+            diagnostics: diagnostics,
+            tachieVolumeEnvelopeProvider: makeLipSyncEnvelopeProvider(
+                baseDirectory: baseDirectory
+            )
         )
         self.composer = TimelineComposer(
             scene: TimelineScene(timeline: timeline),
