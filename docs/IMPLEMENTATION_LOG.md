@@ -1374,6 +1374,14 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **結論と次。** R6-02 の懸念は実測で裏付けられた。対策の本筋は「合成をメインキューから外す＋遅れたらフレームを落として最新位置へ追いつく」。描画経路の設計変更にあたるため、設計相談（第9ラウンド）で並行解析してから着工し、締切までの実施範囲を決める。
 
+#### MAC32-01-FIX — エフェクト編集マージの型ガード（Issue #57。IMPLEMENTED）
+
+**問題。** 編集の書き戻しで未知キーを保持する再帰マージ（VideoEffectRegistry.mergeNestedFields、MAC-0032 で導入）は、入れ子オブジェクトの `$type` が編集前後で変わった場合にも再帰し、旧型の未知キーを新型のオブジェクトへ混入させていた。多態パラメータ（ブラシ等）が編集可能になったため、Issue #57 の発動条件（多態パラメータが編集可能になるタイミング）が成立した。
+
+**実装。** mergeNestedFields の入口で、両側とも `$type` を持ち値が異なる場合は再帰せず型付き側をそのまま返す。どちらか一方でも `$type` を持たない場合は型の同一性を判定できないため従来どおりマージする（`Animation` のような `$type` を持たない入れ子の未知キー保持＝UI29-01 の動作を壊さない）。トップレベルの型ガードは既存の encode(_:preservingUnknownFieldsOf:) にあったため、今回の変更は入れ子レベルのみ。
+
+**検証。** 単体テスト3件を追加（EffectMergeTypeGuardTests）。FillBackground のブラシ Parameter を SolidColor から LinearGradient へ切り替えた場合に旧型の未知キーが残らないこと、同型では保持されること、`$type` を持たない Animation 内の未知キーは型付きエンコードが落としてもマージが回収すること。Linux の Swift で 3 件とも合格（Core のみに閉じた変更のため）。
+
 #### SOLA-DIFF — 音高保持（ピッチを保ったまま速度を変える処理）の二系統の差異（第7ラウンド合意による記録）
 
 **アイテム側。** 各アイテムの再生速度モードは Resampling / Sola の2種（YMM4Core の PlaybackRateMode）。Sola は SolaTimeStretchStream ＋ SoundTouchProcessor（本家同梱の SoundTouch.Net 2.3.2 と同じ仕様の再実装）で処理し、プレビュー・書き出し共通の音声パイプラインで適用される。

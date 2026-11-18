@@ -763,3 +763,105 @@ final class GPUEffectPassthroughTests: XCTestCase {
         }
     }
 }
+
+// MARK: - 編集マージの型ガード（Issue #57）
+
+final class EffectMergeTypeGuardTests: XCTestCase {
+
+    /// ブラシの Parameter に未知キーを持つ FillBackground の原文。
+    private func originalWithBrushParameter() -> PreservedObject {
+        PreservedObject(.object([
+            (key: "$type", value: .string(FillBackgroundEffectDefinition.typeName)),
+            (key: "Brush", value: .object([
+                (key: "Type", value: .string(Brush.defaultTypeName)),
+                (key: "Parameter", value: .object([
+                    (key: "$type", value: .string(SolidColorBrushParameter.typeName)),
+                    (key: "Color", value: .string("255,255,255,255")),
+                    (key: "FutureUnknownKey", value: .number(42)),
+                ])),
+            ])),
+        ]))
+    }
+
+    private func mergedParameter(
+        _ value: JSONValue
+    ) -> [(key: String, value: JSONValue)]? {
+        value.field("Brush")?.field("Parameter")?.objectFields
+    }
+
+    /// 型を切り替えた入れ子オブジェクトへは、旧型の未知キーが
+    /// マージで混入しない。
+    func testTypeChangedNestedObjectDoesNotInheritUnknownKeys() {
+        let original = originalWithBrushParameter()
+        let decoded = VideoEffectRegistry.decode(original)
+            as? FillBackgroundEffectDefinition
+        XCTAssertNotNil(decoded)
+        guard let decoded else { return }
+        // 編集でブラシのパラメータ型を切り替える。
+        decoded.brush?.parameter = .linearGradient(LinearGradientBrushParameter())
+
+        let merged = VideoEffectRegistry.encode(
+            decoded, preservingUnknownFieldsOf: original
+        ).value
+        let parameter = mergedParameter(merged)
+        XCTAssertEqual(
+            parameter?.first(where: { $0.key == "$type" })?.value.stringValue,
+            LinearGradientBrushParameter.typeName
+        )
+        XCTAssertNil(
+            parameter?.first(where: { $0.key == "FutureUnknownKey" }),
+            "型が変わった入れ子オブジェクトに旧型の未知キーが残っている"
+        )
+    }
+
+    /// 型が同じ入れ子オブジェクトでは、未知キーは従来どおり保持される。
+    func testSameTypeNestedObjectKeepsUnknownKeys() {
+        let original = originalWithBrushParameter()
+        let decoded = VideoEffectRegistry.decode(original)
+            as? FillBackgroundEffectDefinition
+        XCTAssertNotNil(decoded)
+        guard let decoded else { return }
+
+        let merged = VideoEffectRegistry.encode(
+            decoded, preservingUnknownFieldsOf: original
+        ).value
+        let parameter = mergedParameter(merged)
+        XCTAssertEqual(
+            parameter?.first(where: { $0.key == "FutureUnknownKey" })?.value,
+            .number(42)
+        )
+    }
+
+    /// `$type` を持たない入れ子（Animation）の未知キーは、型付き
+    /// エンコードが落とすものをマージが回収する従来動作を維持する。
+    func testUntypedNestedObjectStillMerges() {
+        let opacityWithUnknown: JSONValue = .object([
+            (key: "Values", value: .array([
+                .object([(key: "Value", value: .number(80))]),
+            ])),
+            (key: "Span", value: .number(0)),
+            (key: "AnimationType", value: .string("なし")),
+            (key: "FutureAnimKey", value: .string("keep-me")),
+        ])
+        let original = PreservedObject(.object([
+            (key: "$type", value: .string(FillBackgroundEffectDefinition.typeName)),
+            (key: "Opacity", value: opacityWithUnknown),
+        ]))
+        let decoded = VideoEffectRegistry.decode(original)
+            as? FillBackgroundEffectDefinition
+        XCTAssertNotNil(decoded)
+        guard let decoded else { return }
+        // 型付きエンコード単体では未知キーが落ちることを確認する。
+        XCTAssertNil(
+            VideoEffectRegistry.encode(decoded).value
+                .field("Opacity")?.field("FutureAnimKey")
+        )
+        let merged = VideoEffectRegistry.encode(
+            decoded, preservingUnknownFieldsOf: original
+        ).value
+        XCTAssertEqual(
+            merged.field("Opacity")?.field("FutureAnimKey"),
+            .string("keep-me")
+        )
+    }
+}
