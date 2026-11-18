@@ -63,10 +63,13 @@ public final class VoicePCMProviderResolver {
     /// 中身が WAV の .tmp ファイルは "Cannot Open" になる）。Mac 版の
     /// 適応として、先頭バイトから形式を推定して拡張子を付ける。
     ///
-    /// 所有権: 一時ファイルはこのメソッドの中だけで使い、デコードが
-    /// 終われば削除する。これは現行の `PCMProviderFactory` 実装
-    /// （`AVFoundationPCMProviderFactory`）がファイルを全体デコード
-    /// してメモリ上の供給元を返す方式であることに依存する。
+    /// 所有権: 供給元はストリーミング方式（Issue #54）であり、読み取り
+    /// の間ずっとファイルを開いたままにするため、一時ファイルの寿命は
+    /// 供給元の寿命に結びつける（`TemporaryFilePCMProvider` が破棄時に
+    /// 削除する）。供給元の生成に失敗した場合はその場で削除する。
+    /// 本家でも `voiceFile`（TemporaryFile）はアイテムが保持し、
+    /// アイテムの破棄で消える構造であり、寿命の結び先が違うだけで
+    /// 「使う側が持ち、使い終われば消える」点は同じ。
     private func providerFromTemporaryFile(data: Data) -> PCMProvider? {
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("ymm4-voice-\(UUID().uuidString)")
@@ -76,10 +79,13 @@ public final class VoicePCMProviderResolver {
         } catch {
             return nil
         }
-        defer { try? FileManager.default.removeItem(at: fileURL) }
-        return providerFactory.createProvider(
+        guard let provider = providerFactory.createProvider(
             filePath: fileURL.path, audioTrackIndex: 0
-        )
+        ) else {
+            try? FileManager.default.removeItem(at: fileURL)
+            return nil
+        }
+        return TemporaryFilePCMProvider(inner: provider, fileURL: fileURL)
     }
 
     /// 音声ファイルの先頭バイトから形式を推定し、拡張子を返す。
@@ -166,6 +172,33 @@ public final class VoicePCMProviderResolver {
         "mp3", "wav", "wma", "m4a", "mka", "aac", "adts", "flac", "ogg",
         "mid", "midi",
     ]
+}
+
+/// 一時ファイルの寿命を内側の供給元へ結びつける包み。
+/// 供給元が破棄されるときに一時ファイルを削除する。
+final class TemporaryFilePCMProvider: PCMProvider {
+    private let inner: PCMProvider
+    private let fileURL: URL
+
+    init(inner: PCMProvider, fileURL: URL) {
+        self.inner = inner
+        self.fileURL = fileURL
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    var hz: Int { inner.hz }
+    var duration: TimeSpanValue { inner.duration }
+
+    func seek(toTime time: TimeSpanValue) {
+        inner.seek(toTime: time)
+    }
+
+    func read(into buffer: inout [Float], offset: Int, count: Int) -> Int {
+        inner.read(into: &buffer, offset: offset, count: count)
+    }
 }
 
 /// Brotli 解凍。`VoiceCache` は .NET の `BrotliStream` が書いた
