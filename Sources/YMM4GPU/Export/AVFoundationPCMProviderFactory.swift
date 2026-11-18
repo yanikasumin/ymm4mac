@@ -53,6 +53,8 @@ private final class TrackBox: @unchecked Sendable {
 /// 供給元は `AVFoundationStreamingPCMProvider`（逐次デコード）であり、
 /// メモリ使用量は素材の長さに比例しない（Issue #54。従来はファイル
 /// 全体をメモリへ読み切る方式だった）。
+/// 論理時刻は提示タイムスタンプ基準（Issue #55）: 提示開始位置を
+/// 論理 0 とし、シークはプリロール付きで提示時刻に着地する。
 /// `audioTrackIndex` は音声トラック列の中の選択として解釈し、
 /// 範囲外なら先頭トラックへ倒す。
 public final class AVFoundationPCMProviderFactory: PCMProviderFactory {
@@ -88,12 +90,42 @@ public final class AVFoundationPCMProviderFactory: PCMProviderFactory {
                   try await trackBox.track.load(.formatDescriptions)
               })
         else { return nil }
+        // 提示区間（論理 0 と全長）はセグメントの提示配置から決める。
+        // 読み取れない場合はトラックの時間範囲で代用する。
+        let segments = Self.loadSynchronously({
+            try await trackBox.track.load(.segments)
+        }) ?? []
         return AVFoundationStreamingPCMProvider(
             asset: asset,
             track: track,
             timeRange: timeRange,
+            presentation: Self.presentationRange(segments: segments, fallback: timeRange),
             hz: Self.nativeSampleRate(from: formats)
         )
+    }
+
+    /// 提示区間 = 最初の非空セグメントの提示開始位置から、最後の
+    /// 非空セグメントの提示終端まで。提示開始オフセットを持つ素材
+    /// （前方に提示上の無音区間＝空セグメントがある素材）では、
+    /// 本家の `streamStartTime` 補正と同じく、その分を論理時刻から
+    /// 差し引く。非空セグメントが無い、または時刻が無効な場合は
+    /// トラックの時間範囲をそのまま使う。映像側
+    /// （`MetalVideoSource`）も同じ規則で提示区間を求める。
+    static func presentationRange(
+        segments: [AVAssetTrackSegment], fallback: CMTimeRange
+    ) -> CMTimeRange {
+        let nonEmpty = segments.filter { !$0.isEmpty }
+        guard let first = nonEmpty.first, let last = nonEmpty.last else {
+            return fallback
+        }
+        let start = first.timeMapping.target.start
+        let end = CMTimeAdd(
+            last.timeMapping.target.start, last.timeMapping.target.duration
+        )
+        guard start.isValid, end.isValid, start >= .zero, end > start else {
+            return fallback
+        }
+        return CMTimeRange(start: start, duration: CMTimeSubtract(end, start))
     }
 
     /// トラックのネイティブなサンプリングレート。形式記述から解決し、

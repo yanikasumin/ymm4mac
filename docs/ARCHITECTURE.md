@@ -273,10 +273,14 @@
         Export/
           AVFoundationPCMProviderFactory.swift AVFoundationPCMProviderFactory
                                （素材を開き、ストリーミング供給元を返す工場。
-                               MAC-0026、STREAM54 で方式変更）
+                               MAC-0026、STREAM54 で方式変更。TRIM55 で
+                               セグメントから提示区間を求める処理を追加し、
+                               映像側と共有する）
           AVFoundationStreamingPCMProvider.swift AVFoundationStreamingPCMProvider
                                （AVAssetReader を保持し float32 / 2ch を
-                               逐次デコードする供給元。STREAM54）
+                               逐次デコードする供給元。STREAM54。論理時刻は
+                               提示区間基準で、シークはプリロール付きで
+                               提示時刻に着地する。TRIM55）
           MetalExportVideoProvider.swift MetalExportVideoProvider
                                （PreviewBox と同一構成の合成経路でフレームを
                                供給。対象タイムラインと共有のエフェクト

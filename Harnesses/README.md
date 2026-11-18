@@ -37,6 +37,7 @@ swift run -c release
 | mac0034-harness | EffectItem 描画（本家 EffectSource）とクリッピングのアルファマスク | 引数なし | 25 件全 PASS |
 | mac0035-harness | 画面遷移（TransitionSource の配線、ブレンド9種のうち8種） | 引数なし | 27 件全 PASS |
 | stream54-harness | PCM 供給のストリーミング化（Issue #54）: 1 時間 WAV の全量読み切り・全サンプル照合・常駐メモリ実測・終端付近シーク着地 | 引数なし（素材は一時ディレクトリへ生成） | 全 PASS（読み切り 0.87 秒、メモリ増加 約19MiB。2026-11-18 実測） |
+| trim55-harness | 提示タイムスタンプとトリム（Issue #55）: 提示開始オフセット・AAC 遅延・MP3 素材での音の開始位置とシーク着地の実測（harness）、資産・セグメント・提示時刻の診断（diag）、映像の提示区間とフレーム内容の診断（vdiag） | `harness <素材パス>`、`diag <素材パス> [シーク秒 [着地秒]]`、`vdiag <動画パス>`。素材は ffmpeg で別途生成（台帳 TRIM55 参照） | 5 素材すべて本家の意味論と一致（2026-11-18 実測） |
 
 ## 材料について
 
