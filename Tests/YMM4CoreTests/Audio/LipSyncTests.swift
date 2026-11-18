@@ -13,7 +13,8 @@ final class LipSyncTests: XCTestCase {
             samples: [Float](repeating: 0, count: 48_000 * 2), hz: 48_000
         )
         let values = LipSyncEnvelopeCalculator.calculate(
-            provider: provider, fps: 30, smooth: 4, frameCount: 10
+            stream: FileAudioStream(provider: provider),
+            fps: 30, smooth: 4, frameCount: 10
         )
         XCTAssertEqual(values?.count, 11)
         XCTAssertTrue(values?.allSatisfy { $0 == 0 } ?? false)
@@ -27,7 +28,8 @@ final class LipSyncTests: XCTestCase {
             samples: [Float](repeating: 0.5, count: 48_000 * 2), hz: 48_000
         )
         let values = try XCTUnwrap(LipSyncEnvelopeCalculator.calculate(
-            provider: provider, fps: 30, smooth: 4, frameCount: 10
+            stream: FileAudioStream(provider: provider),
+            fps: 30, smooth: 4, frameCount: 10
         ))
         // フレーム 2 以降は窓が全て音の範囲内。
         XCTAssertEqual(values[2], 0.5, accuracy: 1e-6)
@@ -42,7 +44,8 @@ final class LipSyncTests: XCTestCase {
         samples[0] = 1
         let provider = InMemoryPCMProvider(samples: samples, hz: 48_000)
         let values = try XCTUnwrap(LipSyncEnvelopeCalculator.calculate(
-            provider: provider, fps: 30, smooth: 4, frameCount: 10
+            stream: FileAudioStream(provider: provider),
+            fps: 30, smooth: 4, frameCount: 10
         ))
         // 窓長 12800 サンプル。フレーム 2 の窓は [0, 12800) で含む。
         XCTAssertEqual(values[2], (1.0 / 12_800).squareRoot(), accuracy: 1e-9)
@@ -54,10 +57,18 @@ final class LipSyncTests: XCTestCase {
     func testEnvelopeRejectsInvalidArguments() {
         let provider = InMemoryPCMProvider(samples: [0, 0], hz: 48_000)
         XCTAssertNil(LipSyncEnvelopeCalculator.calculate(
-            provider: provider, fps: 0, smooth: 4, frameCount: 10
+            stream: FileAudioStream(provider: provider),
+            fps: 0, smooth: 4, frameCount: 10
         ))
         XCTAssertNil(LipSyncEnvelopeCalculator.calculate(
-            provider: provider, fps: 30, smooth: 0, frameCount: 10
+            stream: FileAudioStream(provider: provider),
+            fps: 30, smooth: 0, frameCount: 10
+        ))
+        // 巨大な平滑度は溢れで失敗に倒す（実行時トラップにしない。
+        // R20-116-06）。
+        XCTAssertNil(LipSyncEnvelopeCalculator.calculate(
+            stream: FileAudioStream(provider: provider),
+            fps: 30, smooth: Int.max, frameCount: 10
         ))
     }
 
@@ -98,5 +109,59 @@ final class LipSyncTests: XCTestCase {
     func testShapeWithoutFramesIsSilent() {
         let item = VoiceItem()
         XCTAssertEqual(item.lipSyncShape(atFrame: 10, fps: 30), .silent)
+    }
+
+    /// 再生速度 200% では素材側の時刻が2倍に進む（R20-116-02）。
+    func testShapeFollowsPlaybackRate() {
+        let item = makeVoiceItem(framesJSON: """
+            [
+              {\"Time\": \"00:00:00\", \"Shape\": \"A\"},
+              {\"Time\": \"00:00:00.5000000\", \"Shape\": \"I\"}
+            ]
+            """)
+        item.playbackRate2.animationType = .none
+        item.playbackRate2.values = [AnimationValue(200)]
+        // フレーム7は素材側 0.4666 秒、フレーム8は 0.5333 秒。
+        XCTAssertEqual(item.lipSyncShape(atFrame: 7, fps: 30), .a)
+        XCTAssertEqual(item.lipSyncShape(atFrame: 8, fps: 30), .i)
+    }
+
+    /// ContentOffset は素材側の時刻へ反映される（R20-116-02）。
+    func testShapeFollowsContentOffset() {
+        let item = makeVoiceItem(framesJSON: """
+            [
+              {\"Time\": \"00:00:00\", \"Shape\": \"A\"},
+              {\"Time\": \"00:00:00.5000000\", \"Shape\": \"I\"},
+              {\"Time\": \"00:00:01\", \"Shape\": \"Silent\"}
+            ]
+            """)
+        item.contentOffset = TimeSpanValue(ticks: 10_000_000)
+        // アイテム内 0 秒でも素材側は 1 秒で、1 秒の要素が有効。
+        XCTAssertEqual(item.lipSyncShape(atFrame: 0, fps: 30), .silent)
+    }
+
+    /// 未整列の時系列では、条件を満たす最後の要素が勝つ（本家
+    /// LastOrDefault。R20-116-04）。
+    func testShapeWithUnsortedFramesUsesLastMatch() {
+        let item = makeVoiceItem(framesJSON: """
+            [
+              {\"Time\": \"00:00:00.5000000\", \"Shape\": \"I\"},
+              {\"Time\": \"00:00:00\", \"Shape\": \"A\"}
+            ]
+            """)
+        // 時刻 0.5 秒では両方が条件を満たし、配列の後ろの A が勝つ。
+        XCTAssertEqual(item.lipSyncShape(atFrame: 15, fps: 30), .a)
+    }
+
+    /// 60fps のフレーム1は 166,667 tick として扱う（本家 FrameTime
+    /// の丸め。R20-116-03 の QA08）。
+    func testShapeAtSixtyFpsTickBoundary() {
+        let item = makeVoiceItem(framesJSON: """
+            [
+              {\"Time\": \"00:00:00\", \"Shape\": \"A\"},
+              {\"Time\": \"00:00:00.0166667\", \"Shape\": \"I\"}
+            ]
+            """)
+        XCTAssertEqual(item.lipSyncShape(atFrame: 1, fps: 60), .i)
     }
 }

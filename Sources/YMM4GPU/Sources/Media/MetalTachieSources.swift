@@ -222,8 +222,10 @@ public final class MetalTachieSource: TachieSource {
                 mouthShape = MetalTachieMouthShape(
                     voice.lipSyncShape(atFrame: voiceFrame, fps: description.fps)
                 )
+                // 包絡は描画器が受け取る値であり、描画器が無い場合は
+                // 声全体の同期計算をしない（R20-116-05）。
                 let smooth = item.character?.mouseSmooth ?? 4
-                if smooth > 0, let volumeEnvelopeProvider,
+                if renderer != nil, smooth > 0, let volumeEnvelopeProvider,
                    let values = envelopeValues(
                        for: voice, fps: description.fps, smooth: smooth,
                        provider: volumeEnvelopeProvider

@@ -91,18 +91,42 @@ extension VoiceItem {
     }
 
     /// 声の中の位置（フレーム）での口形。本家 TachieSource.GetMouthShape
-    /// と同じく、その時刻以前の最後の時系列要素の口形を返し、要素が
-    /// 無ければ .silent。
+    /// の規則どおり、アイテム内時刻を素材側の時刻へ変換してから、
+    /// その時刻以前の最後の時系列要素の口形を返す（要素が無ければ
+    /// .silent）:
+    ///
+    /// - 時刻変換は再生速度と ContentOffset を反映する。定数速度では
+    ///   本家の GetMouthShape の式（(アイテム内時刻 + ContentOffset)
+    ///   × 速度 / 100）を、可変速度では PlaybackRateMap の積分を使う
+    ///   （R20-116-02）。
+    /// - 変換結果が負なら、アイテム長の時刻から差し引いた位置を使う
+    ///   （本家の負速度の折り返し）。
+    /// - フレーム→tick の換算は本家 FrameTime.FrameToTime と同じ
+    ///   AwayFromZero の丸め（R20-116-03）。
+    /// - 時系列は整列を前提にせず、条件を満たす最後の要素を選ぶ
+    ///   （本家 LastOrDefault と同じ。R20-116-04）。
     public func lipSyncShape(atFrame frame: Int, fps: Int) -> MouthShapeValue {
         guard fps > 0, frame >= 0 else { return .silent }
-        let ticks = Int64(frame) * 10_000_000 / Int64(fps)
+        let itemTicks = AudioStream.frameToTicks(frame: frame, fps: fps)
+        let rateMap = PlaybackRateMap(rate: playbackRate2)
+        var sourceTicks: Int64
+        if rateMap.isConstant {
+            sourceTicks = Int64(
+                Double(itemTicks + contentOffset.ticks) * rateMap.firstRate / 100.0
+            )
+        } else {
+            sourceTicks = rateMap.getSourceTime(
+                time: TimeSpanValue(ticks: itemTicks),
+                itemLength: length, fps: fps,
+                contentOffset: contentOffset, contentLength: contentLength
+            ).ticks
+        }
+        if sourceTicks < 0 {
+            sourceTicks = AudioStream.frameToTicks(frame: length, fps: fps) - sourceTicks
+        }
         var result = MouthShapeValue.silent
-        for entry in evaluatedLipSyncFrames {
-            if entry.time.ticks <= ticks {
-                result = entry.shape
-            } else {
-                break
-            }
+        for entry in evaluatedLipSyncFrames where entry.time.ticks <= sourceTicks {
+            result = entry.shape
         }
         return result
     }

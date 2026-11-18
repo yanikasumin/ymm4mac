@@ -12,22 +12,29 @@ import Foundation
 /// - 値は窓内の二乗和の平均の平方根（RMS）。
 /// - 結果はフレーム 0...frameCount の frameCount+1 件。
 ///
-/// 本家は対象音声を 48kHz へリサンプルしてから計算する。こちらは
-/// 供給元のレートをそのまま使う（窓は時刻で定義されるため、レートは
-/// 粒度にだけ影響する）。
+/// 入力は本家と同じく、アイテムのエフェクトチェーンを通した音声
+/// （再生速度・ContentOffset を反映し、音量制御・エコー・音声
+/// エフェクトは除く）を 48kHz で供給する。供給の組み立てはホスト
+/// 側の責務で、計算自体はストリームのレートに対して中立である
+/// （R20-116-01）。
 public enum LipSyncEnvelopeCalculator {
     /// 包絡を計算する。引数が不正な場合と、音声が読めない場合
-    /// （本家の Fail 相当）は nil。
+    /// （本家の Fail 相当）は nil。窓長の計算で整数が溢れた場合も
+    /// 本家の checked 演算の失敗に合わせて nil（R20-116-06）。
     public static func calculate(
-        provider: PCMProvider, fps: Int, smooth: Int, frameCount: Int
+        stream: AudioStream, fps: Int, smooth: Int, frameCount: Int
     ) -> [Double]? {
         guard fps > 0, frameCount >= 0, smooth >= 0 else { return nil }
-        let hz = provider.hz
+        let hz = stream.hz
         guard hz > 0 else { return nil }
-        let window = hz * smooth / fps * 2
-        guard window > 0, window <= 16_777_216 else { return nil }
+        let (hzTimesSmooth, overflowA) = hz.multipliedReportingOverflow(by: smooth)
+        let (window, overflowB) = (hzTimesSmooth / fps)
+            .multipliedReportingOverflow(by: 2)
+        guard !overflowA, !overflowB, window > 0, window <= 16_777_216 else {
+            return nil
+        }
 
-        provider.seek(toTime: .zero)
+        stream.seek(toTime: .zero)
 
         // 窓内の二乗和を保持するリングバッファ。
         var ring = [Float](repeating: 0, count: window)
@@ -60,7 +67,7 @@ public enum LipSyncEnvelopeCalculator {
             }
             while !reachedEnd, readPosition < windowEnd {
                 let count = min(buffer.count, Int(windowEnd - readPosition))
-                let read = provider.read(into: &buffer, offset: 0, count: count)
+                let read = stream.read(into: &buffer, offset: 0, count: count)
                 if read <= 0 {
                     reachedEnd = true
                     break
@@ -80,7 +87,7 @@ public enum LipSyncEnvelopeCalculator {
             values.append((max(0, sumOfSquares) / Double(window)).squareRoot())
         }
         // 本家: 何も読めなかったのに長さがある音声は失敗扱い。
-        if readPosition == 0, provider.duration.ticks > 0 {
+        if readPosition == 0, stream.duration > 0 {
             return nil
         }
         return values
