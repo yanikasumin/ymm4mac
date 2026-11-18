@@ -23,6 +23,9 @@ public final class MetalTextSource: Source {
     private let context: MetalGraphicsContext
     private let item: TextItem
     private let rasterizer: MetalTextRasterizer
+    /// 書き出しジョブが固定した辞書（D19-01）。nil の場合は共有
+    /// ストアの最新を読む（プレビュー経路）。
+    private let dictionarySnapshot: UserDictionarySnapshot?
     private var drawingEffects: [MetalDrawingEffect] = []
     private var references: [ImageReference] = []
     private var cachedKey: CacheKey?
@@ -54,12 +57,18 @@ public final class MetalTextSource: Source {
         var visibleEnd: Int
         var timeMs: Double
         var durationMs: Double
+        /// ユーザー辞書の版数（辞書が変われば再ラスタライズする）。
+        var dictionaryGeneration: Int
     }
 
-    public init(devices: MetalGraphicsDevices, item: TextItem) {
+    public init(
+        devices: MetalGraphicsDevices, item: TextItem,
+        dictionarySnapshot: UserDictionarySnapshot? = nil
+    ) {
         self.context = devices.makeContext()
         self.item = item
         self.rasterizer = MetalTextRasterizer(devices: devices)
+        self.dictionarySnapshot = dictionarySnapshot
     }
 
     public func update(_ description: TimelineItemSourceDescription) throws {
@@ -134,7 +143,9 @@ public final class MetalTextSource: Source {
             // 制御タグを含むテキストはタイミングで表示が時刻変化する
             // ため、非分割でも時刻をキーに含める。
             timeMs: (values.isDevidedPerCharacter || text.contains("<")) ? timeMs : 0,
-            durationMs: values.isDevidedPerCharacter ? durationMs : 0
+            durationMs: values.isDevidedPerCharacter ? durationMs : 0,
+            dictionaryGeneration: dictionarySnapshot?.generation
+                ?? UserDictionaryStore.shared.generation
         )
         if key == cachedKey {
             outputs = cachedOutputs
@@ -145,7 +156,8 @@ public final class MetalTextSource: Source {
         let pieces = rasterizer.rasterize(
             text: text, decorations: decorations, style: values,
             timeMs: timeMs, durationMs: durationMs,
-            isTrimEndSpace: isTrimEndSpace
+            isTrimEndSpace: isTrimEndSpace,
+            dictionary: dictionarySnapshot?.dictionary
         )
         var built: [any SourceOutput] = []
         for (index, piece) in pieces.enumerated() {
@@ -209,14 +221,20 @@ public final class MetalJimakuSource: Source {
     private final class MetalTextSourceLike {
         let context: MetalGraphicsContext
         let rasterizer: MetalTextRasterizer
+        /// 書き出しジョブが固定した辞書（D19-01）。nil は最新を読む。
+        let dictionarySnapshot: UserDictionarySnapshot?
         var drawingEffects: [MetalDrawingEffect] = []
         var references: [ImageReference] = []
         var cachedKey: CacheKey?
         var cachedOutputs: [any SourceOutput] = []
 
-        init(devices: MetalGraphicsDevices) {
+        init(
+            devices: MetalGraphicsDevices,
+            dictionarySnapshot: UserDictionarySnapshot? = nil
+        ) {
             self.context = devices.makeContext()
             self.rasterizer = MetalTextRasterizer(devices: devices)
+            self.dictionarySnapshot = dictionarySnapshot
         }
     }
 
@@ -250,13 +268,20 @@ public final class MetalJimakuSource: Source {
         var visibleEnd: Int
         var timeMs: Double
         var durationMs: Double
+        /// ユーザー辞書の版数（辞書が変われば再ラスタライズする）。
+        var dictionaryGeneration: Int
     }
 
     private let item: VoiceItem
 
-    public init(devices: MetalGraphicsDevices, item: VoiceItem) {
+    public init(
+        devices: MetalGraphicsDevices, item: VoiceItem,
+        dictionarySnapshot: UserDictionarySnapshot? = nil
+    ) {
         self.item = item
-        self.textSource = MetalTextSourceLike(devices: devices)
+        self.textSource = MetalTextSourceLike(
+            devices: devices, dictionarySnapshot: dictionarySnapshot
+        )
     }
 
     public func update(_ description: TimelineItemSourceDescription) throws {
@@ -321,7 +346,9 @@ public final class MetalJimakuSource: Source {
             // 制御タグを含むセリフはタイミングで表示が時刻変化する
             // ため、非分割でも時刻をキーに含める。
             timeMs: (values.isDevidedPerCharacter || item.serif.contains("<")) ? timeMs : 0,
-            durationMs: values.isDevidedPerCharacter ? durationMs : 0
+            durationMs: values.isDevidedPerCharacter ? durationMs : 0,
+            dictionaryGeneration: textSource.dictionarySnapshot?.generation
+                ?? UserDictionaryStore.shared.generation
         )
         if key == textSource.cachedKey {
             outputs = textSource.cachedOutputs
@@ -332,7 +359,8 @@ public final class MetalJimakuSource: Source {
         let pieces = textSource.rasterizer.rasterize(
             text: item.serif, decorations: item.decorations, style: values,
             timeMs: timeMs, durationMs: durationMs,
-            isTrimEndSpace: appearance.isTrimEndSpace
+            isTrimEndSpace: appearance.isTrimEndSpace,
+            dictionary: textSource.dictionarySnapshot?.dictionary
         )
         var built: [any SourceOutput] = []
         for (index, piece) in pieces.enumerated() {

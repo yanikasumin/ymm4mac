@@ -23,7 +23,11 @@ public final class MetalExportVideoProvider: VideoFrameProviding {
 
     /// Metal 初期化に失敗した場合は `MetalInitializationError` を投げる
     /// （Issue #50: 失敗を無言で握りつぶさず、理由を入口で表示する）。
-    public init(timeline: Timeline, timelines: [Timeline], baseDirectory: URL?) throws {
+    public init(
+        timeline: Timeline, timelines: [Timeline], baseDirectory: URL?,
+        dictionarySnapshot: UserDictionarySnapshot = UserDictionaryStore.shared
+            .snapshot()
+    ) throws {
         let devices = try MetalGraphicsDevices()
         self.devices = devices
         self.videoInfo = timeline.videoInfo
@@ -41,7 +45,8 @@ public final class MetalExportVideoProvider: VideoFrameProviding {
             effectProvider: effectProvider,
             tachieVolumeEnvelopeProvider: makeLipSyncEnvelopeProvider(
                 baseDirectory: baseDirectory
-            )
+            ),
+            dictionarySnapshot: dictionarySnapshot
         )
         self.composer = TimelineComposer(
             scene: TimelineScene(timeline: timeline),

@@ -33,6 +33,21 @@ public enum LipSyncEnvelopeCalculator {
         guard !overflowA, !overflowB, window > 0, window <= 16_777_216 else {
             return nil
         }
+        // 窓の開始位置の計算（(smooth + 1) / 2 と Int64 の乗算）でも
+        // 溢れ得るため、ループ前に両端の開始位置で検査する
+        // （R21-116-01）。
+        let (smoothPlusOne, overflowC) = smooth.addingReportingOverflow(1)
+        guard !overflowC else { return nil }
+        let centerOffset = (smoothPlusOne) / 2
+        func windowStartIsSafe(_ frame: Int) -> Bool {
+            let (product, overflow) = Int64(hz).multipliedReportingOverflow(
+                by: Int64(frame - centerOffset)
+            )
+            return !overflow
+        }
+        guard windowStartIsSafe(0), windowStartIsSafe(frameCount) else {
+            return nil
+        }
 
         stream.seek(toTime: .zero)
 

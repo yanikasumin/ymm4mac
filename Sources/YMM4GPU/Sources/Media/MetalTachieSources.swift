@@ -150,7 +150,7 @@ public final class MetalTachieSource: TachieSource {
     private let volumeEnvelopeProvider: ((VoiceItem, Int, Int) -> [Double]?)?
     private var envelopeCache: (
         voice: ObjectIdentifier, length: Int, fps: Int, smooth: Int,
-        values: [Double]
+        signature: String, values: [Double]
     )?
 
     private var renderer: (any MetalTachieRenderer)?
@@ -262,18 +262,39 @@ public final class MetalTachieSource: TachieSource {
         outputs = output.map { [$0] } ?? []
     }
 
+    /// 包絡を決定する入力の署名。本家の再計算署名（音声ファイル、
+    /// ContentOffset、ContentLength、更新世代など）に相当するもの
+    /// として、包絡の入力音声（エフェクトチェーンの出力）を決める
+    /// 項目を集めたもの: 声の指定、生成済み音声の有無と大きさ、
+    /// 再生速度（種別・値列・キーフレーム・間隔）、ContentOffset、
+    /// ContentLength、ループ有無（R21-116-02）。
+    private func envelopeSignature(of voice: VoiceItem) -> String {
+        let rate = voice.playbackRate2
+        return [
+            voice.hatsuon,
+            String(voice.voiceCache?.count ?? -1),
+            String(describing: rate.animationType),
+            rate.values.map { String($0.value) }.joined(separator: ","),
+            rate.keyFrames.frames.map(String.init).joined(separator: ","),
+            String(rate.span),
+            String(voice.contentOffset.ticks),
+            String(voice.contentLength.ticks),
+            String(voice.isLooped),
+        ].joined(separator: "|")
+    }
+
     /// 声の包絡をキャッシュ経由で得る。声の同一性・長さ・fps・
-    /// 平滑化が変わったら計算し直す（本家の署名による再計算条件に
-    /// 相当する簡約形。声の内容差し替えは同一性と長さでは検出でき
-    /// ないため、その場合は Source の作り直しで解消する）。
+    /// 平滑化・包絡を決定する入力の署名が変わったら計算し直す。
     private func envelopeValues(
         for voice: VoiceItem, fps: Int, smooth: Int,
         provider: (VoiceItem, Int, Int) -> [Double]?
     ) -> [Double]? {
+        let signature = envelopeSignature(of: voice)
         if let cache = envelopeCache,
            cache.voice == ObjectIdentifier(voice),
            cache.length == voice.length,
-           cache.fps == fps, cache.smooth == smooth {
+           cache.fps == fps, cache.smooth == smooth,
+           cache.signature == signature {
             return cache.values
         }
         guard let values = provider(voice, fps, smooth) else {
@@ -282,7 +303,7 @@ public final class MetalTachieSource: TachieSource {
         }
         envelopeCache = (
             voice: ObjectIdentifier(voice), length: voice.length,
-            fps: fps, smooth: smooth, values: values
+            fps: fps, smooth: smooth, signature: signature, values: values
         )
         return values
     }

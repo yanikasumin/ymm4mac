@@ -70,6 +70,13 @@ final class LipSyncTests: XCTestCase {
             stream: FileAudioStream(provider: provider),
             fps: 30, smooth: Int.max, frameCount: 10
         ))
+        // 窓長が偶然に範囲内へ収まる組合せでも、窓開始位置の計算で
+        // 溢れさせない（R21-116-01）。
+        let tinyProvider = InMemoryPCMProvider(samples: [0, 0], hz: 1)
+        XCTAssertNil(LipSyncEnvelopeCalculator.calculate(
+            stream: FileAudioStream(provider: tinyProvider),
+            fps: Int.max, smooth: Int.max, frameCount: 10
+        ))
     }
 
     // MARK: 口形時系列
