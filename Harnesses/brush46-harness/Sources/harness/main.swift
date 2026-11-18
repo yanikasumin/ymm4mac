@@ -507,8 +507,11 @@ do {
 
 // MARK: - ケース11: 未対応ブラシの素通し（回帰）
 
-// ノイズブラシ（GPU 未対応）とグラデーションメッシュ（生保持）は
-// 従来どおり素通し = 原画がそのまま出る。
+// ノイズブラシ（GPU 未対応）は従来どおり素通し = 原画がそのまま
+// 出る。グラデーションメッシュは GRADMESH で型付き化され描画
+// されるようになったため、影が付く側で確認する（ファイル経由の
+// 復元で型付きになることも含む）。影の既定不透明度は 50% で、
+// 覆われた画素のアルファは約 128 になる。
 do {
     let definition = FillForegroundEffectDefinition()
     definition.brush = makeBrush(.noise(NoiseBrushParameter()))
@@ -526,9 +529,73 @@ do {
     shadow.x.values = [AnimationValue(16)]
     shadow.blur.values = [AnimationValue(0)]
     if let frame = renderImage(image: "white32.png", effects: [raw(shadow)]) {
-        checkPixel(frame, 32, 32, r: 255, g: 255, b: 255, tolerance: 4, "passthrough: mesh brush keeps image")
-        checkAlpha(frame, 56, 32, range: 0...10, "passthrough: mesh brush no shadow")
-    } else { check(false, "passthrough: mesh rendered") }
+        checkPixel(frame, 32, 32, r: 255, g: 255, b: 255, tolerance: 4, "mesh-shadow: keeps image")
+        checkAlpha(frame, 56, 32, range: 120...136, "mesh-shadow: shadow at 50% opacity")
+    } else { check(false, "mesh-shadow: rendered") }
+}
+
+// MARK: - ケース12: グラデーションメッシュ既定 (GRADMESH)
+
+// 2×2 既定格子 (Red / Gold / RoyalBlue / Cyan、Relative、W=H=100) は
+// 境界 (−16..16) へちょうど広がり、色は (u, v) の双線形になる。
+do {
+    let definition = FillForegroundEffectDefinition()
+    definition.brush = makeBrush(.gradientMesh(GradientMeshBrushParameter()))
+    definition.isBrushOnly = true
+    if let frame = renderImage(image: "solid32.png", effects: [raw(definition)]) {
+        // 平面 (0.5, 0.5) → u = v = 0.5156 → (140, 148, 124)
+        checkPixel(frame, 32, 32, r: 140, g: 148, b: 124, tolerance: 8, "mesh-default: center")
+        // 平面 (−15.5, −15.5) → u = v = 0.0156 → (252, 5, 4)
+        checkPixel(frame, 16, 16, r: 252, g: 5, b: 4, tolerance: 6, "mesh-default: top-left")
+        // 平面 (15.5, 15.5) → u = v = 0.9844 → (5, 248, 251)
+        checkPixel(frame, 47, 47, r: 5, g: 248, b: 251, tolerance: 6, "mesh-default: bottom-right")
+    } else { check(false, "mesh-default: rendered") }
+}
+
+// MARK: - ケース13: グラデーションメッシュの拡張 (ExtendOutside)
+
+// W=H=50 の格子は平面 ±8 まで。拡張ありでは隅が最も近い格子点の
+// 色で埋まり、拡張なしでは格子の外は透明になる。
+do {
+    func smallMesh(extend: Bool) -> Brush {
+        let parameter = GradientMeshBrushParameter()
+        parameter.width.values = [AnimationValue(50)]
+        parameter.height.values = [AnimationValue(50)]
+        parameter.extendOutside = extend
+        return makeBrush(.gradientMesh(parameter))
+    }
+    let extended = FillForegroundEffectDefinition()
+    extended.brush = smallMesh(extend: true)
+    extended.isBrushOnly = true
+    if let frame = renderImage(image: "solid32.png", effects: [raw(extended)]) {
+        checkPixel(frame, 16, 16, r: 255, g: 0, b: 0, tolerance: 5, "mesh-extend: corner is red")
+        // 平面 (0.5, 0.5) → u = v = 0.5313 → (136, 152, 128)
+        checkPixel(frame, 32, 32, r: 136, g: 152, b: 128, tolerance: 8, "mesh-extend: center")
+    } else { check(false, "mesh-extend: rendered") }
+
+    let plain = FillForegroundEffectDefinition()
+    plain.brush = smallMesh(extend: false)
+    plain.isBrushOnly = true
+    if let frame = renderImage(image: "solid32.png", effects: [raw(plain)]) {
+        checkAlpha(frame, 16, 16, range: 0...10, "mesh-noextend: corner transparent")
+        checkPixel(frame, 32, 32, r: 136, g: 152, b: 128, tolerance: 8, "mesh-noextend: center")
+    } else { check(false, "mesh-noextend: rendered") }
+}
+
+// MARK: - ケース14: グラデーションメッシュ (Pixel モード)
+
+// Pixel モードは ToLocal が等倍で、格子は平面 ±50 に広がる。
+// 境界 ±16 は u = (x + 50) / 100 の範囲だけが見える。
+do {
+    let parameter = GradientMeshBrushParameter()
+    parameter.coordinateMode = .pixel
+    let definition = FillForegroundEffectDefinition()
+    definition.brush = makeBrush(.gradientMesh(parameter))
+    definition.isBrushOnly = true
+    if let frame = renderImage(image: "solid32.png", effects: [raw(definition)]) {
+        // 平面 (0.5, 0.5) → u = v = 0.505 → (142, 145, 121)
+        checkPixel(frame, 32, 32, r: 142, g: 145, b: 121, tolerance: 8, "mesh-pixel: center")
+    } else { check(false, "mesh-pixel: rendered") }
 }
 
 print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")

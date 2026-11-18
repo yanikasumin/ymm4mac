@@ -6,8 +6,9 @@ import XCTest
 // (1) 本家組み込みブラシ 8 種（単色を除く）が型付きで復元され、
 //     往復保存で JSON が一致すること（未知キーは追加フィールドとして
 //     順序を保って残ること）、
-// (2) 型付き化しない種別（グラデーションメッシュ・コミュニティ）は
-//     生保持のまま往復すること、
+// (2) 型付き化しない種別（コミュニティ）は生保持のまま往復
+//     すること（グラデーションメッシュは GRADMESH で型付き化し、
+//     (1) と同様に往復を確認する）、
 // (3) 4 効果（影・背景塗り・前景塗り・枠線）の Brush フィールドが
 //     型付きモデルで往復し、null は欠落として保たれること、
 // (4) ブラシ内の Animation へキーフレーム文脈が伝播すること、
@@ -288,20 +289,91 @@ final class BrushParameterModelTests: XCTestCase {
         XCTAssertTrue(decoded.isColor)
     }
 
-    func testGradientMeshStaysPreserved() {
+    /// グラデーションメッシュの点オブジェクト（本家の宣言順）。
+    private func meshPointJSON(
+        color: String, selected: Bool, rightHandleCustom: Bool = false
+    ) -> JSONValue {
+        .object([
+            (key: "X", value: animJSON(0)),
+            (key: "Y", value: animJSON(0)),
+            (key: "LeftHandleX", value: animJSON(0)),
+            (key: "LeftHandleY", value: animJSON(0)),
+            (key: "RightHandleX", value: animJSON(10)),
+            (key: "RightHandleY", value: animJSON(0)),
+            (key: "UpHandleX", value: animJSON(0)),
+            (key: "UpHandleY", value: animJSON(0)),
+            (key: "DownHandleX", value: animJSON(0)),
+            (key: "DownHandleY", value: animJSON(0)),
+            (key: "IsLeftHandleCustom", value: .bool(false)),
+            (key: "IsRightHandleCustom", value: .bool(rightHandleCustom)),
+            (key: "IsUpHandleCustom", value: .bool(false)),
+            (key: "IsDownHandleCustom", value: .bool(false)),
+            (key: "Color", value: .string(color)),
+            (key: "IsSelected", value: .bool(selected)),
+        ])
+    }
+
+    func testGradientMeshRoundTrip() {
         let parameter: JSONValue = .object([
-            (key: "$type", value: .string("YukkuriMovieMaker.Brush.GradientMeshBrushParameter, YukkuriMovieMaker")),
+            (key: "$type", value: .string(GradientMeshBrushParameter.typeName)),
             (key: "HorizontalCount", value: .number(2.0)),
-            (key: "Points", value: .array([])),
+            (key: "VerticalCount", value: .number(2.0)),
+            (key: "CoordinateMode", value: .string("Relative")),
+            (key: "Width", value: animJSON(100)),
+            (key: "Height", value: animJSON(100)),
+            (key: "ExtendOutside", value: .bool(true)),
+            (key: "Points", value: .array([
+                meshPointJSON(color: "#FFFF0000", selected: true, rightHandleCustom: true),
+                meshPointJSON(color: "#FFFFD700", selected: false),
+                meshPointJSON(color: "#FF4169E1", selected: false),
+                meshPointJSON(color: "#FF00FFFF", selected: false),
+            ])),
+            (key: "Zoom", value: animJSON(100)),
+            (key: "X", value: animJSON(0)),
+            (key: "Y", value: animJSON(0)),
+            (key: "Angle", value: animJSON(0)),
+            (key: "Aspect", value: animJSON(0)),
+            (key: "IsInverted", value: .bool(false)),
         ])
         let brush = assertBrushRoundTrip(brushObject(
             plugin: "YukkuriMovieMaker.Brush.GradientMeshBrushPlugin, YukkuriMovieMaker",
             parameter: parameter
         ))
-        guard case .preserved = brush.parameter else {
-            XCTFail("gradientMesh は生保持のままであること")
+        guard case .gradientMesh(let decoded) = brush.parameter else {
+            XCTFail("gradientMesh として復元されること")
             return
         }
+        XCTAssertEqual(decoded.horizontalCount, 2)
+        XCTAssertEqual(decoded.verticalCount, 2)
+        XCTAssertEqual(decoded.coordinateMode, .relative)
+        XCTAssertTrue(decoded.extendOutside)
+        XCTAssertEqual(decoded.points.count, 4)
+        XCTAssertEqual(
+            decoded.points[0].color,
+            Color(alpha: 255, red: 255, green: 0, blue: 0)
+        )
+        XCTAssertEqual(
+            decoded.points[2].color,
+            Color(alpha: 255, red: 65, green: 105, blue: 225)
+        )
+        XCTAssertTrue(decoded.points[0].isSelected)
+        XCTAssertTrue(decoded.points[0].isRightHandleCustom)
+        XCTAssertFalse(decoded.points[1].isRightHandleCustom)
+    }
+
+    func testGradientMeshDefaults() {
+        let parameter = GradientMeshBrushParameter()
+        XCTAssertEqual(parameter.horizontalCount, 2)
+        XCTAssertEqual(parameter.verticalCount, 2)
+        XCTAssertEqual(parameter.coordinateMode, .relative)
+        XCTAssertTrue(parameter.extendOutside)
+        XCTAssertEqual(parameter.points.count, 4)
+        XCTAssertEqual(
+            parameter.points[1].color,
+            Color(alpha: 255, red: 255, green: 215, blue: 0)
+        )
+        XCTAssertTrue(parameter.points[0].isSelected)
+        XCTAssertFalse(parameter.points[1].isSelected)
     }
 
     func testCommunityBrushStaysPreserved() {

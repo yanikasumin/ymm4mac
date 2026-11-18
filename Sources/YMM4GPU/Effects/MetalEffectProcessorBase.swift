@@ -717,44 +717,14 @@ public class MetalEffectProcessor: VideoEffectProcessor {
         return MetalImage(texture: workB, bounds: outBounds, interpolation: .linear)
     }
 
-    /// 矩形モザイク本体（セル内テクセルの平均）。第1段の
-    /// `MetalMosaicProcessor` とイン／アウトモザイクが共有する。
+    /// 矩形モザイク本体（本家カスタムシェーダの5点サンプル平均。
+    /// Warp の mode 12）。第1段の `MetalMosaicProcessor` と
+    /// イン／アウトモザイクが共有する（本家も両者が同じ
+    /// `Mosaic` カスタム効果を使う）。
     func renderRectangleMosaic(input: MetalImage, cellSize: Double) throws -> MetalImage {
-        let outputTexture = try makeTexture(
-            width: input.texture.width, height: input.texture.height,
-            usage: [.shaderWrite, .shaderRead]
-        )
-        guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder()
-        else {
-            throw MetalRenderError.commandBufferFailed(underlying: nil)
-        }
-        var uniforms = RectangleMosaicUniforms(
-            size: Float(cellSize),
-            width: UInt32(input.texture.width),
-            height: UInt32(input.texture.height)
-        )
-        encoder.setComputePipelineState(context.devices.mosaicPipeline)
-        encoder.setTexture(input.texture, index: 0)
-        encoder.setTexture(outputTexture, index: 1)
-        encoder.setBytes(&uniforms, length: MemoryLayout<RectangleMosaicUniforms>.size, index: 0)
-        let cellsX = Int(ceil(Double(input.texture.width) / cellSize))
-        let cellsY = Int(ceil(Double(input.texture.height) / cellSize))
-        encoder.dispatchThreads(
-            MTLSize(width: cellsX, height: cellsY, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1)
-        )
-        encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        if commandBuffer.status == .error {
-            throw MetalRenderError.commandBufferFailed(underlying: commandBuffer.error)
-        }
-        return MetalImage(
-            texture: outputTexture, bounds: input.bounds,
-            texturePlaneRect: input.texturePlaneRect,
-            planeOffset: input.planeOffset,
-            interpolation: input.interpolation
+        try renderWarp(
+            input: input, mask: nil, outputBounds: input.bounds, mode: 12,
+            param0: SIMD4<Float>(Float(cellSize), 0, 0, 0)
         )
     }
 
@@ -1033,13 +1003,6 @@ struct MorphologyPassUniforms {
     var count: UInt32
     var mode: UInt32
     var axis: UInt32
-}
-
-/// 矩形モザイクのユニフォーム（MetalGraphics のシェーダ定義と一致）。
-struct RectangleMosaicUniforms {
-    var size: Float
-    var width: UInt32
-    var height: UInt32
 }
 
 /// 色変換シェーダのユニフォーム（MetalGraphics のシェーダ定義と一致）。
