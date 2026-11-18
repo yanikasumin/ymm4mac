@@ -36,6 +36,7 @@ swift run -c release
 | mac0033-harness | GPU テクスチャ確保失敗が素通しと区別され MetalRenderError として伝播すること（GPU28-03） | 引数なし。失敗ケースは環境変数 `MAC0033_RUN_FAILURE_CASE=1` のときだけ実行し、既定では SKIP と表示する | 通常ケース PASS。失敗ケースは macOS 26 の Metal 検証層がプロセスを abort するため完走しない（既知の制約。throw 経路の担保はコード監査に拠る） |
 | mac0034-harness | EffectItem 描画（本家 EffectSource）とクリッピングのアルファマスク | 引数なし | 25 件全 PASS |
 | mac0035-harness | 画面遷移（TransitionSource の配線、ブレンド9種のうち8種） | 引数なし | 27 件全 PASS |
+| transform47-harness | 変形・不透明度つき入力に対する共通規則（Issue #47）: 自作 Source で非プレーンな入力を連鎖へ流し、エフェクトが効くことと実体化カウンタの発動を検証。`--measure <ymmp パス>` で実プロジェクトでの発動頻度を測定する診断モードも持つ | 引数なし / `--measure <ymmp パス>` | 13 件全 PASS。測定モードは upload.ymmp / upload-2.ymmp とも発動 0 回 |
 
 ## 材料について
 
