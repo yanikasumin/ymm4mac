@@ -39,10 +39,17 @@ public final class MetalGaussianBlurProcessor: MetalEffectProcessor {
 ///
 /// 本家は形状パラメータ（MosaicParameter）が効果実体を決める。既定は
 /// RectangleMosaicParameter で、その Size（Animation、既定 10）が
-/// セル寸法になる（実測）。第1段では矩形のみを実装し、他の形状
-/// （Circle / Triangle / Hexagon / Delaunay / Voronoi）は素通しとする。
-/// セルの色はセル内テクセルの平均（本家カスタムシェーダの .cso は
-/// 解析範囲に無く、平均か中心サンプルかは未確定。台帳に記録）。
+/// セル寸法になる（実測）。Size の評価は型付きパラメータの通常の
+/// アニメーション評価経路（ベジェ・キーフレーム文脈を含む）で行い、
+/// 本家カスタム効果の setter のクランプ（実測: 1〜5000）を適用する。
+///
+/// 矩形はセル内テクセルの平均（第1段の共通ヘルパ。第2段の
+/// イン／アウトモザイクと共有）。他の5形状は本家カスタムシェーダの
+/// 逆アセンブルから抽出した「代表点サンプル」方式で、Warp の
+/// mode 7〜11 が担う。矩形の本家シェーダはセル内5点サンプルの平均
+/// であり、現行の平均方式とは結果が異なる（既存の差分として台帳に
+/// 記録。本 Issue の対象外）。
+/// 未知の形状パラメータ（生保持）は従来どおり素通しとする。
 public final class MetalMosaicProcessor: MetalEffectProcessor {
     private let definition: MosaicEffectDefinition
 
@@ -52,107 +59,55 @@ public final class MetalMosaicProcessor: MetalEffectProcessor {
     }
 
     override func render(input: MetalImage, description: EffectDescription) throws -> MetalImage? {
-        guard let size = rectangleCellSize(description: description) else {
-            // 矩形以外の形状は第1段では未対応（素通し）。
-            return input
-        }
-        // 本体は基底の共通ヘルパ（第2段のイン／アウトモザイクと共有）。
-        return try renderRectangleMosaic(input: input, cellSize: size)
-    }
-
-    /// 矩形モザイクのセル寸法を取り出す。パラメータが矩形でなければ nil。
-    ///
-    /// パラメータは生保持（PreservedObject）のため、Size の Animation は
-    /// ここで JSON から直接復元する（CodecSupport は Core 内部のため）。
-    /// キーフレーム文脈は型付きパラメータでないため伝播しない（既存の
-    /// 定義層の制約と同じ。台帳に記録）。
-    private func rectangleCellSize(description: EffectDescription) -> Double? {
         guard let parameter = definition.mosaicParameter else {
             // パラメータ欠落時は本家の既定（RectangleMosaicParameter、
             // Size 既定 10）に従う。
-            return 10
+            return try renderRectangleMosaic(input: input, cellSize: 10)
         }
-        guard let typeName = parameter.typeName,
-              typeName.hasPrefix(
-                "YukkuriMovieMaker.Project.Effects.MosaicParameters.RectangleMosaicParameter")
-        else {
-            return nil
-        }
-        var animation = Animation(defaultValue: 10, minValue: 0, maxValue: 2000)
-        if case .object(let fields) = parameter.value,
-           let sizeValue = fields.first(where: { $0.key == "Size" })?.value {
-            Self.decodeAnimationSubset(sizeValue, into: &animation)
-        }
-        let (frame, length, fps) = evaluationContext(description)
-        let value = animation.value(atFrame: frame, length: length, fps: fps)
-        // 本家カスタム効果の setter のクランプ（実測: 1〜5000）。
-        return min(5000, max(1, value))
-    }
-
-    /// Animation の保存形式のうち、値列・種類・Span と旧互換の
-    /// From / To だけを復元する（ベジェは対象外）。
-    private static func decodeAnimationSubset(_ value: JSONValue, into animation: inout Animation) {
-        guard case .object(let fields) = value else { return }
-        for (key, fieldValue) in fields {
-            switch key {
-            case "Values":
-                if case .array(let elements) = fieldValue {
-                    animation.values = elements.map { element in
-                        if let number = Self.number(of: element) {
-                            return AnimationValue(number)
-                        }
-                        if case .object(let elementFields) = element,
-                           let valueField = elementFields.first(where: { $0.key == "Value" })?.value,
-                           let number = Self.number(of: valueField) {
-                            return AnimationValue(number)
-                        }
-                        return AnimationValue(0)
-                    }
-                }
-            case "Span":
-                if let number = Self.number(of: fieldValue) {
-                    animation.span = number
-                }
-            case "AnimationType":
-                if case .string(let name) = fieldValue,
-                   let type = AnimationType(honkeName: name) {
-                    animation.animationType = type
-                } else if let number = Self.number(of: fieldValue),
-                          let type = AnimationType(rawValue: Int(number)) {
-                    animation.animationType = type
-                }
-            case "From":
-                let number = Self.number(of: fieldValue) ?? 0
-                if animation.values.isEmpty {
-                    animation.values = [AnimationValue(number)]
-                } else {
-                    animation.values[0] = AnimationValue(number)
-                }
-            case "To":
-                let number = Self.number(of: fieldValue) ?? 0
-                if animation.values.isEmpty {
-                    animation.values = [AnimationValue(0)]
-                }
-                if animation.values.count == 1 {
-                    animation.values.append(AnimationValue(number))
-                } else {
-                    animation.values[1] = AnimationValue(number)
-                }
-            default:
-                break
+        switch parameter {
+        case .preserved:
+            // 型付き化していない形状パラメータは素通し。
+            return input
+        case .sized(let sized):
+            let (frame, length, fps) = evaluationContext(description)
+            let size = min(
+                5000, max(1, sized.size.value(atFrame: frame, length: length, fps: fps))
+            )
+            switch sized.shape {
+            case .rectangle:
+                return try renderRectangleMosaic(input: input, cellSize: size)
+            case .circle:
+                return try renderShapeMosaic(input: input, mode: 7, size: size)
+            case .triangle:
+                return try renderShapeMosaic(input: input, mode: 8, size: size)
+            case .hexagon:
+                return try renderShapeMosaic(input: input, mode: 9, size: size)
+            case .voronoi:
+                return try renderShapeMosaic(input: input, mode: 10, size: size, seed: seed)
+            case .delaunay:
+                return try renderShapeMosaic(input: input, mode: 11, size: size, seed: seed)
+            case .unknown:
+                return input
             }
         }
     }
 
-    private static func number(of value: JSONValue) -> Double? {
-        switch value {
-        case .numberLiteral(let literal):
-            return Double(literal)
-        case .string(let text):
-            return Double(text)
-        default:
-            return nil
-        }
+    /// Voronoi / Delaunay の seed。本家はパラメータ生成時に
+    /// `Seed = GetHashCode()`（.NET オブジェクト同一性ハッシュ、本家
+    /// 実行ごとに非決定的で保存もされない）を渡す。こちらでは定義の
+    /// `randomSeed`（本家 GetHashCode の代替シード。現状は 0 固定で、
+    /// 対応付けは未解決事項）を使う。
+    private var seed: Float {
+        Float(definition.randomSeed)
+    }
+
+    private func renderShapeMosaic(
+        input: MetalImage, mode: UInt32, size: Double, seed: Float = 0
+    ) throws -> MetalImage {
+        try renderWarp(
+            input: input, mask: nil, outputBounds: input.bounds, mode: mode,
+            param0: SIMD4<Float>(Float(size), seed, 0, 0)
+        )
     }
 }
 #endif

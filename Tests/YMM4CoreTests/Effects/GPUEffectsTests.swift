@@ -307,8 +307,125 @@ final class GPUEffectValuePreservationTests: XCTestCase {
         XCTAssertNotNil(decoded)
         guard let decoded else { return }
         XCTAssertEqual(decoded.mosaicType, .hexagon)
-        XCTAssertEqual(decoded.mosaicParameter?.value, parameter)
+        // 組み込み6形状でない $type は型付き化せず生保持する。
+        guard case .preserved(let preserved) = decoded.mosaicParameter else {
+            XCTFail("未知のモザイクパラメータは生保持されるはず")
+            return
+        }
+        XCTAssertEqual(preserved.value, parameter)
         assertFixedPoint(decoded)
+    }
+
+    /// 組み込み6形状のパラメータが型付き化され、Size が往復で保たれる。
+    func testMosaicTypedParametersRoundTrip() {
+        let shapes: [(MosaicType, String)] = [
+            (.rectangle, "RectangleMosaicParameter"),
+            (.circle, "CircleMosaicParameter"),
+            (.triangle, "TriangleMosaicParameter"),
+            (.hexagon, "HexagonMosaicParameter"),
+            (.delaunay, "DelaunayMosaicParameter"),
+            (.voronoi, "VoronoiMosaicParameter"),
+        ]
+        for (shape, typeSuffix) in shapes {
+            let typeName = "YukkuriMovieMaker.Project.Effects.MosaicParameters."
+                + typeSuffix + ", YukkuriMovieMaker"
+            let parameter: JSONValue = .object([
+                (key: "$type", value: .string(typeName)),
+                (key: "Size", value: animJSON(values: [1, 10], type: "直線移動")),
+            ])
+            let decoded = decodeFields(MosaicEffectDefinition.typeName, [
+                (key: "MosaicType", value: .string(shape.honkeName)),
+                (key: "MosaicParameter", value: parameter),
+            ]) as? MosaicEffectDefinition
+            XCTAssertNotNil(decoded, typeSuffix)
+            guard let decoded, case .sized(let sized) = decoded.mosaicParameter else {
+                XCTFail("\(typeSuffix) は型付き化されるはず")
+                continue
+            }
+            XCTAssertEqual(sized.shape, shape, typeSuffix)
+            XCTAssertEqual(sized.size.values.map { $0.value }, [1, 10], typeSuffix)
+            XCTAssertEqual(sized.size.animationType, .linear, typeSuffix)
+            assertFixedPoint(decoded)
+        }
+    }
+
+    /// Size のベジェが復元される（従来の部分復元では失われていた）。
+    func testMosaicSizeBezierPreserved() {
+        let size: JSONValue = .object([
+            (key: "Values", value: .array([
+                .object([(key: "Value", value: .number(5))]),
+                .object([(key: "Value", value: .number(50))]),
+            ])),
+            (key: "Span", value: .number(0)),
+            (key: "AnimationType", value: .string("Linear_Bezier")),
+            (key: "Bezier", value: .object([
+                (key: "Points", value: .array([
+                    .object([
+                        (key: "Point", value: .object([
+                            (key: "X", value: .number(0)), (key: "Y", value: .number(0)),
+                        ])),
+                        (key: "ControlPoint1", value: .object([
+                            (key: "X", value: .number(30)), (key: "Y", value: .number(10)),
+                        ])),
+                        (key: "ControlPoint2", value: .object([
+                            (key: "X", value: .number(70)), (key: "Y", value: .number(90)),
+                        ])),
+                    ]),
+                    .object([
+                        (key: "Point", value: .object([
+                            (key: "X", value: .number(100)), (key: "Y", value: .number(100)),
+                        ])),
+                        (key: "ControlPoint1", value: .object([
+                            (key: "X", value: .number(100)), (key: "Y", value: .number(100)),
+                        ])),
+                        (key: "ControlPoint2", value: .object([
+                            (key: "X", value: .number(100)), (key: "Y", value: .number(100)),
+                        ])),
+                    ]),
+                ])),
+                (key: "IsQuadratic", value: .bool(false)),
+            ])),
+        ])
+        let parameter: JSONValue = .object([
+            (key: "$type", value: .string(
+                "YukkuriMovieMaker.Project.Effects.MosaicParameters.CircleMosaicParameter, YukkuriMovieMaker")),
+            (key: "Size", value: size),
+        ])
+        let decoded = decodeFields(MosaicEffectDefinition.typeName, [
+            (key: "MosaicType", value: .string("Circle")),
+            (key: "MosaicParameter", value: parameter),
+        ]) as? MosaicEffectDefinition
+        XCTAssertNotNil(decoded)
+        guard let decoded, case .sized(let sized) = decoded.mosaicParameter else {
+            XCTFail("CircleMosaicParameter は型付き化されるはず")
+            return
+        }
+        XCTAssertEqual(sized.size.bezier.points.count, 2)
+        XCTAssertEqual(sized.size.bezier.points.first?.controlPoint1.x, 30)
+        XCTAssertEqual(sized.size.bezier.points.first?.controlPoint2.y, 90)
+        assertFixedPoint(decoded)
+    }
+
+    /// アイテムのキーフレーム文脈が Size へ伝播する（本家の
+    /// GetAnimatables 経由の連動）。
+    func testMosaicKeyFramesPropagateToSize() {
+        let parameter: JSONValue = .object([
+            (key: "$type", value: .string(
+                "YukkuriMovieMaker.Project.Effects.MosaicParameters.RectangleMosaicParameter, YukkuriMovieMaker")),
+            (key: "Size", value: animJSON(values: [1, 10], type: "直線移動")),
+        ])
+        let decoded = decodeFields(MosaicEffectDefinition.typeName, [
+            (key: "MosaicType", value: .string("Rectangle")),
+            (key: "MosaicParameter", value: parameter),
+        ]) as? MosaicEffectDefinition
+        XCTAssertNotNil(decoded)
+        guard let decoded, case .sized(let sized) = decoded.mosaicParameter else {
+            XCTFail("RectangleMosaicParameter は型付き化されるはず")
+            return
+        }
+        XCTAssertEqual(sized.size.keyFrames.frames, [])
+        decoded.setKeyFrames(KeyFrames(frames: [15, 45]))
+        XCTAssertEqual(sized.size.keyFrames.frames, [15, 45])
     }
 
     func testNoiseDefaultsAndValues() {
