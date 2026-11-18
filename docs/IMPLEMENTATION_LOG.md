@@ -865,6 +865,24 @@
 
 **次の担当へ。** 開始ラグの短縮（エンジンの事前構築）、映像側の先行合成方式への移行、K 特性フィルタ係数の `BS1770LoudnessAnalyzer` との統合は、いずれも設計論点として残してある。ストリーミング供給（Issue #54）が入る場合はチャンク生成の前提（ミキサーのプル読み）が変わるため、この層の見直しが要る。
 
+#### SOLA53 — SOLA による音高補正（Issue #53）（IMPLEMENTED、検証の詳細は末尾）
+
+**何を実装したか。** アイテムの再生速度を変えたときの音高補正（SOLA 方式）を実装した。従来は方式（`PlaybackRateAudioProcessingMode`）によらず線形補間のリサンプリングで代替していたため、速度を変えると音程も一緒に変わっていた。今回、アイテムの方式が SOLA のときに本家どおりピッチを保つ経路が有効になった。対象は定数速度（本家 `PlaybackRateSolaTimeStretchEffect`）と可変速度（本家 `VariableSolaPitchCorrectionEffect`）の両方で、書き出しと実時間再生（MAC-0042、同じミキサー経路を読む）の両方に効く。
+
+**本家の仕様（実測した裏取り）。** 本家は全経路で SoundTouch.Net 2.3.2（SoundTouch の C# 移植、本家同梱 DLL）を `SoundTouchProcessor` として使い、パラメータは Tempo / Pitch / Channels / SampleRate のみ設定し、窓パラメータ類はライブラリ既定のままであることを逆コンパイルで確認した。同梱 DLL 自体も逆コンパイルして仕様を抽出した: シーケンス長は tempo の一次式を 40–90ms にクランプした自動値、探索窓は同じく 15–20ms、重なりは 8ms 固定。時間伸縮段は相互相関（正規化、探索窓内は二乗和の差分更新）で重なり位置を全探索し、線形クロスフェードでつなぐ。音程変換は「有効レート = pitch、有効テンポ = tempo / pitch」への分解で、有効レート ≦ 1 ならレート変換→時間伸縮、> 1 なら時間伸縮→レート変換の順に接続し、切替時は処理済み出力と未処理入力を移送する。レート変換は 3 次補間（係数表あり）＋アンチエイリアス FIR（長さ 64、Hamming 窓 sinc、カットオフはレートで切替、係数は合計 16384 へ拡縮し符号方向へ 0.5 を加えた float を 2^14 で割る。同梱版では整数化の切り捨ては行われていない）。方式の決定はアイテム側の `PlaybackRateAudioProcessingMode`（既定 Resampling）で、本家 `EffectedItemSource` が `CreateFixedPlaybackRateEffects` / `CreateVariablePlaybackRateEffects` で処理器を選ぶ。定数速度で速度 0 のときは方式によらずリサンプリング側になる。可変速度の補正は長さを変えず、入力を 1/50 秒ずつ読み、ブロック中央時刻の速度から `pitch = min(1 / |rate|, 4)`（速度の絶対値が 0.001 以下なら 1）を設定してから供給する。プレビュー再生の速度変更（本家 `AudioPlayer`）も既定はタイムストレッチで同じプロセッサを使うが、Mac 版の再生エンジン側は MAC-0042 で AVAudioUnitTimePitch を採用済みであり、本作業の対象はアイテム側のパイプラインに限る（論点として残す）。
+
+**どこを変更したか。** 新規: `Sources/YMM4Core/Audio/SoundTouchProcessor.swift`（処理芯: FIFO・時間伸縮段・レート変換段・プロセッサ全体）、`Sources/YMM4Core/Audio/SolaStreams.swift`（`SolaTimeStretchStream`、`VariableSolaPitchCorrectionStream`）、`Tests/YMM4CoreTests/Audio/SolaPitchCorrectionTests.swift`（新規 9 件）。変更: `Sources/YMM4Core/Audio/EffectedAudioItemSource.swift`（方式で処理器を切替）、`Sources/YMM4Core/Animation/PlaybackRateMap.swift`（`Table.getRate` を追加。本家 `GetRate` のフレーム内線形補間）、`Sources/YMM4Core/Audio/ResamplerStreams.swift`（差し替え点コメントの更新）、`docs/ARCHITECTURE.md`。
+
+**どう実装したか。** 処理芯は抽出仕様の再実装（逆コンパイルコードの複写ではない）で、数値の丸め・演算順序まで仕様に合わせた。ステレオ専用（本家の利用箇所はすべて 2ch）。`SolaTimeStretchStream` は本家どおり、長さ = 入力長 / tempo（無制限は無制限のまま）、シークは位置 × tempo を入力へ転送してプロセッサを再初期化、読み取りは入力を 1 秒ずつ供給し終端でフラッシュする。フラッシュは本家と同じく「期待出力フレーム数 = 入力フレーム数 / (有効レート × 有効テンポ)」の累積式で目標を決め、無音供給で不足を埋めて目標数へ切り詰めるため、総出力数は式どおりに一致し累積ずれが出ない。`VariableSolaPitchCorrectionStream` は長さを変えず、ブロックごとの音程設定と段の接続替え（音程が 1 を跨ぐと有効レートが 1 を跨ぐ）も本家どおり再現した。
+
+**本家との差分。** （1）ユーザー音声エフェクト側の `PlaybackRateEffect` / `TimeStretchEffect`（音声エフェクトとしての再生速度・タイムストレッチ、後者は位相ボコーダ方式も持つ）は、Mac 版では音声エフェクト定義の型付き化自体が未実施のため対象外（アイテム側の速度処理とは別経路）。（2）負の定数速度は本家では `FixedReversePlaybackRateAudioEffect`（内容窓＋反転＋速度）が担うが、Mac 版は従来どおり Reverse → 速度処理器の並びで、方式が SOLA なら反転の後段に `SolaTimeStretchStream` が入る（処理順は本家と同じ）。（3）プレビュー再生の速度ノードは MAC-0042 の AVAudioUnit 系のまま（上記）。
+
+**メモリ・並行性。** 処理芯はストリームごとに所有され、チェーンの強参照で保持される（本家の Dispose 管理に対応）。バッファは FIFO の配列蓄積で、消費側は先頭オフセットで進め、肥大時のみ圧縮する。スレッドは呼び出し側（ミキサーのプル読み）に直列化される前提で、内部にロックは持たない。
+
+**検証。** 新規テスト 9 件（Linux・Mac とも全合格）: 定数 2 倍速・0.5 倍速で総フレーム数が式どおり（48000 / 96000 フレームに一致）かつ基本周波数が 440Hz ±10Hz に保たれること、シーク後の残り長と音程、対比としてリサンプリング方式では 880Hz へ動くこと、`GetPitch` の値とクランプ、可変補正で総数が入力長と一致し音程が保たれること、チェーン接続（方式 SOLA / Resampling の切替、可変＋SOLA）。検証中に判明した注意: 素の `PlaybackRateStream` はチェーン側で打ち切られる前提で自身は終端を返さないため、テストの読み切りヘルパが無限に読み続けてメモリを使い切った（処理器の欠陥ではなくテスト側の問題として修正済み）。Mac 実機: ビルド警告ゼロ、フルスイート 469 件（従来 460＋新規 9）を並列実行し失敗の記録なし、加えて音声関連＋新規の 56 件を選択再実行して 0 失敗を明示確認（内訳: AudioPipeline 20、AudioResamplerQuality 9、AudioSampleAccuracy 11、AudioDrift 7、SolaPitchCorrection 9）。Linux: 新規 9 件は全合格、フルスイートは VM の資源制限で途中終了したため未完（Mac 側で担保）。
+
+**次の担当へ。** 解析リポジトリ側の互換マトリクス同期は PR 側の作業。プレビュー再生の速度ノード（AVAudioUnitTimePitch / Varispeed）を本処理芯へ寄せるかは設計論点として未確定（本家はプレビューも SoundTouch で、方式既定はタイムストレッチ）。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）

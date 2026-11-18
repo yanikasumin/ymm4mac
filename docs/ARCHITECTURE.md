@@ -123,6 +123,13 @@
           SoundLevelMeter.swift サウンドレベルメーター（本家 SoundLevelMeter の
                                再現。1/60 秒区間のピーク/RMS 蓄積、減衰・ホールド、
                                BS.1770-3 の Momentary/ShortTerm。MAC-0041）
+          SoundTouchProcessor.swift SOLA 音高補正の処理芯（本家同梱の
+                               SoundTouch.Net と同じ仕様の再実装: 時間伸縮段＋
+                               3 次補間レート変換段＋アンチエイリアス FIR。SOLA53）
+          SolaStreams.swift    SolaTimeStretch（定数速度・ピッチ保持）と
+                               VariableSolaPitchCorrection（可変速度の
+                               ピッチ補正）のストリーム。チェーンの方式
+                               （PlaybackRateAudioProcessingMode）で接続（SOLA53）
         Effects/               映像エフェクト定義層＋DrawDescription 変換型処理器
                                （Foundation のみ。MAC-0018。合成チェーンへの接続は
                                MAC-0019、VoiceItem の字幕エフェクト解決の接続は MAC-0020、
