@@ -104,6 +104,17 @@ final class ItemKeyFrameEditingTests: XCTestCase {
         XCTAssertEqual(evaluated(item, at: 10), 80)
     }
 
+    /// アイテム長より後方にキーフレームがある不整合データでは、
+    /// 移動範囲の下限が上限を超えるため移動を成立させない
+    /// （R20-114-03 の QA05）。
+    func testMoveRejectsInconsistentFramesBeyondLength() {
+        let item = makeItem()
+        item.length = 9
+        item.keyFrames = KeyFrames(frames: [8, 10])
+        XCTAssertFalse(item.moveKeyFrame(from: 10, to: 0))
+        XCTAssertEqual(item.keyFrames.frames, [8, 10])
+    }
+
     /// キーフレーム非対応の型では、位置だけが増えて値は変わらない。
     func testInsertWithNonSupportedTypeKeepsValues() {
         let item = makeItem()

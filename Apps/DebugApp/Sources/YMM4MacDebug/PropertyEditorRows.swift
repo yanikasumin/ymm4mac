@@ -233,6 +233,10 @@ struct AnimationRowView: View {
     var onEdited: () -> Void
     @State private var text: String
     @FocusState private var isFocused: Bool
+    /// 入力セッションが所有する編集対象区間。フォーカスを得た時点で
+    /// 固定し、確定まで保持する。再生ヘッドが別区間へ移っても、
+    /// 未確定の入力が別区間へ書き込まれることはない（R20-114-01）。
+    @State private var focusedSegment: Int?
 
     init(
         descriptor: PropertyDescriptor, animationContext: AnimationEvaluationContext,
@@ -295,8 +299,15 @@ struct AnimationRowView: View {
                     }
                 }
                 // 数値行と同じく、フォーカスを外した時点でも確定する。
+                // フォーカスを得た時点で編集対象区間をセッションへ
+                // 固定する（R20-114-01）。
                 .onChange(of: isFocused) { _, focused in
-                    if !focused { commit() }
+                    if focused {
+                        focusedSegment = editingSegment
+                    } else {
+                        commit()
+                        focusedSegment = nil
+                    }
                 }
             if let animation = descriptor.animationValue {
                 // 本家と同様、入力欄の横にスライダを並べる。範囲は
@@ -350,10 +361,14 @@ struct AnimationRowView: View {
     /// 値の書き込み経路の振り分け: 定数は定数化、キーフレーム区間が
     /// あればその区間の開始値、それ以外は先頭値。
     private func writeValue(_ value: Double) {
+        writeValue(value, segment: editingSegment)
+    }
+
+    private func writeValue(_ value: Double, segment: Int?) {
         guard let animation = descriptor.animationValue else { return }
         if animation.animationType == .none {
             descriptor.setAnimationConstantValue(value)
-        } else if let segment = editingSegment {
+        } else if let segment {
             descriptor.setAnimationValue(value, atSegment: segment)
         } else {
             descriptor.setAnimationFirstValue(value)
@@ -368,7 +383,9 @@ struct AnimationRowView: View {
             text = formatNumber(displayedValue)
             return
         }
-        writeValue(value)
+        // 確定先はセッションが所有する区間（フォーカス取得時点）。
+        // 現在の再生ヘッド位置の区間ではない（R20-114-01）。
+        writeValue(value, segment: focusedSegment ?? editingSegment)
         text = formatNumber(displayedValue)
         onEdited()
     }

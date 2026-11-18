@@ -159,6 +159,11 @@ public class BaseItem {
         let lower = index > 0 ? keyFrames.frames[index - 1] + 1 : 0
         let upper = index + 1 < keyFrames.frames.count
             ? keyFrames.frames[index + 1] - 1 : length - 1
+        // アイテム長より後方にキーフレームがある不整合データでは
+        // 下限が上限を超える。その場合はアイテム側とアニメーション
+        // 側で丸め先が食い違うため、移動を成立させない
+        // （R20-114-03。Animation 側の防御と対）。
+        guard lower <= upper else { return false }
         let clamped = min(max(target, lower), upper)
         guard clamped != source else { return false }
         forEachAnimation { $0.moveKeyFrame(from: source, to: clamped) }

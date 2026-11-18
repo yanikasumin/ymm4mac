@@ -491,12 +491,22 @@ public struct Animation: Equatable, Sendable {
     }
 
     /// 区間の開始値を書き換える（定義範囲へクランプ）。値列が短い
-    /// 場合は、評価時の代用規則（末尾の値で代用する。keyFrameValue）
-    /// と同じ値で補ってから書く。既定値で補うと、編集対象でない
-    /// 位置の評価値まで変わってしまう（K19-03）。区間の範囲外の
-    /// インデックスは受け付けない。
+    /// 不完全なデータでは、まず評価上の有効値列へ展開してから対象
+    /// 位置だけを書き換える。有効な値の個数は本家の
+    /// GetActiveValueCount と同じくキーフレーム数 + 2（開始値、
+    /// 各キーフレーム位置の値、最終端点の値）。展開せずに対象位置
+    /// までだけ補うと、代用規則（末尾の値）で読まれていた対象外の
+    /// 位置、特に最終端点まで新しい値に変わってしまう
+    /// （K19-03／R20-114-02）。既に揃っている正常なデータは
+    /// 展開しない。区間の範囲外のインデックスは受け付けない。
     public mutating func setValue(_ value: Double, atSegment index: Int) {
         guard index >= 0, index <= keyFrames.frames.count else { return }
+        if animationType.isKeyFrameSupported {
+            let activeCount = keyFrames.frames.count + 2
+            while values.count < activeCount {
+                values.append(AnimationValue(keyFrameValue(values.count)))
+            }
+        }
         while values.count <= index {
             values.append(AnimationValue(keyFrameValue(values.count)))
         }
