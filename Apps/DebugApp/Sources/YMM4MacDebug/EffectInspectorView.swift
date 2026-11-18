@@ -8,25 +8,87 @@ import YMM4Core
 /// 型付きで開ける定義は記述子で編集でき、編集のたびに保持列へ
 /// 書き戻す（`EffectPropertyEditing`）。未知の型は生保持のまま
 /// 編集対象外であることを表示する。
+/// 追加は本家 VideoEffectSelector の「＋」相当で、追加ポップアップ
+/// （`EffectAddPopupView`）から選んだ定義を末尾へ追加する。削除も
+/// 行える（本家の削除ボタン相当）。
 struct EffectInspectorView: View {
     let item: BaseItem
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
+    @State private var isAddPopupPresented = false
+    /// 追加・削除のたびに増やし、一覧の再構築を促す世代カウンタ。
+    @State private var listRevision = 0
 
     var body: some View {
-        if let effects = EffectPropertyEditing.effectList(for: item), !effects.isEmpty {
+        if let effects = EffectPropertyEditing.effectList(for: item) {
             VStack(alignment: .leading, spacing: 8) {
                 Divider()
-                Text("映像エフェクト")
-                    .bold()
+                HStack {
+                    Text(UIStrings.Inspector.videoEffects)
+                        .bold()
+                    Spacer()
+                    Button {
+                        isAddPopupPresented = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(UIStrings.Inspector.addEffect)
+                    .popover(isPresented: $isAddPopupPresented) {
+                        EffectAddPopupView { entry in
+                            appendEffect(entry)
+                        }
+                    }
+                }
                 ForEach(effects.indices, id: \.self) { index in
                     EffectInspectorRow(
                         item: item, index: index, preserved: effects[index],
-                        animationContext: animationContext, onEdited: onEdited
+                        animationContext: animationContext, onEdited: onEdited,
+                        onRemove: { removeEffect(at: index) }
                     )
+                    .id("\(index)-\(effects[index].typeName ?? "")-\(listRevision)")
                 }
             }
         }
+    }
+
+    /// 選択された定義を保持列の末尾へ追加する（本家は現在位置の
+    /// 直後へ仮挿入する方式。こちらは末尾追加で確定する）。
+    private func appendEffect(_ entry: EffectCatalog.Entry) {
+        guard let definition = VideoEffectRegistry.makeEmptyDefinition(
+            typeName: entry.typeName
+        ) else { return }
+        let preserved = VideoEffectRegistry.encode(definition)
+        switch item {
+        case let visual as VisualItem:
+            visual.videoEffects.append(preserved)
+        case let voice as VoiceItem:
+            voice.videoEffects.append(preserved)
+        case let transition as TransitionItem:
+            transition.videoEffects.append(preserved)
+        default:
+            return
+        }
+        listRevision += 1
+        onEdited()
+    }
+
+    private func removeEffect(at index: Int) {
+        switch item {
+        case let visual as VisualItem:
+            guard visual.videoEffects.indices.contains(index) else { return }
+            visual.videoEffects.remove(at: index)
+        case let voice as VoiceItem:
+            guard voice.videoEffects.indices.contains(index) else { return }
+            voice.videoEffects.remove(at: index)
+        case let transition as TransitionItem:
+            guard transition.videoEffects.indices.contains(index) else { return }
+            transition.videoEffects.remove(at: index)
+        default:
+            return
+        }
+        listRevision += 1
+        onEdited()
     }
 }
 
@@ -36,13 +98,24 @@ private struct EffectInspectorRow: View {
     let preserved: PreservedObject
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
+    var onRemove: () -> Void
     @State private var definition: VideoEffectDefinitionBase?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(shortTypeName)
-                .font(.callout)
-                .bold()
+            HStack {
+                Text(shortTypeName)
+                    .font(.callout)
+                    .bold()
+                Spacer()
+                Button {
+                    onRemove()
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+                .help(UIStrings.Inspector.removeEffect)
+            }
             if let definition {
                 PropertyInspectorView(
                     descriptors: EffectPropertyMetadata.descriptors(for: definition),
@@ -53,7 +126,7 @@ private struct EffectInspectorRow: View {
                     }
                 )
             } else {
-                Text("型付き編集未対応（生保持のまま保存されます）")
+                Text(UIStrings.Inspector.unsupportedEffect)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

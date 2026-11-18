@@ -59,7 +59,8 @@ public enum PropertyAccess {
     case animation(
         get: () -> Animation,
         setConstantValue: (Double) -> Void,
-        setFirstValue: (Double) -> Void
+        setFirstValue: (Double) -> Void,
+        setType: (AnimationType) -> Void
     )
 }
 
@@ -157,14 +158,14 @@ public struct PropertyDescriptor {
     }
 
     public var animationValue: Animation? {
-        guard case .animation(let get, _, _) = access else { return nil }
+        guard case .animation(let get, _, _, _) = access else { return nil }
         return get()
     }
 
     /// 定数値として書き込む（補間種別を「なし」へ畳む）。
     @discardableResult
     public func setAnimationConstantValue(_ value: Double) -> Bool {
-        guard case .animation(_, let setConstantValue, _) = access else { return false }
+        guard case .animation(_, let setConstantValue, _, _) = access else { return false }
         setConstantValue(value)
         return true
     }
@@ -172,8 +173,19 @@ public struct PropertyDescriptor {
     /// 先頭値だけを書き換える（補間種別と値列は保つ）。
     @discardableResult
     public func setAnimationFirstValue(_ value: Double) -> Bool {
-        guard case .animation(_, _, let setFirstValue) = access else { return false }
+        guard case .animation(_, _, let setFirstValue, _) = access else { return false }
         setFirstValue(value)
+        return true
+    }
+
+    /// 補間種別だけを書き換える（値列と定義範囲は保つ）。
+    /// 本家 AnimationSlider の種別切替メニュー（AnimationSliderMenuFactory）
+    /// が行う変更はこの種別のみであり、値列の増減はキーフレーム列の
+    /// 変更時に `Animation.setKeyFrames` 側で伝播する。
+    @discardableResult
+    public func setAnimationType(_ type: AnimationType) -> Bool {
+        guard case .animation(_, _, _, let setType) = access else { return false }
+        setType(type)
         return true
     }
 }
@@ -277,6 +289,11 @@ extension PropertyDescriptor {
                 setFirstValue: { value in
                     var animation = get()
                     animation.setFirstValue(animation.clamped(value))
+                    set(animation)
+                },
+                setType: { type in
+                    var animation = get()
+                    animation.animationType = type
                     set(animation)
                 }
             )

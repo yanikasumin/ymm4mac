@@ -225,20 +225,40 @@ final class AutoTestJob: @unchecked Sendable {
     /// したもの）。経路の実体（デバイス・文脈・供給元・合成器）は
     /// プレビューと同一である。
     private final class CompositionSession {
-        let devices: MetalGraphicsDevices
-        let context: MetalGraphicsContext
-        let composer: TimelineComposer
+        /// Metal 初期化に失敗した場合の記録（理由文＋診断詳細）。
+        /// 成功時は nil。失敗時はレポートへ理由を残す（Issue #50）。
+        let initializationFailure: String?
+        let devices: MetalGraphicsDevices?
+        let context: MetalGraphicsContext?
+        let composer: TimelineComposer?
         let videoInfo: VideoInfo
 
-        init?(timeline: Timeline, timelines: [Timeline], baseDirectory: URL?) {
-            guard let devices = MetalGraphicsDevices() else { return nil }
-            self.devices = devices
+        init(timeline: Timeline, timelines: [Timeline], baseDirectory: URL?) {
             self.videoInfo = timeline.videoInfo
-            self.context = devices.makeContext(
+            let devices: MetalGraphicsDevices
+            do {
+                devices = try MetalGraphicsDevices()
+            } catch let error as MetalInitializationError {
+                initializationFailure = "\(error.userMessage)（\(error.description)）"
+                self.devices = nil
+                self.context = nil
+                self.composer = nil
+                return
+            } catch {
+                initializationFailure = "Metal の初期化に失敗しました（\(error)）"
+                self.devices = nil
+                self.context = nil
+                self.composer = nil
+                return
+            }
+            initializationFailure = nil
+            self.devices = devices
+            let context = devices.makeContext(
                 targetSize: PixelSize(
                     width: videoInfo.width, height: videoInfo.height
                 )
             )
+            self.context = context
             let effectProvider = MetalEffectPairProvider(devices: devices)
             let provider = MetalSourceProvider(
                 devices: devices, baseDirectory: baseDirectory,
@@ -256,6 +276,15 @@ final class AutoTestJob: @unchecked Sendable {
         }
 
         func update(frame: Int) throws {
+            guard let context, let composer else {
+                throw NSError(
+                    domain: "AutoTestRunner.CompositionSession", code: 1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            initializationFailure ?? "Metal が初期化されていません",
+                    ]
+                )
+            }
             context.targetSize = PixelSize(
                 width: videoInfo.width, height: videoInfo.height
             )
@@ -267,12 +296,13 @@ final class AutoTestJob: @unchecked Sendable {
 
         /// 合成結果を CGImage へ読み戻す（プレビューの表示経路）。
         func readback() -> Bool {
-            guard let output = composer.output else { return false }
+            guard let devices, let composer,
+                  let output = composer.output else { return false }
             return devices.makeCGImage(from: output) != nil
         }
 
         func dispose() {
-            composer.dispose()
+            composer?.dispose()
         }
     }
 
@@ -282,11 +312,12 @@ final class AutoTestJob: @unchecked Sendable {
     {
         var composition = AutoTestReport.CompositionResult()
         var seek = AutoTestReport.SeekResult()
-        guard let session = CompositionSession(
+        let session = CompositionSession(
             timeline: timeline, timelines: timelines,
             baseDirectory: baseDirectory
-        ) else {
-            composition.error = "Metal デバイスを初期化できませんでした"
+        )
+        if let failure = session.initializationFailure {
+            composition.error = "Metal の初期化に失敗しました: \(failure)"
             seek.error = composition.error
             return (composition, seek)
         }
@@ -506,11 +537,17 @@ final class AutoTestJob: @unchecked Sendable {
         try? AutoTestEnvironment.prepareReportDirectory()
 
         let preparationStart = now()
-        guard let videoProvider = MetalExportVideoProvider(
-            timeline: timeline, timelines: timelines,
-            baseDirectory: baseDirectory
-        ) else {
-            result.error = "Metal デバイスを初期化できませんでした"
+        let videoProvider: MetalExportVideoProvider
+        do {
+            videoProvider = try MetalExportVideoProvider(
+                timeline: timeline, timelines: timelines,
+                baseDirectory: baseDirectory
+            )
+        } catch let error as MetalInitializationError {
+            result.error = "Metal の初期化に失敗しました: \(error.userMessage)"
+            return result
+        } catch {
+            result.error = "Metal の初期化に失敗しました: \(error)"
             return result
         }
         defer { videoProvider.dispose() }
