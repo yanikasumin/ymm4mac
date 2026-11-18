@@ -133,7 +133,7 @@ print("effects(raw): \(item.videoEffects.map { $0.typeName ?? "?" })")
 let decodedEffects = item.videoEffects.compactMap { VideoEffectRegistry.decode($0) }
 print("effects(decoded): \(decodedEffects.map { String(describing: type(of: $0)) })")
 
-let devices = MetalGraphicsDevices()!
+let devices = try! MetalGraphicsDevices()
 let baseDirectory = URL(fileURLWithPath: ymmpPath).deletingLastPathComponent()
 let scene = TimelineScene(timeline: timeline)
 let base = TimelineSourceDescription(

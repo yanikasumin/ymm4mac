@@ -7,7 +7,7 @@ import YMM4GPU
 // 分割テキストの合成チェック: 縁取りスタイル付き・複数行でも、ピースが
 // 完全なグリフ（＋縁取り）を含むことを確認する。
 func runDividedProbe() {
-    let devices = MetalGraphicsDevices()!
+    let devices = try! MetalGraphicsDevices()
     let timeline = Timeline()
     timeline.videoInfo = VideoInfo(fps: 60, hz: 48_000, width: 1920, height: 1080)
     let base = TimelineSourceDescription(
@@ -107,7 +107,7 @@ func runImageProbe() {
     item.layer = 0
     timeline.items = [item]
 
-    let devices = MetalGraphicsDevices()!
+    let devices = try! MetalGraphicsDevices()
     let base = TimelineSourceDescription(
         screenSize: PixelSize(width: 64, height: 64),
         timelinePosition: FramePosition(frame: 0, fps: 30),

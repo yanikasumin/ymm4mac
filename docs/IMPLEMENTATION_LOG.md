@@ -57,6 +57,7 @@
 - GRADMESH — グラデーションメッシュブラシの型付き化と GPU 描画
 - NOISE7 — Noise エフェクト残り7種の実処理化（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
+- INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
 
 ## 実装記録（変更IDごとに自然言語で追記）
 
@@ -1198,23 +1199,6 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **未解決。** Seed と本家の GetHashCode の対応（対応付け自体が不可能で、散らばりの再現性は本家にも無い）。Delaunay の非凸四角形・境界での本家 winding 判定との等価性（参照実装同士の一致までで、本家実出力との比較は Seed 不定のため実施不能）。矩形の5点平均への是正は別件。
 
-<<<<<<< HEAD
-#### NOISE7 — Noise エフェクト残り7種の実処理化（IMPLEMENTED、Mac 検証済み。本家との画素一致は DXBC 実行参照との照合範囲）
-
-**何を実装したか。** Noise エフェクト（本家 `YukkuriMovieMaker.Project.Effects.NoiseEffect`）の生成器10種のうち、素通しだった残り7種（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）を実処理にした。既存の Fractal / Random / Curl と合わせて全10種が描画される。パラメータ側は Cellular / Voronoi の DistanceMode・OutputMode、Marble の StripeInterval・StripeWarpAmount、Flow の FlowAmount の読み取りと定数受け渡しを追加した。
-
-**本家根拠。** 描画式と定数は全種とも本家シェーダの DXBC 逆アセンブルから抽出した（作業領域 gpu45-scratch の blocknoise / perlinnoise / cellularnoise / voronoinoise / simplexnoise / marblenoise / flownoise の各逆アセンブル）。パラメータの定数変換は逆コンパイル済み C# の `SetParameterTo` で確認した: DistanceMode / OutputMode は列挙値の int キャスト、Marble の StripeInterval は生 float（Animation 既定 64、範囲 1–2000）、StripeWarpAmount は生値（既定 100、0–1000）、Flow の FlowAmount は値 / 100（既定 100、0–1000）。.ymmp 上の列挙は文字列名で保存される（Cellular の OutputMode は F1 / F2 / Difference、Voronoi は CellValue / Edge）。
-
-**どこを変更したか。** branch `noise7/remaining-types`（base = main 8df38dd）。`Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift`（Noise シェーダへ生成器7種と振り分けを追加。既存3種の経路は無変更）、`Sources/YMM4GPU/Effects/MetalEffectProcessorsNoise.swift`（種別コード 3–9 の割り当て、新規パラメータの読み取り、ユニフォーム受け渡し）。検証資産として `Harnesses/noise7-harness/` を新設し、`Harnesses/README.md` へ登録した。Core は無変更。
-
-**どう実装したか。** 新規7種は既存3種と前段が異なるため、フラグメントシェーダで種別コード 3 以上を専用経路へ分岐し、後段（Threshold / Strength / Levels のポスト処理）は既存の `ymm4NoisePost` を共用した（ポスト処理の式と Levels 条件は逆アセンブルと一致することを確認済みで、変更なし）。本家シェーダから実測した共通規則: (1) オクターブは「カウンタが Octaves 以下の間」= Octaves + 1 回評価する。(2) Z はオクターブの周波数で拡縮しない（XY のみ）。(3) ワープの第1評価点には +(19.1, 7.3, 3.7) のオフセットがある。(4) 座標変換はスケール後に ×(1/64) が入る。(5) FractalMode の整形はモード 0 では生値をそのまま使う。種別固有の要点: Block は XY がセル内一定で Z のみフェード補間したセルハッシュ。Perlin は格子点ごとにタグ 0 / 1 / 2 の整数ハッシュから勾配（各成分 = ハッシュ ×2 − 1、正規化なし）を作り内積を三次フェードで補間する。Cellular は 3×3×3 近傍の特徴点との距離の小さい方2つを追跡し、F1 / F2 の初期値はどちらも 1.0（本家の初期化どおり）。距離は Euclidean は length、Manhattan は ×(2/3)、Chebyshev は ×1.2。Voronoi の F1 / F2 初期値は 10.0 で、CellValue は勝者セルのハッシュ値、Edge は 1 − saturate(F2 − F1)。Simplex は評価点へシードハッシュ ×289 のオフセットを加えた既存の snoise（×52.5 + 0.5 形）。Marble は縞位相 = 回転後 x / StripeInterval × 2π で、StripeWarpAmount ≠ 0 のときだけ値ノイズで位相を歪ませる（歪み量 = (n×2 − 1) × StripeWarpAmount × 2π/100）。Flow は2次元の回転勾配ノイズで、オクターブごとに勾配場で評価点を移流させる。permute の mod289 入力が (ix, ix + sx, ix + 1)、加算側が (iy, iy + sy, iy + 1) という非対称な構成と、第2角のスキューが −0.5×(iy + sy) である点は、逆アセンブルのレジスタ手順どおりに転記した（検証の節参照）。
-
-**Voronoi の決定性について。** モザイクの Voronoi はシードが C# 側の GetHashCode 由来で再現不能だったが、Noise の Voronoi は特徴点・勝者値ともシェーダ内の整数ハッシュ（セル座標 + シード、タグ付き）だけで決まる決定的な処理であり、画素単位の照合が可能だった。実際に照合した（検証の節）。
-
-**検証。** 期待値は、本家シェーダの DXBC を命令単位で実行するインタプリタ（作業領域 noise7-scratch）の出力。インタプリタ自体の妥当性は、既にマージ済みの移植 Fractal との照合ケース（fractal-cross）で担保した: 既存3種の既知の差分（オクターブ回数と ×(1/64)）を補正した条件ではバイト完全一致した。画素ハーネス noise7-harness（32×32、39ケース: 各種別の既定・整形モード・ワープ・角度・オフセット・スケール・色モード・ポスト処理・FlowAmount 変化など）で MetalNoiseProcessor 経由の実描画と比較した結果、37ケースがバイト完全一致（最大差 0）。残り2ケース（vor-cell / vor-manh-cell）は同一の1画素（行26・列5）だけが 1 バイト差（参照 157 に対して 158）で、勝者セルの取り違えではなくバイト境界での float 丸め差である。Flow は初版の転記で2箇所（permute 入力と第2角のスキュー）の読み違いがあり系統的にずれていたが、逆アセンブルのレジスタ手順を追い直して是正し、全ケース一致に至った。Mac 実機（検証コピー ~/ymm4-work/noise7-YMM4Mac）: ルートパッケージ `swift build` 成功・警告 0、対象テスト（GPUEffectRegistryTests / GPUEffectValuePreservationTests / GPUEffectLegacyKeyTests の計30件）0 失敗。Mac フルスイートは本単位では未実施（対象テストとハーネスのみ実行）。本家実機との比較試験は未実施のため IMPLEMENTED 止まり。
-
-**本家との差分・未解決。** (1) 既存3種（Fractal / Random / Curl）には本単位で変更していない差分が実測で確認された: ワープ第1評価点の +(19.1, 7.3, 3.7) オフセット欠落、オクターブ回数が Octaves 回（本家は Octaves + 1 回）、座標変換の ×(1/64) 欠落。是正は既存種の描画結果を変えるため本単位の範囲外とし、別途処分が要る。(2) IsUniqueSeed のシード基礎値（パラメータの GetHashCode 由来）は従来どおり未確定で 0 として扱う（全種共通の既存差分）。(3) Flow の周波数・振幅の更新は逆アセンブルのパックされたレジスタ更新を標準セマンティクスで読むと交差して見える箇所があるが、実測では通常の更新（周波数 ×Lacunarity、振幅 ×Gain）でインタプリタ参照と完全一致したため、通常の更新を採用した。
-=======
 #### TRIM55 — 素材の提示タイムスタンプとトリム（Issue #55）（IMPLEMENTED、Mac 検証済み）
 
 **何を実装したか。** 音声・映像素材の提示開始位置（提示タイムスタンプ）を論理時刻の基準にそろえた。従来の音声供給はトラックの時間範囲の開始を原点にしていたため、提示開始オフセットを持つ素材（前方に提示上の無音区間がある素材）では、オフセット分が無音として前に残り、全長にも混入して配置がずれていた（内部課題 EX26-03 の後半。実測: 開始時刻 +2 秒の MOV で全長が 4.0 秒になり、音が論理フレーム 120001 から始まった）。あわせて、シークの着地方式を本家と同じ「プリロール＋提示時刻での着地」に変えた。目標位置から直接読み始めると、形式によってはデコーダの遅延補正が外れて内容が提示時刻からずれるためである（MP3 で実測: 1.5 秒へ直接シークするとトーン終了境界でトーンが鳴り、0.5 秒では開始が約 500 フレーム遅れた）。
@@ -1323,7 +1307,32 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 **検証。** Mac 実機: `swift build` 成功・警告 0。Core 単体テスト `BrushParameterTests` 12件全合格（新規: メッシュの往復保存（JSON 一致）と既定値の確認。従来の「生保持のまま」テストは型付き往復へ置き換えた）。GPU 単体テスト新規 `GradientMeshGeometryTests` 5件全合格（既定格子の双線形一致、カスタムハンドル時の中心移動 (0,0) → (4,0) のテンソル積評価一致、拡張の被覆範囲と隅色、変換の適用、不正な点数で空になること）。画素ハーネス brush46-harness は全ケース PASS（新規: 既定メッシュの中心 (140, 148, 124)・左上 (252, 5, 4)・右下 (5, 248, 251) が解析値と一致、W=H=50 での拡張あり／なし、Pixel モード。既存ケース11は「メッシュは描画されない」前提が変わったため、影が不透明度 50% で付く確認へ更新し、実測アルファ 128 で一致）。フルスイートは他担当の並行作業のため未実行（関連フィルタ 21 件は全合格）。
 
 **R7-01 処分（レビュー第7ラウンド、PR 作成後の追補）。** 読み込んだ点数（HorizontalCount / VerticalCount）は保存互換のため無制限に保持されるが、描画側の2箇所（GradientMeshGeometry.build と MetalBrushFill のメッシュ分岐）が点数の乗算を無検証で行っており、外部ファイル由来の極端な値では整数オーバーフローでプロセスが停止し得た。処分: Core の GradientMeshBrushParameter に描画用上限 maximumPointCount = 50（本家 UI の範囲 2〜50 の上限）を置き、両箇所で乗算より前に上限を検証する形にした。保存データの読み書きは従来どおり無制限で、往復で値は失われない。検証は GradientMeshGeometryTests に極端な点数（10億×10億）で空のジオメトリが返るテストを追加して行う。
->>>>>>> origin/main
+#### NOISE7 — Noise エフェクト残り7種の実処理化（IMPLEMENTED、Mac 検証済み。本家との画素一致は DXBC 実行参照との照合範囲）
+
+**何を実装したか。** Noise エフェクト（本家 `YukkuriMovieMaker.Project.Effects.NoiseEffect`）の生成器10種のうち、素通しだった残り7種（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）を実処理にした。既存の Fractal / Random / Curl と合わせて全10種が描画される。パラメータ側は Cellular / Voronoi の DistanceMode・OutputMode、Marble の StripeInterval・StripeWarpAmount、Flow の FlowAmount の読み取りと定数受け渡しを追加した。
+
+**本家根拠。** 描画式と定数は全種とも本家シェーダの DXBC 逆アセンブルから抽出した（作業領域 gpu45-scratch の blocknoise / perlinnoise / cellularnoise / voronoinoise / simplexnoise / marblenoise / flownoise の各逆アセンブル）。パラメータの定数変換は逆コンパイル済み C# の `SetParameterTo` で確認した: DistanceMode / OutputMode は列挙値の int キャスト、Marble の StripeInterval は生 float（Animation 既定 64、範囲 1–2000）、StripeWarpAmount は生値（既定 100、0–1000）、Flow の FlowAmount は値 / 100（既定 100、0–1000）。.ymmp 上の列挙は文字列名で保存される（Cellular の OutputMode は F1 / F2 / Difference、Voronoi は CellValue / Edge）。
+
+**どこを変更したか。** branch `noise7/remaining-types`（base = main 8df38dd）。`Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift`（Noise シェーダへ生成器7種と振り分けを追加。既存3種の経路は無変更）、`Sources/YMM4GPU/Effects/MetalEffectProcessorsNoise.swift`（種別コード 3–9 の割り当て、新規パラメータの読み取り、ユニフォーム受け渡し）。検証資産として `Harnesses/noise7-harness/` を新設し、`Harnesses/README.md` へ登録した。Core は無変更。
+
+**どう実装したか。** 新規7種は既存3種と前段が異なるため、フラグメントシェーダで種別コード 3 以上を専用経路へ分岐し、後段（Threshold / Strength / Levels のポスト処理）は既存の `ymm4NoisePost` を共用した（ポスト処理の式と Levels 条件は逆アセンブルと一致することを確認済みで、変更なし）。本家シェーダから実測した共通規則: (1) オクターブは「カウンタが Octaves 以下の間」= Octaves + 1 回評価する。(2) Z はオクターブの周波数で拡縮しない（XY のみ）。(3) ワープの第1評価点には +(19.1, 7.3, 3.7) のオフセットがある。(4) 座標変換はスケール後に ×(1/64) が入る。(5) FractalMode の整形はモード 0 では生値をそのまま使う。種別固有の要点: Block は XY がセル内一定で Z のみフェード補間したセルハッシュ。Perlin は格子点ごとにタグ 0 / 1 / 2 の整数ハッシュから勾配（各成分 = ハッシュ ×2 − 1、正規化なし）を作り内積を三次フェードで補間する。Cellular は 3×3×3 近傍の特徴点との距離の小さい方2つを追跡し、F1 / F2 の初期値はどちらも 1.0（本家の初期化どおり）。距離は Euclidean は length、Manhattan は ×(2/3)、Chebyshev は ×1.2。Voronoi の F1 / F2 初期値は 10.0 で、CellValue は勝者セルのハッシュ値、Edge は 1 − saturate(F2 − F1)。Simplex は評価点へシードハッシュ ×289 のオフセットを加えた既存の snoise（×52.5 + 0.5 形）。Marble は縞位相 = 回転後 x / StripeInterval × 2π で、StripeWarpAmount ≠ 0 のときだけ値ノイズで位相を歪ませる（歪み量 = (n×2 − 1) × StripeWarpAmount × 2π/100）。Flow は2次元の回転勾配ノイズで、オクターブごとに勾配場で評価点を移流させる。permute の mod289 入力が (ix, ix + sx, ix + 1)、加算側が (iy, iy + sy, iy + 1) という非対称な構成と、第2角のスキューが −0.5×(iy + sy) である点は、逆アセンブルのレジスタ手順どおりに転記した（検証の節参照）。
+
+**Voronoi の決定性について。** モザイクの Voronoi はシードが C# 側の GetHashCode 由来で再現不能だったが、Noise の Voronoi は特徴点・勝者値ともシェーダ内の整数ハッシュ（セル座標 + シード、タグ付き）だけで決まる決定的な処理であり、画素単位の照合が可能だった。実際に照合した（検証の節）。
+
+**検証。** 期待値は、本家シェーダの DXBC を命令単位で実行するインタプリタ（作業領域 noise7-scratch）の出力。インタプリタ自体の妥当性は、既にマージ済みの移植 Fractal との照合ケース（fractal-cross）で担保した: 既存3種の既知の差分（オクターブ回数と ×(1/64)）を補正した条件ではバイト完全一致した。画素ハーネス noise7-harness（32×32、39ケース: 各種別の既定・整形モード・ワープ・角度・オフセット・スケール・色モード・ポスト処理・FlowAmount 変化など）で MetalNoiseProcessor 経由の実描画と比較した結果、37ケースがバイト完全一致（最大差 0）。残り2ケース（vor-cell / vor-manh-cell）は同一の1画素（行26・列5）だけが 1 バイト差（参照 157 に対して 158）で、勝者セルの取り違えではなくバイト境界での float 丸め差である。Flow は初版の転記で2箇所（permute 入力と第2角のスキュー）の読み違いがあり系統的にずれていたが、逆アセンブルのレジスタ手順を追い直して是正し、全ケース一致に至った。Mac 実機（検証コピー ~/ymm4-work/noise7-YMM4Mac）: ルートパッケージ `swift build` 成功・警告 0、対象テスト（GPUEffectRegistryTests / GPUEffectValuePreservationTests / GPUEffectLegacyKeyTests の計30件）0 失敗。Mac フルスイートは本単位では未実施（対象テストとハーネスのみ実行）。本家実機との比較試験は未実施のため IMPLEMENTED 止まり。
+
+**本家との差分・未解決。** (1) 既存3種（Fractal / Random / Curl）には本単位で変更していない差分が実測で確認された: ワープ第1評価点の +(19.1, 7.3, 3.7) オフセット欠落、オクターブ回数が Octaves 回（本家は Octaves + 1 回）、座標変換の ×(1/64) 欠落。是正は既存種の描画結果を変えるため本単位の範囲外とし、別途処分が要る。(2) IsUniqueSeed のシード基礎値（パラメータの GetHashCode 由来）は従来どおり未確定で 0 として扱う（全種共通の既存差分）。(3) Flow の周波数・振幅の更新は逆アセンブルのパックされたレジスタ更新を標準セマンティクスで読むと交差して見える箇所があるが、実測では通常の更新（周波数 ×Lacunarity、振幅 ×Gain）でインタプリタ参照と完全一致したため、通常の更新を採用した。
+#### INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
+
+**何を統合したか。** 並行して実装された10単位を main へ順に統合した。対応は次のとおり。#84 = MAC-0040（VoiceItem 音声供給、#51）、#85 = MAC-0041・0042（実時間再生、#52）、#86 = SOLA53（#53）、#87 = STREAM54（#54）、#88 = MAC-0043（PngWav、#49）、#89 = MAC-0044（Metal 初期化診断、#50）、#90 = GPU45（#45 第1弾）、#91 = BRUSH46（#46）、#92 = TRANSFORM47（#47）、#93 = MOSAIC48（#48）。統合後の main は `8df38dd`。
+
+**統合時の競合と解消。** (1) #85: PreviewBox.render は #52 の usage 引数と main 側の nil ガードを両立させた。ProjectView は再生側の関数（再生エンジン停止・速度/音量/ミュートの変更伝播）を採り、表示文字列と寸法はフロントエンド側を採った。(2) MetalGraphicsDevices: #50 の throws 形式を基底とし、#45 のシェーダ関数5件と #46 のブラシ関数・リピートサンプラーを同形式で追加した。(3) #46 と #45: Outline が生保持のまま渡す StrokeBrush 用に、型付き Brush 版と並べて PreservedObject 版の solidBrushColor を残置した（引数の型によるオーバーロード）。(4) 台帳とハーネス README の競合は両側を保持した。
+
+**検証。** 統合中間状態（#85 統合直後）で Mac フルスイート 481 件・0 失敗。統合後の最終状態で 515 件すべてが開始し、失敗・エラーの記録 0（Mac、ログは /tmp/final-merge-test.log、EXIT:0）。brush46・transform47・media4950 の各ハーネスは統合後に全 PASS。
+
+**統合で見つかった追随漏れ。** #50 の初期化子 throws 化に対し、既存ハーネス mac0023・mac0025・mac0027・mac0028・mac0031・mac0033・mac0034・mac0035 が `MetalGraphicsDevices()!` のままで main 上でコンパイル不能だった。本記録の PR で `try!` へ追随させ、8件すべてのビルド成功を Mac で確認した。あわせて mac0034 には MetalExportVideoProvider の初期化子 throws 化への未追随（旧来の失敗可能初期化子を前提にした条件バインディング）もあり、同 PR で do-catch 形式へ是正した（mosaic48 ハーネスの初期化子追随は MOSAICRECT の PR で修正済み）。brush46・transform47 のハーネスは統合時に追随済み。
+
+**未解決。** 統合結果のレビュー（第6ラウンド）は条件付き採用可。指摘の処分は R6-FIX の記録を参照。STATUS.md のテキスト描画行（Issue #60 の状態）は TEXT60 の PR 側で更新する。
 
 ## 以降の記載テンプレート
 
