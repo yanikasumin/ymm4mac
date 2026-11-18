@@ -121,11 +121,18 @@ final class MetalEffectDefinition: VideoEffectDefinition {
              is BorderBlurEffectDefinition,
              is DirectionalBlurEffectDefinition,
              is ChromaticAberrationEffectDefinition,
+             // Issue #45 第1弾: ハーフトーンシャドウ
+             is HalfToneShadowEffectDefinition,
              // 第2段: 影・塗り・枠線（単色ブラシのみ）
              is ShadowEffectDefinition,
              is FillBackgroundEffectDefinition,
              is FillForegroundEffectDefinition,
              is FrameLineEffectDefinition,
+             // Issue #45 第1弾: 輪郭・グラデーション
+             is OutlineEffectDefinition,
+             is GradientEffectDefinition,
+             // Issue #45 第1弾: ノイズ（Fractal / Random / Curl）
+             is NoiseEffectDefinition,
              // 第2段: ワープ系
              is MorphologyEffectDefinition,
              is DrawLazyEffectEffectDefinition,
@@ -197,6 +204,8 @@ final class MetalEffectDefinition: VideoEffectDefinition {
             return MetalDirectionalBlurProcessor(context: context, definition: definition)
         case let definition as ChromaticAberrationEffectDefinition:
             return MetalChromaticAberrationProcessor(context: context, definition: definition)
+        case let definition as HalfToneShadowEffectDefinition:
+            return MetalHalfToneShadowProcessor(context: context, definition: definition)
         case let definition as ShadowEffectDefinition:
             return MetalShadowProcessor(context: context, definition: definition)
         case let definition as FillBackgroundEffectDefinition:
@@ -205,6 +214,12 @@ final class MetalEffectDefinition: VideoEffectDefinition {
             return MetalFillForegroundProcessor(context: context, definition: definition)
         case let definition as FrameLineEffectDefinition:
             return MetalFrameLineProcessor(context: context, definition: definition)
+        case let definition as OutlineEffectDefinition:
+            return MetalOutlineProcessor(context: context, definition: definition)
+        case let definition as GradientEffectDefinition:
+            return MetalGradientProcessor(context: context, definition: definition)
+        case let definition as NoiseEffectDefinition:
+            return MetalNoiseProcessor(context: context, definition: definition)
         case let definition as MorphologyEffectDefinition:
             return MetalMorphologyProcessor(context: context, definition: definition)
         case let definition as DrawLazyEffectEffectDefinition:
