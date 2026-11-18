@@ -60,7 +60,8 @@ public enum PropertyAccess {
         get: () -> Animation,
         setConstantValue: (Double) -> Void,
         setFirstValue: (Double) -> Void,
-        setType: (AnimationType) -> Void
+        setType: (AnimationType) -> Void,
+        setValueAtSegment: (Int, Double) -> Void
     )
 }
 
@@ -158,14 +159,14 @@ public struct PropertyDescriptor {
     }
 
     public var animationValue: Animation? {
-        guard case .animation(let get, _, _, _) = access else { return nil }
+        guard case .animation(let get, _, _, _, _) = access else { return nil }
         return get()
     }
 
     /// 定数値として書き込む（補間種別を「なし」へ畳む）。
     @discardableResult
     public func setAnimationConstantValue(_ value: Double) -> Bool {
-        guard case .animation(_, let setConstantValue, _, _) = access else { return false }
+        guard case .animation(_, let setConstantValue, _, _, _) = access else { return false }
         setConstantValue(value)
         return true
     }
@@ -173,8 +174,17 @@ public struct PropertyDescriptor {
     /// 先頭値だけを書き換える（補間種別と値列は保つ）。
     @discardableResult
     public func setAnimationFirstValue(_ value: Double) -> Bool {
-        guard case .animation(_, _, let setFirstValue, _) = access else { return false }
+        guard case .animation(_, _, let setFirstValue, _, _) = access else { return false }
         setFirstValue(value)
+        return true
+    }
+
+    /// 指定区間の開始値を書き換える（キーフレーム編集用。補間種別と
+    /// 他区間の値は保つ）。
+    @discardableResult
+    public func setAnimationValue(_ value: Double, atSegment segment: Int) -> Bool {
+        guard case .animation(_, _, _, _, let setValueAtSegment) = access else { return false }
+        setValueAtSegment(segment, value)
         return true
     }
 
@@ -184,7 +194,7 @@ public struct PropertyDescriptor {
     /// 変更時に `Animation.setKeyFrames` 側で伝播する。
     @discardableResult
     public func setAnimationType(_ type: AnimationType) -> Bool {
-        guard case .animation(_, _, _, let setType) = access else { return false }
+        guard case .animation(_, _, _, let setType, _) = access else { return false }
         setType(type)
         return true
     }
@@ -294,6 +304,11 @@ extension PropertyDescriptor {
                 setType: { type in
                     var animation = get()
                     animation.animationType = type
+                    set(animation)
+                },
+                setValueAtSegment: { segment, value in
+                    var animation = get()
+                    animation.setValue(value, atSegment: segment)
                     set(animation)
                 }
             )

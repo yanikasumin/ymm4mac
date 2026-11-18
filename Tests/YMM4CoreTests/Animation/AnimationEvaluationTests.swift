@@ -22,6 +22,56 @@ final class AnimationEvaluationTests: XCTestCase {
         )
     }
 
+    /// キーフレーム追加は、追加位置の現在値を挿入する（本家
+    /// Animation の KeyFramesChanging ハンドラと同じ規則）。非線形
+    /// イージングでは区間ごとの再評価で曲線が変わるが、これは
+    /// 本家でも同じ挙動である（K19-02 の本家確認に基づく固定）。
+    func testInsertKeyFrameOnQuadInMatchesHonkeSemantics() {
+        var animation = makeAnimation(type: .quadIn, values: [0, 100])
+        XCTAssertEqual(
+            animation.value(atFrame: 15, length: 20, fps: 30), 56.25,
+            accuracy: 1e-9
+        )
+        XCTAssertTrue(animation.insertKeyFrame(at: 10))
+        // 追加位置の値 25 が挿入され、区間 [10, 20] の二次イージングで
+        // フレーム15 は 25 + 75 * 0.25 = 43.75 になる（本家も同じ）。
+        XCTAssertEqual(animation.values.map(\.value), [0, 25, 100])
+        XCTAssertEqual(
+            animation.value(atFrame: 15, length: 20, fps: 30), 43.75,
+            accuracy: 1e-9
+        )
+    }
+
+    /// 値列が短い保存データへの区間値編集では、まず評価上の有効値
+    /// 列（キーフレーム数 + 2 個。本家の GetActiveValueCount と同じ
+    /// 数）へ展開してから対象位置だけを書き換える。展開しないと、
+    /// 代用規則で読まれていた最終端点まで変わってしまう
+    /// （K19-03／R20-114-02）。範囲外の区間は受け付けない。
+    func testSetValuePadsWithLastEffectiveValue() {
+        var animation = makeAnimation(
+            type: .linear, values: [10], keyFrames: [10, 20]
+        )
+        animation.setValue(50, atSegment: 2)
+        XCTAssertEqual(animation.values.map(\.value), [10, 10, 50, 10])
+        animation.setValue(99, atSegment: 3)
+        XCTAssertEqual(animation.values.map(\.value), [10, 10, 50, 10])
+    }
+
+    /// 不完全な値列で先頭区間を編集しても、最終端点の評価値は
+    /// 編集前と変わらない（R20-114-02 の QA04）。
+    func testSetValueOnShortValuesPreservesEndpointEvaluation() {
+        var animation = makeAnimation(
+            type: .linear, values: [10], keyFrames: [10]
+        )
+        let endpointBefore = animation.value(atFrame: 20, length: 20, fps: 30)
+        animation.setValue(30, atSegment: 0)
+        XCTAssertEqual(animation.values.map(\.value), [30, 10, 10])
+        XCTAssertEqual(
+            animation.value(atFrame: 20, length: 20, fps: 30), endpointBefore,
+            accuracy: 1e-9
+        )
+    }
+
     // MARK: - 経路4: 区間ごとイージング＋線形補間（非 _Int 版）
 
     func testQuadInAppliesEasingPerSegment() {

@@ -233,6 +233,10 @@ struct AnimationRowView: View {
     var onEdited: () -> Void
     @State private var text: String
     @FocusState private var isFocused: Bool
+    /// 入力セッションが所有する編集対象区間。フォーカスを得た時点で
+    /// 固定し、確定まで保持する。再生ヘッドが別区間へ移っても、
+    /// 未確定の入力が別区間へ書き込まれることはない（R20-114-01）。
+    @State private var focusedSegment: Int?
 
     init(
         descriptor: PropertyDescriptor, animationContext: AnimationEvaluationContext,
@@ -242,8 +246,41 @@ struct AnimationRowView: View {
         self.animationContext = animationContext
         self.onEdited = onEdited
         let animation = descriptor.animationValue
-        let value = animation.map { animationContext.value(of: $0) } ?? 0
+        let value: Double
+        if let animation,
+           animation.animationType.isKeyFrameSupported,
+           !animation.keyFrames.frames.isEmpty {
+            // キーフレームがある場合は、再生ヘッドの属する区間の
+            // 開始値を表示する（編集対象と一致させる）。
+            let segment = animation.segmentIndex(atFrame: animationContext.frame)
+            value = animation.values.indices.contains(segment)
+                ? animation.values[segment].value
+                : (animation.values.last?.value ?? animation.defaultValue)
+        } else {
+            value = animation.map { animationContext.value(of: $0) } ?? 0
+        }
         _text = State(initialValue: formatNumber(value))
+    }
+
+    /// キーフレーム編集の対象区間。キーフレーム対応型でキーフレーム
+    /// がある場合のみ値を持ち、それ以外は nil（従来の編集経路）。
+    private var editingSegment: Int? {
+        guard let animation = descriptor.animationValue,
+              animation.animationType.isKeyFrameSupported,
+              !animation.keyFrames.frames.isEmpty else { return nil }
+        return animation.segmentIndex(atFrame: animationContext.frame)
+    }
+
+    /// 表示・編集の対象値（区間編集中は区間の開始値、それ以外は
+    /// 文脈での評価値）。
+    private var displayedValue: Double {
+        guard let animation = descriptor.animationValue else { return 0 }
+        if let segment = editingSegment {
+            return animation.values.indices.contains(segment)
+                ? animation.values[segment].value
+                : (animation.values.last?.value ?? animation.defaultValue)
+        }
+        return animationContext.value(of: animation)
     }
 
     var body: some View {
@@ -253,9 +290,24 @@ struct AnimationRowView: View {
                 .frame(width: 110)
                 .focused($isFocused)
                 .onSubmit { commit() }
+                // 編集対象の区間が変わったら入力欄も追従させる
+                // （K19-01）。入力中（フォーカス保持中）は未確定の
+                // 文字列を破棄しない。
+                .onChange(of: editingSegment) { _, _ in
+                    if !isFocused {
+                        text = formatNumber(displayedValue)
+                    }
+                }
                 // 数値行と同じく、フォーカスを外した時点でも確定する。
+                // フォーカスを得た時点で編集対象区間をセッションへ
+                // 固定する（R20-114-01）。
                 .onChange(of: isFocused) { _, focused in
-                    if !focused { commit() }
+                    if focused {
+                        focusedSegment = editingSegment
+                    } else {
+                        commit()
+                        focusedSegment = nil
+                    }
                 }
             if let animation = descriptor.animationValue {
                 // 本家と同様、入力欄の横にスライダを並べる。範囲は
@@ -278,25 +330,16 @@ struct AnimationRowView: View {
         }
     }
 
-    /// スライダの現在値は文脈での評価値。ドラッグは入力欄の確定と
-    /// 同じ書き込み経路（定数なら定数化、補間ありなら先頭値のみ）で
-    /// 即時反映し、入力欄の表示も追従させる。
+    /// スライダの現在値は表示対象値（区間編集中は区間の開始値、
+    /// それ以外は文脈での評価値）。ドラッグは入力欄の確定と同じ
+    /// 書き込み経路で即時反映し、入力欄の表示も追従させる。
     private var sliderBinding: Binding<Double> {
         Binding(
-            get: {
-                guard let animation = descriptor.animationValue else { return 0 }
-                return animationContext.value(of: animation)
-            },
+            get: { displayedValue },
             set: { newValue in
-                guard let animation = descriptor.animationValue else { return }
-                if animation.animationType == .none {
-                    descriptor.setAnimationConstantValue(newValue)
-                } else {
-                    descriptor.setAnimationFirstValue(newValue)
-                }
-                if let updated = descriptor.animationValue {
-                    text = formatNumber(animationContext.value(of: updated))
-                }
+                guard descriptor.animationValue != nil else { return }
+                writeValue(newValue)
+                text = formatNumber(displayedValue)
                 onEdited()
             }
         )
@@ -307,27 +350,43 @@ struct AnimationRowView: View {
         if animation.animationType == .none {
             return "定数（\(range)）"
         }
-        // 値の編集は先頭値のみ書き換わる（キーフレーム個別の編集は
-        // 未対応）ことを明示する。種別名は種別メニュー側が表示する。
-        return "\(range)、編集は先頭値のみ"
+        if let segment = editingSegment {
+            let total = animation.keyFrames.frames.count + 1
+            return "キーフレーム区間 \(segment + 1)/\(total) の開始値を編集中（\(range)）"
+        }
+        // キーフレームが無い補間型では先頭値（開始値）の編集になる。
+        return "\(range)、開始値を編集中"
     }
 
-    private func commit() {
+    /// 値の書き込み経路の振り分け: 定数は定数化、キーフレーム区間が
+    /// あればその区間の開始値、それ以外は先頭値。
+    private func writeValue(_ value: Double) {
+        writeValue(value, segment: editingSegment)
+    }
+
+    private func writeValue(_ value: Double, segment: Int?) {
         guard let animation = descriptor.animationValue else { return }
-        guard let value = Double(text) else {
-            // 解釈できない入力（全角数字など）は確定せず、表示を
-            // モデルの現在値へ戻す（未確定の入力が残って見えないように）。
-            text = formatNumber(animationContext.value(of: animation))
-            return
-        }
         if animation.animationType == .none {
             descriptor.setAnimationConstantValue(value)
+        } else if let segment {
+            descriptor.setAnimationValue(value, atSegment: segment)
         } else {
             descriptor.setAnimationFirstValue(value)
         }
-        if let updated = descriptor.animationValue {
-            text = formatNumber(animationContext.value(of: updated))
+    }
+
+    private func commit() {
+        guard descriptor.animationValue != nil else { return }
+        guard let value = Double(text) else {
+            // 解釈できない入力（全角数字など）は確定せず、表示を
+            // モデルの現在値へ戻す（未確定の入力が残って見えないように）。
+            text = formatNumber(displayedValue)
+            return
         }
+        // 確定先はセッションが所有する区間（フォーカス取得時点）。
+        // 現在の再生ヘッド位置の区間ではない（R20-114-01）。
+        writeValue(value, segment: focusedSegment ?? editingSegment)
+        text = formatNumber(displayedValue)
         onEdited()
     }
 }

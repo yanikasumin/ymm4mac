@@ -451,6 +451,68 @@ public struct Animation: Equatable, Sendable {
         return true
     }
 
+    /// 全キーフレーム削除への連動。キーフレーム対応の型では値を
+    /// 先頭（開始値）と末尾（終了値）だけに畳む（有効な値の数が
+    /// キーフレーム数 + 2 から 2 へ戻るため）。
+    public mutating func removeAllKeyFrames() {
+        if animationType.isKeyFrameSupported, values.count > 2 {
+            values = [values[0], values[values.count - 1]]
+        }
+        keyFrames = KeyFrames()
+    }
+
+    /// キーフレームの位置だけを動かす。値はインデックスで対応する
+    /// ため動かさない。隣のキーフレームを越えない範囲へ丸める
+    /// （本家のタイムライン上のドラッグと同じ制約）。
+    ///
+    /// - Returns: 実際に動いたら true。
+    @discardableResult
+    public mutating func moveKeyFrame(from source: Int, to target: Int) -> Bool {
+        guard let index = keyFrames.index(of: source) else { return false }
+        let lower = index > 0 ? keyFrames.frames[index - 1] + 1 : 0
+        let upper = index + 1 < keyFrames.frames.count
+            ? keyFrames.frames[index + 1] - 1 : Int.max
+        // 不整合な保存データ（重複・逆転した位置）では下限が上限を
+        // 超え得る。その場合は動かさない（K19 レビュー (b) の境界）。
+        guard lower <= upper else { return false }
+        let clamped = min(max(target, lower), upper)
+        guard clamped != source else { return false }
+        var frames = keyFrames.frames
+        frames[index] = clamped
+        keyFrames = KeyFrames(frames: frames)
+        return true
+    }
+
+    /// 再生ヘッド位置が属する区間のインデックス。区間は
+    /// [0, キーフレーム..., 長さ] の境界で区切られ、`values` の
+    /// インデックスと一致する（区間 i の開始値が values[i]）。
+    public func segmentIndex(atFrame frame: Int) -> Int {
+        keyFrames.frames.count { $0 <= frame }
+    }
+
+    /// 区間の開始値を書き換える（定義範囲へクランプ）。値列が短い
+    /// 不完全なデータでは、まず評価上の有効値列へ展開してから対象
+    /// 位置だけを書き換える。有効な値の個数は本家の
+    /// GetActiveValueCount と同じくキーフレーム数 + 2（開始値、
+    /// 各キーフレーム位置の値、最終端点の値）。展開せずに対象位置
+    /// までだけ補うと、代用規則（末尾の値）で読まれていた対象外の
+    /// 位置、特に最終端点まで新しい値に変わってしまう
+    /// （K19-03／R20-114-02）。既に揃っている正常なデータは
+    /// 展開しない。区間の範囲外のインデックスは受け付けない。
+    public mutating func setValue(_ value: Double, atSegment index: Int) {
+        guard index >= 0, index <= keyFrames.frames.count else { return }
+        if animationType.isKeyFrameSupported {
+            let activeCount = keyFrames.frames.count + 2
+            while values.count < activeCount {
+                values.append(AnimationValue(keyFrameValue(values.count)))
+            }
+        }
+        while values.count <= index {
+            values.append(AnimationValue(keyFrameValue(values.count)))
+        }
+        values[index] = AnimationValue(clamped(value))
+    }
+
     /// 先頭の値を書き換える。本家 `SetFirstValue`。
     /// 値が無い場合は1つ追加する。
     public mutating func setFirstValue(_ value: Double) {
