@@ -51,6 +51,7 @@
 - UI-FORM — フロントエンドの形の完成（レイアウト・ツールバー・メニュー・コンテキストメニュー・ドロップイン等）
 - UI32-01 — レベルメーターの本家構成化と誤記修正
 - W1 — 構造整理 第1単位: テスト基盤の整備とハーネスの git 管理化
+- BRUSH46 — ブラシ基盤: 型付きブラシモデルと GPU 塗り（Issue #46。MAC 番号は PR 時に付番）
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 
 ## 実装記録（変更IDごとに自然言語で追記）
@@ -1124,6 +1125,31 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 - **本家との差分・未確定事項**: (1) Curl のオクターブ評価点の組（±0.1 の軸対応）は逆アセンブルから完全には確定できず、(0, ±0.1, 0) の組を採用した近似である（係数 0.78125 と整形・蓄積は抽出どおり）。(2) Noise の IsColor=false かつ IsAlpha=false の経路（1生成器が R/G/B を兼ねる）のシードオフセットは本家コードから確定できず +0 とした。実プロジェクトでは未使用の経路。(3) IsUniqueSeed のシード基礎値はパラメータの .NET GetHashCode で、対応付け未確定のため 0 とした（実プロジェクトの全実例は IsUniqueSeed = false)。(4) Threshold = 1 のときの除算は本家では 0 除算になるため分母に下限 1e-6 を置いた。Fractal の Octaves = 0 も同様に 0 とした。(5) Noise の残り7種（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）は生成器未抽出のため素通しのまま（定義が来ても従来どおり素通しになる）。(6) HalfTone の Triangle 候補集合はレジスタ追跡を伴う抽出で、画素単位の照合は粗検証のみ（ドット画素の存在と範囲外 α = 0 を確認）。Rectangle / Rhombus は予測値と一致する画素を確認済み。(7) Gradient の Round で Size = 0 のとき本家は 0 除算になるため halfSize に下限 0.01 を置いた（Linear と共通の本家式 max(Size/2, 0.01) の適用範囲を Round へ広げた形）。
 - **検証**: Mac 実機で `swift build` 成功・警告 0。全テスト 444 件・0 失敗（変更前と同数。GPU の画素検証はテストターゲットでなく専用ハーネスで行う既存方針）。画素検証ハーネス（gpu45-harness、43 項目）全合格。主な実測: Outline の太さ分解 0.9 → [0.9]、3 → [2, 1]、500 → [245, 128, 64, 32, 16, 8, 4, 2, 1] が本家アルゴリズムと一致。Gradient の線形・Round・Convex・不透明度は予測値と一致（Convex は全点一致）。Outline の輪 α = 248（フェザー込みの予測どおり）、輪のみで中心 α = 0、太さ 0 で恒等、Smoothness 0 で輪 α = 255。HalfTone は Rhombus の飽和ドットが解析予測の画素に出現し、境界拡張 5（Distance 6.1）を確認。Noise は IsColor の3シード（100/200/300）の出力が独立実装（Python で同式を再現）した予測と標本4点で全チャンネル完全一致し、Random / Fractal / Curl とも平均 ≈ 127.5・決定性（2回描画でバイト一致）・非定数を確認。Strength 0 で恒等、Levels 2 で二値化、Threshold 50 で約半数が 0 へ落ちることも確認した。なお検証中の不具合1件を修正した: 白チャンネルを 1×1 テクスチャで代用すると線形サンプラの足跡が境界色（透明）と混ざり係数が 1 にならないため、入力と同寸法の白テクスチャへ変更した。全テスト実行時は他担当（#51・#49/#50）の検証と競合し、実時間で約50分を要した（結果に影響なし）。
 - **次の担当へ**: InOutCrash はメッシュ描画基盤の作業単位として別途切り出すこと。Noise 残り7種は生成器シェーダ（blocknoise ほか）の逆アセンブル抽出から着手する。HalfTone Triangle の画素単位照合は候補集合の再追跡が必要。
+
+#### BRUSH46 — ブラシ基盤: 型付きブラシモデルと GPU 塗り（Issue #46。IMPLEMENTED / Mac 検証済み。MAC 番号は PR 時に付番）
+
+- **何を**: 本家のブラシ（単色以外のグラデーション・パターン・ビットマップ等の塗り指定）を型付きモデル化し、GPU で描けるようにした。従来は Shadow / FillBackground / FillForeground / FrameLine の4エフェクトが単色ブラシ以外を素通しし（GPU28-02 の記録）、図形の塗りは単色以外を白で代用していた。
+- **モデル（Core）**: 新規 `Sources/YMM4Core/Model/BrushParameters.swift` に本家組み込みパラメータ9種のうち8種を型付き化した（LinearGradient / RadiulGradient（本家の綴りのまま）/ Checkered / Dot / Stripe / GridLine / Bitmap / Noise）。既定値・定義範囲・フィールド順は本家デコンパイル済みコード（`YukkuriMovieMaker.Brush` 配下の各 `*BrushParameter.cs` / `*BrushSource.cs`、`DrawingBrushParameterBase` / `ScalableDrawingBrushParameterBase`）の実測どおり。`BrushParameter` 列挙へ8ケースを追加し、`$type` で振り分ける。未知キー（将来追加分）は従来どおり追加フィールドとして往復保持する。
+  - **グラデーションメッシュは型付き化しなかった**（生保持のまま）。点・ハンドルの保存形式が実ファイルで未確認であり、描画（Coons パッチ構築）も別単位の規模になるため。#45 で InOutCrash をメッシュ基盤の都合で分離した判断と同じ扱い。
+  - **Noise の内部 NoiseParameter は生保持**にした（Core の Noise エフェクトと同じ方針）。外側の型付きフィールド（NoiseType / Color1 / Color2 / IsColor / IsUniqueSeed）だけモデル化した。
+  - `Brush` にオブジェクトでない値の生保持（`nonObjectRawValue`）を追加し、旧・生保持経路と等しく壊れた値でも往復で落とさないようにした。null の Brush は従来どおり nil（キー自体を出さない）。
+  - 4エフェクト定義（`ShadowFillEffects.swift`）の `brush` を `PreservedObject?` から `Brush?` へ変更し、ブラシ内 Animation を定義の `forEachAnimation` へ登録した（キーフレーム文脈がブラシ内アニメーションへ届くようにするため。本家では Brush 自身が Animatable で Parameter を子に持つ）。図形の `StrokeShapeParameterBase.forEachAnimation` もブラシ走査を追加した。
+  - **変換しなかったブラシ保持箇所**（残作業として明記）: Outline の strokeBrush（Metal 処理器が未マージの #45 ブランチ側にあり、衝突回避のため触らない）、InnerShadow の brush、DisplacementMap の brush（いずれも現行 main に Metal 処理器が無い）。
+- **GPU 塗り**: 新規 `Sources/YMM4GPU/Effects/MetalBrushFill.swift`（`MetalBrushFillRenderer`）とシェーダ `ymm4BrushFragment`（`MetalGraphicsDevices` へ brushPipeline と repeatSampler を追加）。ブラシをフレーム評価して `BrushFillSpec`（Equatable な評価済み仕様）へ変換し、平面座標で解析的に評価する。幾何は本家ソースの実測式どおり:
+  - 線形: Pixel モードは原点基準の絶対座標（始点 = v・(−Size/2 + Offset)）、Relative モードは境界の射影長 L = W・|vx| + H・|vy| 基準（`LinearGradientBrushHelper.CalculatePoints`）。
+  - 放射: 旧 Update のみ実装で Bounds を使わない絶対幾何。焦点 = 中心 + (Origin・zoom・aspect係数)、半径も同係数。ブラシ変換は回転→左右反転。D2D の楕円族 center(t) = F + t・(C − F) を二次方程式で解き、大きい方の根を採る（ハーネスで前向き計算の期待値と一致を確認）。
+  - 市松・ドット・格子線: 本家はタイルビットマップ + BitmapBrush（Wrap）だが、こちらは逆変換後の座標で解析判定する。**既知の差分**: パターン境界の約1pxの縁の柔らかさ（本家は MultiSampleLinear 補間で縁が滲む）が無い。
+  - ストライプ: 本家どおり幅・オフセットへ zoom を掛けた線形グラデーション（分岐点4点・Wrap）として線形モードへ畳んだ。
+  - ビットマップ: 画像ファイルのみ（ImageIO デコード。動画ファイルは未対応で素通し）。変換は平行移動（−幅/2, −高さ/2。整数除算）→ 拡縮 → 描画変換。パスは絶対パス／file URL のみ解決する（エフェクト側にプロジェクト基準フォルダが届かないため。相対パスは未解決として素通し）。補間は D2D ビットマップブラシの既定（線形）と仮定した（本家ソースで明示設定は未確認）。
+  - グラデーションの分岐点補間は成分線形（本家 Gamma.StandardRgb 相当）→ Premultiplied 化で、#45 の Gradient 実装で検証済みの規約と同じ。分岐点は Offset 昇順へ並べ替え、128点超は未対応（素通し）。
+  - 格子線の Zoom 評価は本家が GetValue(frame, length, frame) と fps 位置へ frame を渡す不整合を持つが、こちらは通常評価とした（アニメーションしない限り一致する。**論点として残す**）。
+- **処理器の接続**: 4処理器とも単色経路は従来のまま不変更とし、単色でない場合だけ「ブラシ塗りを効果ごとの境界で描き、各効果の被覆（入力α・角丸被覆・帯矩形）で切り取る」経路を追加した。本家がブラシの Update へ渡す境界はエフェクトごとに実測で確定した（Shadow = 入力境界、FillForeground = 入力境界、FillBackground = 拡張・正規化した塗り矩形、FrameLine = 種別ごとの帯の外接矩形）。GPU で描けないブラシ（メッシュ・ノイズ・生保持・ビットマップ動画等）は従来どおり素通し。図形 Source（`MetalShapeSource`）は再描画キーへ評価済み仕様を含め、被覆率×ブラシ塗りで描く。描けない場合は従来の白代用へ倒す。EffectItem のマスク形状（`MetalEffectSources`）も同じキー構築へ追随した。
+- **検証**:
+  - Core 単体テスト新規15件（`Tests/YMM4CoreTests/Model/BrushParameterTests.swift`: 8種の往復＋未知キー保持、メッシュ／コミュニティの生保持、非オブジェクト値の保持、4定義の Brush フィールド往復とアニメーション走査・キーフレーム到達）全合格。
+  - Mac 実機: `swift build` 成功・警告0。全テスト459件のうち重い音声3スイート（AudioDrift / AudioResamplerQuality / AudioSampleAccuracy、計27件）を除く432件を並列実行し全合格・終了コード0。音声3スイートは本変更の差分に音声ファイルが含まれないため分離し、別途バックグラウンドで実行した（結果は PR 側で最終確認）。直列実行では AudioDriftTests.testResamplerChainDriftFiveMinutes 単体がデバッグビルド＋他担当の並行負荷の下で12分以上を占有したため、並列実行へ切り替えた経緯がある。
+  - 画素検証: 新規 `Harnesses/brush46-harness` 42件全 PASS（線形 Relative/Pixel/90°、Shadow のグラデーション、放射＋焦点ずれ放射（前向き計算の期待値）、市松の枠線、ストライプ、ドット、格子線、ビットマップ、図形のグラデーション塗り、未対応ブラシの素通し回帰）。回帰として `Harnesses/mac0028-harness` 90件全 PASS（単色ブラシの画素は従来と一致）。
+  - 実ファイル（upload.ymmp、単色ブラシ105件を含む）そのものの往復は、ファイルに絶対パスが含まれリポジトリへ同梱できないため未実施。実ファイルと同形の JSON（バージョン付きプラグイン型名を含む単色ブラシ）での往復を上記単体テストで担保した。
+- **未確認・論点**: (1) グラデーションメッシュの型付き化と描画は別単位。(2) ノイズブラシの GPU 描画はノイズ生成器自体が未実装（Noise エフェクト側も素通し）で待ち。(3) ビットマップブラシの動画ファイル・相対パス解決。(4) パターン境界の約1px差（解析判定 vs 本家のタイル＋線形補間）。(5) 格子線 Zoom の本家評価不整合を再現するか。(6) Outline / InnerShadow / DisplacementMap のブラシ型付き化（Outline は #45 マージ後）。
 
 ## 以降の記載テンプレート
 

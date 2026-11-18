@@ -235,7 +235,8 @@ extension MetalEffectProcessor {
 /// ブラシ自体が無い場合は本家の既定（単色ブラシ・白:
 /// SolidColorBrushParameter の初期色 Colors.White）として扱う。
 /// 単色ブラシでないパラメータ（グラデーション等）は nil を返し、
-/// 呼び出し側は素通しにする（ブラシサブシステムは差し替え点）。
+/// 呼び出し側は素通しにする。生保持のままのブラシ（輪郭の
+/// StrokeBrush 等、型付きモデルへの移行対象外）用。
 func solidBrushColor(_ brush: PreservedObject?) -> Color? {
     guard let brush else { return .white }
     guard let parameter = brush.value.field("Parameter"),
@@ -247,6 +248,42 @@ func solidBrushColor(_ brush: PreservedObject?) -> Color? {
         return .white
     }
     return parseARGBColor(colorText)
+}
+
+/// 単色ブラシの色を取り出す（BRUSH46 で型付きモデルへ移行）。
+/// ブラシ自体が無い場合は本家の既定（単色ブラシ・白:
+/// SolidColorBrushParameter の初期色 Colors.White）として扱う。
+/// 単色ブラシでないパラメータ（グラデーション等）と、オブジェクト
+/// でない生値のブラシは nil を返し、呼び出し側がブラシ塗り経路
+/// （`brushFillImage`）か素通しへ倒す。
+func solidBrushColor(_ brush: Brush?) -> Color? {
+    guard let brush else { return .white }
+    guard brush.nonObjectRawValue == nil,
+          case .solidColor(let parameter) = brush.parameter
+    else { return nil }
+    return parameter.color
+}
+
+extension MetalEffectProcessor {
+    /// 型付きブラシの塗り画像を `outputBounds` 全体へ描く。
+    /// 単色ブラシ（呼び出し側の既存経路が担当）と GPU で描けない
+    /// ブラシ（グラデーションメッシュ・ノイズ・生保持）は nil で、
+    /// 呼び出し側は素通しにする。`patternBounds` は本家がブラシの
+    /// Update へ渡す境界（エフェクトごとに異なる）。
+    func brushFillImage(
+        brush: Brush?,
+        patternBounds: RectF,
+        outputBounds: RectF,
+        description: EffectDescription
+    ) throws -> MetalImage? {
+        guard let brush else { return nil }
+        let (frame, length, fps) = evaluationContext(description)
+        guard let spec = MetalBrushFillRenderer.spec(
+            brush: brush, patternBounds: patternBounds,
+            frame: frame, length: length, fps: fps
+        ) else { return nil }
+        return try brushRenderer.render(spec: spec, outputBounds: outputBounds)
+    }
 }
 
 /// "#AARRGGBB" 形式の色文字列を読む（本家の Color 保存形式）。

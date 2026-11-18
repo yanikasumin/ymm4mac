@@ -38,6 +38,7 @@ swift run -c release
 | mac0035-harness | 画面遷移（TransitionSource の配線、ブレンド9種のうち8種） | 引数なし | 27 件全 PASS |
 | media4950-harness | Issue #49（PngWav ライター）/ #50（Metal 初期化診断）。初期化失敗の人為的誘発（壊れたシェーダ・関数不足）と理由文の確認、実合成経路からの FFmpeg / PngWav 書き出し（30 フレーム、WAV 1 秒、PNG の ImageIO デコード） | 引数なし（出力先は任意で第1引数）。実 ffmpeg が /opt/homebrew/bin/ffmpeg に必要 | 11 件全 PASS |
 | stream54-harness | PCM 供給のストリーミング化（Issue #54）: 1 時間 WAV の全量読み切り・全サンプル照合・常駐メモリ実測・終端付近シーク着地 | 引数なし（素材は一時ディレクトリへ生成） | 全 PASS（読み切り 0.87 秒、メモリ増加 約19MiB。2026-11-18 実測） |
+| brush46-harness | ブラシ基盤（BRUSH46）: 型付きブラシの GPU 塗りを4エフェクトと図形へ適用し、本家幾何から手計算した期待値と画素を照合。未対応ブラシの素通し回帰を含む | 引数なし。ビットマップブラシ用タイルは実行時に生成 | 42 件全 PASS |
 
 ## 材料について
 
