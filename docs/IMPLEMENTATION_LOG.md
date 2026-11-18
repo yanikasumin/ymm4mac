@@ -52,6 +52,8 @@
 - UI32-01 — レベルメーターの本家構成化と誤記修正
 - W1 — 構造整理 第1単位: テスト基盤の整備とハーネスの git 管理化
 - BRUSH46 — ブラシ基盤: 型付きブラシモデルと GPU 塗り（Issue #46。MAC 番号は PR 時に付番）
+- MOSAICRECT — 矩形モザイクの本家方式化（5点サンプル平均）
+- GRADMESH — グラデーションメッシュブラシの型付き化と GPU 描画
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 
 ## 実装記録（変更IDごとに自然言語で追記）
@@ -1193,6 +1195,32 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 **検証。** Mac 実機でルートパッケージビルド成功・警告0。画素ハーネス（64×64、識別パターン入力、参照は逆アセンブル抽出式の独立実装＋線形サンプルの再現）: 円形・三角形・六角形は Size 16／10／12／20 で全画素一致（不一致 0px）。サイズアニメーション（直線移動 8→24）は先頭フレーム全画素一致、最終フレーム 5px（0.122%、円の半径境界の float 判定割れ）。ボロノイ／ドロネーは独立参照と 11〜218px（0.269〜5.322%）の不一致が残るが、特徴点ハッシュの実測値を参照へ差し替えた照合では全ケース 0px となり、差がハッシュの float32 丸め（81セル中9セルで最大 0.066 の差）だけに由来することを確認した。未知の形状パラメータは素通しになることも確認した。Core テストは GPUEffectsTests にモザイクの往復・ベジェ保持・キーフレーム伝播の4件を追加。Mac フルスイートは 447 件・0 失敗（所要 3936 秒。うち AudioDriftTests 7件が 2016 秒を占める重量級で、分離せず単一実行で完走させた）。
 
 **未解決。** Seed と本家の GetHashCode の対応（対応付け自体が不可能で、散らばりの再現性は本家にも無い）。Delaunay の非凸四角形・境界での本家 winding 判定との等価性（参照実装同士の一致までで、本家実出力との比較は Seed 不定のため実施不能）。矩形の5点平均への是正は別件。
+
+#### MOSAICRECT — 矩形モザイクの本家方式化（5点サンプル平均）（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** 矩形モザイクの色決定方式を、従来の「セル内全テクセルの平均」から本家方式の「セル内5点サンプルの平均」へ是正した。MOSAIC48 で範囲外として記録されていた差分の解消。
+
+**本家根拠。** 本家カスタムシェーダ `Mosaic` の DXBC 逆アセンブル（`mosaic_dis.txt`。C# ラッパ `Mosaic.cs` は Size の設定のみで、範囲は 1–5000 にクランプ）。逆アセンブルから抽出した方式: (1) Size == 1 のときは現在画素をそのままサンプルする。(2) セル格子はシーン座標（入力平面座標）の原点基準で、セル原点 = pos − floormod(pos, Size)（負座標では床方向の剰余）。(3) セルは入力矩形（InputRect）で切り取られる。(4) 色は切り取られたセル内の5点 — 中心 (1/2, 1/2) と (1/3, 1/3), (1/3, 2/3), (2/3, 1/3), (2/3, 2/3) — の線形サンプルの平均（合計 × 0.2）。第2段のイン／アウトモザイクも本家では同じ `Mosaic` カスタム効果を使う（`InOutMosaicEffect.cs` で Size = max(1, イージング値)）ため、共通ヘルパの是正で両方に効く。
+
+**どこを変更したか。** `Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift`（Warp フラグメントへ mode 12 を追加。1/3・2/3 は本家のコンパイル済み定数 float32(1/3) = 0.3333333432674408 等を字面どおり使用）、`Sources/YMM4GPU/Effects/MetalEffectProcessorBase.swift`（`renderRectangleMosaic` をコンピュートカーネルから Warp mode 12 経由へ置き換え、不要になった `RectangleMosaicUniforms` を削除）、`Sources/YMM4GPU/Effects/MetalBlurMosaicProcessors.swift`（差分を記録していたコメントを是正後の説明へ更新）。検証資産として `Harnesses/mosaic48-harness` へ矩形ケースを追加（参照実装 `shader_reference.py` へ `rectangle_points`、期待値生成へ rect16 / rect13 / rect20 / rect1、ハーネスへケース 9.5）。あわせて同ハーネスの `MetalGraphicsDevices()!`（現行の throwing 初期化子と合わずコンパイル不能だった箇所）を `try!` へ修正した。
+
+**残置したもの。** 旧コンピュートカーネル `ymm4MosaicKernel` と `mosaicPipeline` は描画に使われなくなったが、デバイス初期化の関数インベントリとして残した（初期化診断ハーネスが同名関数を欠落検出の対象にしているため）。コード内コメントにその旨を明記した。
+
+**検証。** Mac 実機: ルートパッケージ `swift build` 成功・警告 0。画素ハーネス mosaic48-harness は全ケース PASS で、矩形の新規4ケース（Size 16 = 割り切れる寸法、13 / 20 = 割り切れず端セルの切り取りが効く寸法、1 = 素通し）は参照実装と**全画素一致（不一致 0px）**。参照は DXBC 抽出式の独立実装＋線形サンプルの再現で、サンプル点の位置まで含めて一致した。関連テスト（`--filter "Brush|Mosaic"`）21件全合格。フルスイートは他担当の並行作業のため未実行。
+
+#### GRADMESH — グラデーションメッシュブラシの型付き化と GPU 描画（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** BRUSH46 で生保持のみだったグラデーションメッシュブラシ（本家 `GradientMeshBrushParameter`）を型付きモデル化し、GPU 描画まで実装した。格子点の色を Coons パッチで補間して塗る。
+
+**本家根拠（いずれもデコンパイル済みコード）。** パラメータと既定値: `GradientMeshBrushParameter.cs`（HorizontalCount / VerticalCount 既定 2、CoordinateMode 既定 Relative、Width / Height は Animation 既定 100・範囲 0–100000、ExtendOutside 既定 true、既定点は Red / Gold / RoyalBlue / Cyan で先頭点のみ IsSelected。基底 `ScalableDrawingBrushParameterBase` の Zoom 既定 100 と `DrawingBrushParameterBase` の配置変換フィールドを継承）。点: `GradientMeshPoint.cs`（X / Y と8本のハンドルが Animation、4つのカスタムフラグ、Color、IsSelected）。論理配置とスナップショット: 同ファイルの `GetLogicalPointPositions` / `GetLogicalPointSnapshots`（配置 = −W/2 + W・列/(横点数−1) + 点 X・(W/100)、ハンドルは内向きかつカスタムの方向だけが位置＋ハンドル値・(W/100) を持ち、それ以外は null）。座標変換: `GradientMeshCoordinateHelper.cs`（ToLocal は Relative で境界寸法/100・Pixel で等倍、変換 = ブラシ行列 × 境界中心への平行移動、拡張境界は出力境界の逆変換像）。パッチ構築: `GradientMeshPatchBuilder.cs`（内部点は D2D `D2D1GetGradientMeshInteriorPointsFromCoonsPatch`、非カスタムハンドルは接線（中央差分、端は一方向差分）の 1/3 で導出、ExtendOutside 時は境界を全点位置と使用カスタムハンドルへ拡張し、帯パッチと四隅の双線形パッチで出力境界まで覆う）。描画: `GradientMeshBrushSource.cs`（メッシュをコマンドリストへ描いて Clamp の ImageBrush 化。対象範囲は ±(MaximumBitmapSize/2 − 1)）。
+
+**どこを変更したか。** Core: `Sources/YMM4Core/Model/BrushParameters.swift`（`GradientMeshPointValue` と `GradientMeshBrushParameter` を新設。本家の宣言順で読み書きし、未知キーは追加フィールドとして保持）、`Sources/YMM4Core/Model/Brush.swift`（`BrushParameter.gradientMesh` を追加し、復元・保存・アニメーション走査へ接続）。GPU: 新規 `Sources/YMM4GPU/Effects/GradientMeshGeometry.swift`（スナップショットのローカル化、接線導出、Coons 内部点、拡張パッチ構築、テッセレーション）、`Sources/YMM4GPU/Effects/MetalBrushFill.swift`（`BrushFillSpec` の mode 6 と仕様構築、頂点バッファ描画 `renderMesh`）、`Sources/YMM4GPU/Graphics/MetalGraphicsDevices.swift`（頂点色シェーダ `ymm4MeshVertex` / `ymm4MeshFragment` と `meshPipeline` を追加）。
+
+**どう実装したか。** パッチの内部点は D2D 関数の閉形式（境界制御点の線形結合から双線形項を引く形）を再実装し、Coons 曲面の直接評価との一致を数値検証した（ランダムな境界 200 組 × 20 点で最大誤差 2.1e-14）。描画はパッチを CPU 側で一様分割（16×16）してテンソル積三次ベジェで位置を評価し、頂点色の三角形として描く。色は四隅色の (u, v) 双線形補間（パッチが保持する色は四隅のみで、テンソル積の色格子は双線形埋め込みに帰着する）。点数と格子点数が一致しない等の不正なパラメータでは本家どおり透明な塗りになる。保存形式の JSON キーはデコンパイル済みモデルに基づく（実ファイルでの出現は未確認。実ファイル2件には GradientMesh の出現なし）。
+
+**本家との差分。** (1) テッセレーション密度と外周エッジのアンチエイリアス（本家の PatchEdgeMode）は D2D 内部依存のため再現しない。こちらは一様 16 分割で、外周はアンチエイリアスなし。(2) 拡張の対象境界は本家では MaximumBitmapSize の矩形だが、こちらは塗り境界を使う。描画範囲の外側は結果に影響しないため、見える範囲の色は変わらない。(3) 色補間が双線形である点は、D2D の色モデル（四隅色のみ）からの帰結として採ったもので、本家の実出力との画素比較は未実施。
+
+**検証。** Mac 実機: `swift build` 成功・警告 0。Core 単体テスト `BrushParameterTests` 12件全合格（新規: メッシュの往復保存（JSON 一致）と既定値の確認。従来の「生保持のまま」テストは型付き往復へ置き換えた）。GPU 単体テスト新規 `GradientMeshGeometryTests` 5件全合格（既定格子の双線形一致、カスタムハンドル時の中心移動 (0,0) → (4,0) のテンソル積評価一致、拡張の被覆範囲と隅色、変換の適用、不正な点数で空になること）。画素ハーネス brush46-harness は全ケース PASS（新規: 既定メッシュの中心 (140, 148, 124)・左上 (252, 5, 4)・右下 (5, 248, 251) が解析値と一致、W=H=50 での拡張あり／なし、Pixel モード。既存ケース11は「メッシュは描画されない」前提が変わったため、影が不透明度 50% で付く確認へ更新し、実測アルファ 128 で一致）。フルスイートは他担当の並行作業のため未実行（関連フィルタ 21 件は全合格）。
 
 ## 以降の記載テンプレート
 

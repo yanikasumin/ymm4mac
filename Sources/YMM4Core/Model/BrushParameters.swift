@@ -615,6 +615,211 @@ public final class GridLineBrushParameter {
     }
 }
 
+/// グラデーションメッシュの格子点。本家 `GradientMeshPoint`。
+/// X / Y は格子位置へのオフセット（% 座標。配置はパラメータ側が
+/// 幅・高さから決める）、8 本のハンドル値は点位置へのオフセット。
+/// ハンドルはカスタムフラグが立った方向だけが有効で、それ以外は
+/// パッチ構築時に隣接点から導出される。
+public final class GradientMeshPointValue {
+    public var x = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
+    public var y = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
+    public var leftHandleX = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
+    public var leftHandleY = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
+    public var rightHandleX = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
+    public var rightHandleY = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
+    public var upHandleX = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
+    public var upHandleY = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
+    public var downHandleX = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
+    public var downHandleY = Animation(defaultValue: 0, minValue: -100000, maxValue: 100000)
+    public var isLeftHandleCustom = false
+    public var isRightHandleCustom = false
+    public var isUpHandleCustom = false
+    public var isDownHandleCustom = false
+    public var color: Color = .white
+    public var isSelected = false
+    /// 本家に無い、または型付き化していないフィールドの生保持。
+    public var additionalFields: [(key: String, value: JSONValue)] = []
+
+    public init() {}
+
+    public convenience init(color: Color) {
+        self.init()
+        self.color = color
+    }
+
+    func forEachAnimation(_ body: (inout Animation) -> Void) {
+        body(&x)
+        body(&y)
+        body(&leftHandleX)
+        body(&leftHandleY)
+        body(&rightHandleX)
+        body(&rightHandleY)
+        body(&upHandleX)
+        body(&upHandleY)
+        body(&downHandleX)
+        body(&downHandleY)
+    }
+
+    /// 本家の宣言順にキーを並べる。
+    func encodeToJSONValue() -> JSONValue {
+        var fields: [(key: String, value: JSONValue)] = []
+        fields.append(("X", CodecSupport.encodeAnimation(x)))
+        fields.append(("Y", CodecSupport.encodeAnimation(y)))
+        fields.append(("LeftHandleX", CodecSupport.encodeAnimation(leftHandleX)))
+        fields.append(("LeftHandleY", CodecSupport.encodeAnimation(leftHandleY)))
+        fields.append(("RightHandleX", CodecSupport.encodeAnimation(rightHandleX)))
+        fields.append(("RightHandleY", CodecSupport.encodeAnimation(rightHandleY)))
+        fields.append(("UpHandleX", CodecSupport.encodeAnimation(upHandleX)))
+        fields.append(("UpHandleY", CodecSupport.encodeAnimation(upHandleY)))
+        fields.append(("DownHandleX", CodecSupport.encodeAnimation(downHandleX)))
+        fields.append(("DownHandleY", CodecSupport.encodeAnimation(downHandleY)))
+        fields.append(("IsLeftHandleCustom", .bool(isLeftHandleCustom)))
+        fields.append(("IsRightHandleCustom", .bool(isRightHandleCustom)))
+        fields.append(("IsUpHandleCustom", .bool(isUpHandleCustom)))
+        fields.append(("IsDownHandleCustom", .bool(isDownHandleCustom)))
+        fields.append(("Color", .string(color.honkeString)))
+        fields.append(("IsSelected", .bool(isSelected)))
+        fields.append(contentsOf: additionalFields)
+        return .object(fields)
+    }
+
+    static func decode(from value: JSONValue) -> GradientMeshPointValue {
+        let point = GradientMeshPointValue()
+        guard let fields = value.objectFields else { return point }
+        for (key, fieldValue) in fields {
+            switch key {
+            case "X": CodecSupport.decodeAnimation(fieldValue, into: &point.x)
+            case "Y": CodecSupport.decodeAnimation(fieldValue, into: &point.y)
+            case "LeftHandleX": CodecSupport.decodeAnimation(fieldValue, into: &point.leftHandleX)
+            case "LeftHandleY": CodecSupport.decodeAnimation(fieldValue, into: &point.leftHandleY)
+            case "RightHandleX": CodecSupport.decodeAnimation(fieldValue, into: &point.rightHandleX)
+            case "RightHandleY": CodecSupport.decodeAnimation(fieldValue, into: &point.rightHandleY)
+            case "UpHandleX": CodecSupport.decodeAnimation(fieldValue, into: &point.upHandleX)
+            case "UpHandleY": CodecSupport.decodeAnimation(fieldValue, into: &point.upHandleY)
+            case "DownHandleX": CodecSupport.decodeAnimation(fieldValue, into: &point.downHandleX)
+            case "DownHandleY": CodecSupport.decodeAnimation(fieldValue, into: &point.downHandleY)
+            case "IsLeftHandleCustom": point.isLeftHandleCustom = CodecSupport.bool(fieldValue, default: false)
+            case "IsRightHandleCustom": point.isRightHandleCustom = CodecSupport.bool(fieldValue, default: false)
+            case "IsUpHandleCustom": point.isUpHandleCustom = CodecSupport.bool(fieldValue, default: false)
+            case "IsDownHandleCustom": point.isDownHandleCustom = CodecSupport.bool(fieldValue, default: false)
+            case "Color": point.color = CodecSupport.color(fieldValue, default: point.color)
+            case "IsSelected": point.isSelected = CodecSupport.bool(fieldValue, default: false)
+            default: point.additionalFields.append((key: key, value: fieldValue))
+            }
+        }
+        return point
+    }
+}
+
+/// グラデーションメッシュブラシ。本家
+/// `GradientMeshBrushParameter`（`ScalableDrawingBrushParameterBase`
+/// 派生）。格子点の色を Coons パッチで補間して塗る。点の論理配置・
+/// ハンドル導出・パッチ構築は本家の
+/// `GradientMeshCoordinateHelper` / `GradientMeshPatchBuilder` の
+/// 仕様どおり（GPU 側 `GradientMeshGeometry`）。
+public final class GradientMeshBrushParameter {
+    public static let typeName = "YukkuriMovieMaker.Brush.GradientMeshBrushParameter, YukkuriMovieMaker"
+
+    /// 横の点数（2〜50。本家 UI の範囲）。
+    public var horizontalCount: Int = 2
+    /// 縦の点数（2〜50）。
+    public var verticalCount: Int = 2
+    public var coordinateMode: BrushCoordinateMode = .relative
+    /// メッシュの論理幅（% 座標）。
+    public var width = Animation(defaultValue: 100, minValue: 0, maxValue: 100000)
+    /// メッシュの論理高さ（% 座標）。
+    public var height = Animation(defaultValue: 100, minValue: 0, maxValue: 100000)
+    /// メッシュの外側へ拡張パッチで塗りを広げるか。
+    public var extendOutside: Bool = true
+    /// 格子点（行優先: index = row * horizontalCount + column）。
+    public var points: [GradientMeshPointValue] = GradientMeshBrushParameter.defaultPoints
+    /// 本家 `ScalableDrawingBrushParameterBase.Zoom`。
+    public var zoom = Animation(defaultValue: 100, minValue: 0, maxValue: 100000)
+    public var drawing = BrushDrawingTransform()
+    /// 本家に無い、または型付き化していないフィールドの生保持。
+    public var additionalFields: [(key: String, value: JSONValue)] = []
+
+    /// 本家の既定点（2×2: Red / Gold / RoyalBlue / Cyan。
+    /// 本家コンストラクタでは先頭点だけ IsSelected が立つ）。
+    public static var defaultPoints: [GradientMeshPointValue] {
+        let first = GradientMeshPointValue(
+            color: Color(alpha: 255, red: 255, green: 0, blue: 0)
+        )
+        first.isSelected = true
+        return [
+            first,
+            GradientMeshPointValue(color: Color(alpha: 255, red: 255, green: 215, blue: 0)),
+            GradientMeshPointValue(color: Color(alpha: 255, red: 65, green: 105, blue: 225)),
+            GradientMeshPointValue(color: Color(alpha: 255, red: 0, green: 255, blue: 255)),
+        ]
+    }
+
+    public init() {}
+
+    func forEachAnimation(_ body: (inout Animation) -> Void) {
+        body(&width)
+        body(&height)
+        body(&zoom)
+        drawing.forEachAnimation(body)
+        for point in points {
+            point.forEachAnimation(body)
+        }
+    }
+
+    func encodeToJSONValue() -> JSONValue {
+        var fields: [(key: String, value: JSONValue)] = [
+            (key: "$type", value: .string(Self.typeName)),
+            (key: "HorizontalCount", value: .number(Double(horizontalCount))),
+            (key: "VerticalCount", value: .number(Double(verticalCount))),
+            (key: "CoordinateMode", value: .string(coordinateMode.honkeName)),
+            (key: "Width", value: CodecSupport.encodeAnimation(width)),
+            (key: "Height", value: CodecSupport.encodeAnimation(height)),
+            (key: "ExtendOutside", value: .bool(extendOutside)),
+            (key: "Points", value: .array(points.map { $0.encodeToJSONValue() })),
+            (key: "Zoom", value: CodecSupport.encodeAnimation(zoom)),
+        ]
+        fields += drawing.encodeFields()
+        fields += additionalFields
+        return .object(fields)
+    }
+
+    static func decode(from value: JSONValue) -> GradientMeshBrushParameter {
+        let parameter = GradientMeshBrushParameter()
+        guard let fields = value.objectFields else { return parameter }
+        for (key, fieldValue) in fields {
+            switch key {
+            case "$type":
+                break
+            case "HorizontalCount":
+                parameter.horizontalCount = CodecSupport.int(fieldValue, default: 2)
+            case "VerticalCount":
+                parameter.verticalCount = CodecSupport.int(fieldValue, default: 2)
+            case "CoordinateMode":
+                parameter.coordinateMode = CodecSupport.enumeration(
+                    fieldValue, default: BrushCoordinateMode.relative
+                )
+            case "Width":
+                CodecSupport.decodeAnimation(fieldValue, into: &parameter.width)
+            case "Height":
+                CodecSupport.decodeAnimation(fieldValue, into: &parameter.height)
+            case "ExtendOutside":
+                parameter.extendOutside = CodecSupport.bool(fieldValue, default: true)
+            case "Points":
+                if case .array(let items) = fieldValue {
+                    parameter.points = items.map { GradientMeshPointValue.decode(from: $0) }
+                }
+            case "Zoom":
+                CodecSupport.decodeAnimation(fieldValue, into: &parameter.zoom)
+            default:
+                if !parameter.drawing.decodeField(key, fieldValue) {
+                    parameter.additionalFields.append((key: key, value: fieldValue))
+                }
+            }
+        }
+        return parameter
+    }
+}
+
 /// ビットマップブラシ。本家 `BitmapBrushParameter`。
 /// パラメータ（実測）: FilePath の既定は ""、PlaybackRate は double
 /// （既定 100)、ContentOffset は TimeSpan（既定 0)、ExtendModeX /

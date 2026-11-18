@@ -7,6 +7,7 @@ import YMM4GPU
 
 // MOSAIC48 検証ハーネス: 非矩形モザイク (円形・三角形・六角形・
 // ボロノイ・ドロネー) とモザイクサイズのアニメーション評価。
+// MOSAICRECT で矩形モザイク (本家5点サンプル方式) のケースを追加。
 //
 // 入力は画素座標を符号化した識別パターン (ident.png)。期待値は
 // gen_expected.py が本家カスタムシェーダの逆アセンブルから抽出した
@@ -103,7 +104,7 @@ final class ComposerBox {
     let composer: TimelineComposer
 
     init(timeline: Timeline) {
-        devices = MetalGraphicsDevices()!
+        devices = try! MetalGraphicsDevices()
         context = devices.makeContext(
             targetSize: PixelSize(
                 width: timeline.videoInfo.width, height: timeline.videoInfo.height
@@ -221,6 +222,23 @@ let sizeCases: [(MosaicType, Double, String, String, Double)] = [
 for (shape, size, expected, label, threshold) in sizeCases {
     if let frame = renderImage(effects: [mosaicEffect(shape: shape, sizeValues: [size])]) {
         checkFrame(frame, expectedName: expected, label: label, maxMismatchRatio: threshold)
+    } else { check(false, "\(label): rendered") }
+}
+
+// MARK: - ケース9.5: 矩形モザイク (MOSAICRECT、本家5点サンプル方式)
+// 矩形は決定的な式であり、参照と全画素一致 (0px) が期待値。
+// rect13 / rect20 は画面寸法で割り切れず、入力矩形での端セルの
+// 切り取りが効く。rect1 は Size == 1 の素通し。
+
+let rectCases: [(Double, String, String)] = [
+    (16, "rect16", "rectangle size16"),
+    (13, "rect13", "rectangle size13"),
+    (20, "rect20", "rectangle size20"),
+    (1, "rect1", "rectangle size1 passthrough"),
+]
+for (size, expected, label) in rectCases {
+    if let frame = renderImage(effects: [mosaicEffect(shape: .rectangle, sizeValues: [size])]) {
+        checkFrame(frame, expectedName: expected, label: label, maxMismatchRatio: 0.01)
     } else { check(false, "\(label): rendered") }
 }
 

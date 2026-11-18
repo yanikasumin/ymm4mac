@@ -100,7 +100,7 @@ func renderRoundedRectFill(
 /// する。記録）→ 回転（中心は IsRotateAtCenter で境界中心、
 /// それ以外は原点）・拡縮 Zoom/100 ・平行移動 (X, Y) →
 /// 不透明度 Opacity/100 → 原画の下へ SourceOver。
-/// GPU で描けないブラシ（グラデーションメッシュ・ノイズ等）は素通し。
+/// GPU で描けないブラシ（ノイズ・生保持等）は素通し。
 public final class MetalShadowProcessor: MetalEffectProcessor {
     private let definition: ShadowEffectDefinition
 

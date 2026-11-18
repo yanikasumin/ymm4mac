@@ -79,6 +79,36 @@ def feature_points(qx, qy, seed):
     return pts
 
 
+# ---- Rectangle (Mosaic) ----
+# 本家字面 (MOSAICRECT で抽出): Size == 1 のときは現在画素をそのまま
+# サンプルする。そうでないとき:
+#   cellOrigin = floor(pos / size) * size (負座標でも床方向)
+#   clampedOrigin = max(cellOrigin, rectMin)
+#   clampedEnd = min(cellOrigin + size, rectMax)
+#   extent = clampedEnd - clampedOrigin
+# 色は clampedOrigin + extent * f (f は中心 (1/2, 1/2) と
+# (1/3, 1/3), (1/3, 2/3), (2/3, 1/3), (2/3, 2/3)) の5点の
+# 線形サンプルの平均。rect は入力矩形 (left, top, right, bottom)。
+# 返り値はサンプル点の列。
+def rectangle_points(pos, size, rect):
+    if size == 1.0:
+        return [pos]
+    ox = math.floor(pos[0] / size) * size
+    oy = math.floor(pos[1] / size) * size
+    cx0 = max(ox, rect[0])
+    cy0 = max(oy, rect[1])
+    ex = min(ox + size, rect[2]) - cx0
+    ey = min(oy + size, rect[3]) - cy0
+    fractions = [
+        (0.5, 0.5),
+        (1.0 / 3.0, 1.0 / 3.0),
+        (1.0 / 3.0, 2.0 / 3.0),
+        (2.0 / 3.0, 1.0 / 3.0),
+        (2.0 / 3.0, 2.0 / 3.0),
+    ]
+    return [(cx0 + ex * fx, cy0 + ey * fy) for fx, fy in fractions]
+
+
 # ---- Circle ----
 # cell = round_ni(pos/size); center = (cell + 0.5) * size
 # offset = pos - center; if length(offset) > size/2 -> transparent

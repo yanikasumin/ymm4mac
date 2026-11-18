@@ -54,6 +54,14 @@ import YMM4Core
 ///   CreateBrushMatrix` = アスペクト拡縮 → 左右反転拡縮 → 回転 →
 ///   平行移動（行ベクトル規約で左から適用）。Scalable 系は先頭へ
 ///   拡縮（Zoom/100）を追加する。
+/// - グラデーションメッシュ: `GradientMeshBrushSource` +
+///   `GradientMeshPatchBuilder`。格子点の Coons パッチを CPU 側で
+///   テッセレーションして頂点色で描く（`GradientMeshGeometry`）。
+///   本家は D2D のグラデーションメッシュで描くため、テッセレー
+///   ション密度と外周エッジのアンチエイリアスは再現できない
+///   （既知の差分）。拡張（ExtendOutside）の対象境界は本家では
+///   MaximumBitmapSize の矩形だが、こちらは塗り境界を使う
+///   （描画範囲外は結果に影響しない）。
 ///
 /// グラデーションの分岐点補間は本家どおり成分線形
 /// （D2D `Gamma.StandardRgb` は格納値の成分線形補間に相当）で、
@@ -160,7 +168,7 @@ func straightVector(_ color: Color) -> SIMD4<Float> {
 /// nil で表す（呼び出し側が既存経路／素通しへ倒す）。
 struct BrushFillSpec: Equatable {
     /// シェーダの mode（0=線形, 1=放射, 2=市松, 3=ドット, 4=格子線,
-    /// 5=ビットマップ）。
+    /// 5=ビットマップ, 6=グラデーションメッシュ）。
     var mode: UInt32
     /// 線形 = 始点、放射 = 中心。
     var pointA: SIMD2<Float> = .zero
@@ -189,6 +197,10 @@ struct BrushFillSpec: Equatable {
     /// ビットマップの前方変換のうち拡縮・描画変換の部分（6要素）。
     /// 中心化の平行移動はテクスチャ寸法が要るため描画時に前置する。
     var bitmapAffine: [Float] = []
+    /// グラデーションメッシュのテッセレーション済み頂点（mode 6）。
+    /// 空の場合は本家どおり透明な塗りになる。
+    var meshVertices: [GradientMeshVertex] = []
+    var meshIndices: [UInt32] = []
 }
 
 // MARK: - レンダラ
@@ -208,8 +220,8 @@ final class MetalBrushFillRenderer {
     // MARK: 仕様の構築
 
     /// ブラシをフレーム評価して仕様を作る。単色ブラシ（呼び出し側の
-    /// 既存経路が担当）と、GPU で描けないブラシ（グラデーション
-    /// メッシュ・ノイズ・コミュニティ等の生保持）は nil。
+    /// 既存経路が担当）と、GPU で描けないブラシ（ノイズ・
+    /// コミュニティ等の生保持）は nil。
     /// `patternBounds` は本家がブラシの Update へ渡す境界であり、
     /// 線形グラデーションの Relative モードだけが参照する。
     static func spec(
@@ -383,6 +395,89 @@ final class MetalBrushFillRenderer {
                 .then(drawingAffine(parameter.drawing))
             spec.bitmapAffine = forward.values
             return spec
+
+        case .gradientMesh(let parameter):
+            var spec = BrushFillSpec(mode: 6)
+            let horizontalCount = parameter.horizontalCount
+            let verticalCount = parameter.verticalCount
+            var snapshots: [GradientMeshSnapshot] = []
+            if horizontalCount >= 2, verticalCount >= 2,
+               parameter.points.count == horizontalCount * verticalCount {
+                // 本家 GetLogicalPointSnapshots: 論理配置は
+                // -W/2 + W・列/(横点数-1) + 点オフセット・(W/100)。
+                // ハンドルは内向きかつカスタムの方向だけが値を持つ。
+                let meshWidth = eval(parameter.width)
+                let meshHeight = eval(parameter.height)
+                let offsetScaleX = meshWidth / 100
+                let offsetScaleY = meshHeight / 100
+                for row in 0..<verticalCount {
+                    for column in 0..<horizontalCount {
+                        let point = parameter.points[row * horizontalCount + column]
+                        let position = SIMD2<Double>(
+                            -meshWidth / 2
+                                + meshWidth * Double(column) / Double(horizontalCount - 1)
+                                + eval(point.x) * offsetScaleX,
+                            -meshHeight / 2
+                                + meshHeight * Double(row) / Double(verticalCount - 1)
+                                + eval(point.y) * offsetScaleY
+                        )
+                        func customHandle(
+                            _ isCustom: Bool, _ animationX: Animation,
+                            _ animationY: Animation
+                        ) -> SIMD2<Double>? {
+                            guard isCustom else { return nil }
+                            return position + SIMD2(
+                                eval(animationX) * offsetScaleX,
+                                eval(animationY) * offsetScaleY
+                            )
+                        }
+                        snapshots.append(GradientMeshSnapshot(
+                            position: position,
+                            leftHandle: column > 0
+                                ? customHandle(
+                                    point.isLeftHandleCustom,
+                                    point.leftHandleX, point.leftHandleY)
+                                : nil,
+                            rightHandle: column < horizontalCount - 1
+                                ? customHandle(
+                                    point.isRightHandleCustom,
+                                    point.rightHandleX, point.rightHandleY)
+                                : nil,
+                            upHandle: row > 0
+                                ? customHandle(
+                                    point.isUpHandleCustom,
+                                    point.upHandleX, point.upHandleY)
+                                : nil,
+                            downHandle: row < verticalCount - 1
+                                ? customHandle(
+                                    point.isDownHandleCustom,
+                                    point.downHandleX, point.downHandleY)
+                                : nil,
+                            color: straightVector(point.color)
+                        ))
+                    }
+                }
+            }
+            // 本家 CreateTransform: ブラシ行列 × 境界中心への平行移動。
+            let zoom = eval(parameter.zoom) / 100
+            let brushMatrix = BrushAffine.scale(zoom, zoom)
+                .then(drawingAffine(parameter.drawing))
+            let transform = brushMatrix.then(.translation(
+                (patternBounds.left + patternBounds.right) / 2,
+                (patternBounds.top + patternBounds.bottom) / 2
+            ))
+            let geometry = GradientMeshGeometry.build(
+                horizontalCount: horizontalCount,
+                verticalCount: verticalCount,
+                snapshots: snapshots,
+                coordinateMode: parameter.coordinateMode,
+                extendOutside: parameter.extendOutside,
+                bounds: patternBounds,
+                transform: transform
+            )
+            spec.meshVertices = geometry.vertices
+            spec.meshIndices = geometry.indices
+            return spec
         }
     }
 
@@ -416,6 +511,10 @@ final class MetalBrushFillRenderer {
         let outWidth = outputBounds.right - outputBounds.left
         let outHeight = outputBounds.bottom - outputBounds.top
         guard outWidth > 0, outHeight > 0 else { return nil }
+
+        if spec.mode == 6 {
+            return try renderMesh(spec: spec, outputBounds: outputBounds)
+        }
 
         var uniforms = BrushPassUniforms(
             outputOrigin: SIMD2(Float(outputBounds.left), Float(outputBounds.top)),
@@ -474,6 +573,74 @@ final class MetalBrushFillRenderer {
             )
         }
         return MetalImage(texture: output, bounds: outputBounds)
+    }
+
+    /// グラデーションメッシュの描画。頂点が空の場合は本家どおり
+    /// 透明な塗り（クリアのみ）を返す。
+    private func renderMesh(
+        spec: BrushFillSpec, outputBounds: RectF
+    ) throws -> MetalImage? {
+        let outWidth = outputBounds.right - outputBounds.left
+        let outHeight = outputBounds.bottom - outputBounds.top
+        let output = try makeOutputTexture(width: outWidth, height: outHeight)
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw MetalRenderError.commandBufferFailed(underlying: nil)
+        }
+        let passDescriptor = MTLRenderPassDescriptor()
+        let attachment = passDescriptor.colorAttachments[0]
+        attachment?.texture = output
+        attachment?.loadAction = .clear
+        attachment?.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        attachment?.storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor)
+        else {
+            throw MetalRenderError.commandBufferFailed(underlying: nil)
+        }
+        encoder.setRenderPipelineState(context.devices.meshPipeline)
+        if !spec.meshVertices.isEmpty, !spec.meshIndices.isEmpty {
+            var uniforms = MeshPassUniforms(
+                outputOrigin: SIMD2(
+                    Float(outputBounds.left), Float(outputBounds.top)),
+                outputSize: SIMD2(Float(outWidth), Float(outHeight))
+            )
+            var vertices = spec.meshVertices
+            var indices = spec.meshIndices
+            guard let vertexBuffer = context.devices.device.makeBuffer(
+                bytes: &vertices,
+                length: MemoryLayout<GradientMeshVertex>.stride * vertices.count,
+                options: [.storageModeShared]
+            ) else {
+                throw MetalRenderError.commandBufferFailed(underlying: nil)
+            }
+            encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(
+                &uniforms, length: MemoryLayout<MeshPassUniforms>.size, index: 1
+            )
+            encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: indices.count,
+                indexType: .uint32,
+                indexBuffer: try makeIndexBuffer(indices: &indices),
+                indexBufferOffset: 0
+            )
+        }
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if commandBuffer.status == .error {
+            throw MetalRenderError.commandBufferFailed(underlying: commandBuffer.error)
+        }
+        return MetalImage(texture: output, bounds: outputBounds)
+    }
+
+    private func makeIndexBuffer(indices: inout [UInt32]) throws -> MTLBuffer {
+        guard let buffer = context.devices.device.makeBuffer(
+            bytes: &indices, length: MemoryLayout<UInt32>.size * indices.count,
+            options: [.storageModeShared]
+        ) else {
+            throw MetalRenderError.commandBufferFailed(underlying: nil)
+        }
+        return buffer
     }
 
     /// 塗り画像をマスク画像のアルファで切り取る（本家 AlphaMask）。
@@ -610,6 +777,13 @@ final class MetalBrushFillRenderer {
         samplerCache[key] = sampler
         return sampler
     }
+}
+
+/// グラデーションメッシュシェーダのユニフォーム
+/// （MetalGraphics のシェーダ定義と一致）。
+struct MeshPassUniforms {
+    var outputOrigin: SIMD2<Float>
+    var outputSize: SIMD2<Float>
 }
 
 /// ブラシ塗りシェーダのユニフォーム（MetalGraphics のシェーダ定義と一致）。
