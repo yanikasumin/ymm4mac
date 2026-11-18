@@ -79,6 +79,36 @@ final class LipSyncTests: XCTestCase {
         ))
     }
 
+    /// 異常なフレーム数は、配列確保の前に結果件数の上限で nil へ
+    /// 倒す（frameCount + 1 の溢れや巨大な確保でトラップしない。
+    /// R22-116-01 の反例: hz=1、fps=1、smooth=1、frameCount=Int.max
+    /// は従来の事前検査を通過して reserveCapacity で落ちた）。
+    func testEnvelopeRejectsAbsurdFrameCount() {
+        let provider = InMemoryPCMProvider(samples: [0, 0], hz: 1)
+        XCTAssertNil(LipSyncEnvelopeCalculator.calculate(
+            stream: FileAudioStream(provider: provider),
+            fps: 1, smooth: 1, frameCount: Int.max
+        ))
+        // 上限ちょうど（結果件数が上限 + 1 件）も失敗に倒す。
+        XCTAssertNil(LipSyncEnvelopeCalculator.calculate(
+            stream: FileAudioStream(provider: provider),
+            fps: 1, smooth: 1, frameCount: 16_777_216
+        ))
+    }
+
+    /// 音声キャッシュの世代は差し替えのたびに増える（同サイズの
+    /// 差し替えでも増える。R22-116-02）。
+    func testVoiceCacheGenerationIncrementsOnReplacement() {
+        let item = VoiceItem()
+        XCTAssertEqual(item.voiceCacheGeneration, 0)
+        item.voiceCache = Data([1, 2, 3])
+        XCTAssertEqual(item.voiceCacheGeneration, 1)
+        item.voiceCache = Data([4, 5, 6])
+        XCTAssertEqual(item.voiceCacheGeneration, 2)
+        item.voiceCache = nil
+        XCTAssertEqual(item.voiceCacheGeneration, 3)
+    }
+
     // MARK: 口形時系列
 
     private func makeVoiceItem(framesJSON: String) -> VoiceItem {

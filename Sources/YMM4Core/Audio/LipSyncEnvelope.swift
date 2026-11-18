@@ -10,7 +10,8 @@ import Foundation
 ///   で、窓の中心がフレーム位置に来る。範囲外は 0 として数える
 ///   （分母は常に窓長）。
 /// - 値は窓内の二乗和の平均の平方根（RMS）。
-/// - 結果はフレーム 0...frameCount の frameCount+1 件。
+/// - 結果はフレーム 0...frameCount の frameCount+1 件。件数にも
+///   窓長と同じ桁の上限があり、超えたら失敗（安全弁。R22-116-01）。
 ///
 /// 入力は本家と同じく、アイテムのエフェクトチェーンを通した音声
 /// （再生速度・ContentOffset を反映し、音量制御・エコー・音声
@@ -18,34 +19,56 @@ import Foundation
 /// 側の責務で、計算自体はストリームのレートに対して中立である
 /// （R20-116-01）。
 public enum LipSyncEnvelopeCalculator {
+    /// 窓長の上限（本家の上限と同じ 2^24）。
+    private static let windowLengthLimit = 16_777_216
+    /// 結果件数（frameCount + 1）の上限。異常なフレーム数に対して
+    /// 巨大な配列確保や実行時トラップに倒れないための安全弁で、
+    /// 窓長上限と同じ桁に置く（R22-116-01）。
+    private static let resultCountLimit = 16_777_216
+
     /// 包絡を計算する。引数が不正な場合と、音声が読めない場合
     /// （本家の Fail 相当）は nil。窓長の計算で整数が溢れた場合も
     /// 本家の checked 演算の失敗に合わせて nil（R20-116-06）。
+    /// 結果件数が上限を超える場合も、確保の前に nil へ倒す
+    /// （R22-116-01）。
     public static func calculate(
         stream: AudioStream, fps: Int, smooth: Int, frameCount: Int
     ) -> [Double]? {
-        guard fps > 0, frameCount >= 0, smooth >= 0 else { return nil }
+        guard fps > 0, frameCount >= 0, frameCount < resultCountLimit,
+              smooth >= 0 else { return nil }
         let hz = stream.hz
         guard hz > 0 else { return nil }
         let (hzTimesSmooth, overflowA) = hz.multipliedReportingOverflow(by: smooth)
         let (window, overflowB) = (hzTimesSmooth / fps)
             .multipliedReportingOverflow(by: 2)
-        guard !overflowA, !overflowB, window > 0, window <= 16_777_216 else {
+        guard !overflowA, !overflowB, window > 0, window <= windowLengthLimit else {
             return nil
         }
-        // 窓の開始位置の計算（(smooth + 1) / 2 と Int64 の乗算）でも
-        // 溢れ得るため、ループ前に両端の開始位置で検査する
-        // （R21-116-01）。
         let (smoothPlusOne, overflowC) = smooth.addingReportingOverflow(1)
         guard !overflowC else { return nil }
         let centerOffset = (smoothPlusOne) / 2
-        func windowStartIsSafe(_ frame: Int) -> Bool {
-            let (product, overflow) = Int64(hz).multipliedReportingOverflow(
-                by: Int64(frame - centerOffset)
-            )
-            return !overflow
+
+        // 窓の範囲 [開始, 終了) の導出はここへ集約する（R22-116-01）。
+        // 本家の式（開始 = Hz × (frame − (smooth+1)/2) / fps × 2、
+        // 終了 = 開始 + 窓長）の全ステップを溢れ検査つきで行い、
+        // どこかで溢れたら nil。開始は frame に対して単調なので、
+        // 両端のフレームで検査すれば全フレームを覆える
+        // （R21-116-01 の両端検査をこの導出へ一本化）。
+        func windowRange(forFrame frame: Int) -> (start: Int64, end: Int64)? {
+            let (delta, overflowD) = Int64(frame)
+                .subtractingReportingOverflow(Int64(centerOffset))
+            let (product, overflowE) = Int64(hz)
+                .multipliedReportingOverflow(by: delta)
+            let (start, overflowF) = (product / Int64(fps))
+                .multipliedReportingOverflow(by: 2)
+            let (end, overflowG) = start.addingReportingOverflow(Int64(window))
+            guard !overflowD, !overflowE, !overflowF, !overflowG else {
+                return nil
+            }
+            return (start, end)
         }
-        guard windowStartIsSafe(0), windowStartIsSafe(frameCount) else {
+        guard windowRange(forFrame: 0) != nil,
+              windowRange(forFrame: frameCount) != nil else {
             return nil
         }
 
@@ -71,8 +94,11 @@ public enum LipSyncEnvelopeCalculator {
         var values: [Double] = []
         values.reserveCapacity(frameCount + 1)
         for frame in 0...frameCount {
-            let windowStart = Int64(hz) * Int64(frame - (smooth + 1) / 2) / Int64(fps) * 2
-            let windowEnd = windowStart + Int64(window)
+            // 両端で検査済みのため到達しないはずだが、導出は集約先を
+            // 通す（単調性の前提だけに依存しない）。
+            guard let range = windowRange(forFrame: frame) else { return nil }
+            let windowStart = range.start
+            let windowEnd = range.end
             let dropTarget = max(Int64(0), windowStart)
             while queueStart < dropTarget, ringCount > 0 {
                 dropOldest()

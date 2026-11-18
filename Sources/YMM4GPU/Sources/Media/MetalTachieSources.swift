@@ -265,22 +265,42 @@ public final class MetalTachieSource: TachieSource {
     /// 包絡を決定する入力の署名。本家の再計算署名（音声ファイル、
     /// ContentOffset、ContentLength、更新世代など）に相当するもの
     /// として、包絡の入力音声（エフェクトチェーンの出力）を決める
-    /// 項目を集めたもの: 声の指定、生成済み音声の有無と大きさ、
-    /// 再生速度（種別・値列・キーフレーム・間隔）、ContentOffset、
-    /// ContentLength、ループ有無（R21-116-02）。
-    private func envelopeSignature(of voice: VoiceItem) -> String {
+    /// 項目を集めたもの: 声の指定、生成済み音声の世代、再生速度
+    /// （種別・値列・キーフレーム・間隔・ベジェ）、音声処理モード、
+    /// ContentOffset、ContentLength、ループ有無（R21-116-02、
+    /// R22-116-02）。
+    ///
+    /// 音声キャッシュはバイト数ではなく VoiceItem の世代カウンタで
+    /// 識別する（同サイズ差し替えを検出するため）。ベジェは点列と
+    /// 2次フラグを文字列化して含める（ベジェだけの変更でもレート
+    /// 曲線が変わるため）。処理モードは SOLA かリサンプリングかで
+    /// エフェクトチェーンの出力が変わるため含める。
+    static func envelopeSignature(of voice: VoiceItem) -> String {
         let rate = voice.playbackRate2
         return [
             voice.hatsuon,
-            String(voice.voiceCache?.count ?? -1),
+            String(voice.voiceCacheGeneration),
             String(describing: rate.animationType),
             rate.values.map { String($0.value) }.joined(separator: ","),
             rate.keyFrames.frames.map(String.init).joined(separator: ","),
             String(rate.span),
+            bezierSignature(of: rate.bezier),
+            voice.playbackRateAudioProcessingMode.honkeName,
             String(voice.contentOffset.ticks),
             String(voice.contentLength.ticks),
             String(voice.isLooped),
         ].joined(separator: "|")
+    }
+
+    /// ベジェ定義の文字列化。アンカー点と制御点（相対オフセット）の
+    /// 全成分と2次フラグを含む。
+    private static func bezierSignature(of bezier: BezierAnimation) -> String {
+        let points = bezier.points.map { point in
+            [point.point, point.controlPoint1, point.controlPoint2]
+                .map { "\($0.x),\($0.y)" }
+                .joined(separator: ";")
+        }.joined(separator: "/")
+        return (bezier.isQuadratic ? "q:" : "c:") + points
     }
 
     /// 声の包絡をキャッシュ経由で得る。声の同一性・長さ・fps・
@@ -289,7 +309,7 @@ public final class MetalTachieSource: TachieSource {
         for voice: VoiceItem, fps: Int, smooth: Int,
         provider: (VoiceItem, Int, Int) -> [Double]?
     ) -> [Double]? {
-        let signature = envelopeSignature(of: voice)
+        let signature = Self.envelopeSignature(of: voice)
         if let cache = envelopeCache,
            cache.voice == ObjectIdentifier(voice),
            cache.length == voice.length,
