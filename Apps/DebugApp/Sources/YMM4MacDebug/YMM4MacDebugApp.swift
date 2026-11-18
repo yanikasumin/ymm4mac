@@ -31,113 +31,201 @@ struct YMM4MacDebugApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             // ファイルメニュー（本家 MainView.xaml の構成 —
-            // UI-LAYOUT-FACTS.md §14）。新規/開く/保存は実動し、
-            // それ以外は形のみで未接続（台帳: UI-FRONTEND-DIFF.md）。
+            // UI-FACTS-MENUS-CONTEXT.md §1.1）。編集系アクションは
+            // WorkspaceState 経由で ProjectView が実行する。
+            // 接続先が無い項目は無効表示にする（理由は台帳）。
             CommandGroup(replacing: .newItem) {
-                Button("新規プロジェクト") { workspace.newProject() }
+                Button(UIStrings.Menu.newProject) { workspace.newProject() }
                     .keyboardShortcut("n", modifiers: .command)
-                Button("開く…") { workspace.isImporterPresented = true }
+                Button(UIStrings.Menu.openProject) { workspace.isImporterPresented = true }
                     .keyboardShortcut("o", modifiers: .command)
             }
             CommandGroup(after: .newItem) {
                 Divider()
-                Menu("アイテムを追加") {
-                    Button("テキスト") {}
-                    Button("画像") {}
-                    Button("動画") {}
-                    Button("音声") {}
-                    Button("ボイス") {}
-                    Button("図形") {}
-                    Button("シーン") {}
-                    Button("フレームバッファ") {}
-                    Button("エフェクト") {}
-                    Button("グループ") {}
-                    Button("トランジション") {}
+                Menu(UIStrings.Menu.addItem) {
+                    ForEach(AddItemKind.allCases, id: \.self) { kind in
+                        Button(kind.displayName) {
+                            workspace.request(.addItem(kind))
+                        }
+                    }
                 }
-                Menu("テンプレートからアイテムを追加") {
-                    Button("テンプレートを選択…") {}
+                Menu(UIStrings.Menu.addItemFromTemplate) {
+                    // テンプレートの保持・編集の土台が無いため未接続。
+                    Text(UIStrings.Menu.noHistory)
                 }
-                Menu("最近使ったファイル") {
-                    Text("（履歴なし）")
+                Menu(UIStrings.Menu.recentFiles) {
+                    Text(UIStrings.Menu.noHistory)
                 }
-                Menu("インポート") {
-                    Button("プロジェクトをインポート…") {}
+                Menu(UIStrings.Menu.importMenu) {
+                    Button(UIStrings.Menu.importSubtitle) {}
+                        .disabled(true)
+                    Button(UIStrings.Menu.importSubtitleAsVoice) {}
+                        .disabled(true)
                 }
-                Button("バックアップからプロジェクトを復元…") {}
+                Button(UIStrings.Menu.restoreFromBackup) {}
+                    .disabled(true)
                 Divider()
-                Button("動画の設定…") { workspace.isVideoSettingsPresented = true }
-                Button("動画出力…") { workspace.isExportPresented = true }
-                Button("Exo出力…") {}
-                Button("サムネイル画像を出力…") {}
+                Button(UIStrings.Menu.videoSettings) { workspace.isVideoSettingsPresented = true }
+                Button(UIStrings.Menu.outputVideo) { workspace.isExportPresented = true }
+                Button(UIStrings.Menu.outputExo) {}
+                    .disabled(true)
+                Button(UIStrings.Menu.saveThumbnail) {
+                    workspace.request(.saveThumbnail(.png))
+                }
                 Divider()
-                Button("プロジェクトのコピーを保存…") { workspace.saveCopy() }
+                Button(UIStrings.Menu.saveProjectCopy) { workspace.saveCopy() }
                     .keyboardShortcut("s", modifiers: .command)
             }
 
-            // 編集メニュー（本家のサブメニュー構成をシステムの
-            // 編集メニューへ差し込む）。
+            // 編集メニュー（本家のサブメニュー構成 —
+            // UI-FACTS-MENUS-CONTEXT.md §1.2）。
             CommandGroup(after: .undoRedo) {
                 Divider()
-                Button("現在位置で分割") {}
-                    .keyboardShortcut("b", modifiers: .command)
-                Menu("プレビュー操作") {
-                    Menu("コントロールポイント表示") {
-                        Button("選択中のアイテムのみ") {}
-                        Button("プレビューにマウスオーバー時") {}
-                        Button("常に表示しない") {}
+                Button(UIStrings.Menu.splitAtCurrentPosition) {
+                    workspace.request(.splitAtCurrentPosition)
+                }
+                .keyboardShortcut("b", modifiers: .command)
+                Menu(UIStrings.Menu.previewControl) {
+                    Button(UIStrings.Menu.seekToStart) {
+                        workspace.request(.seekToStart)
+                    }
+                    Button(UIStrings.Menu.seekToEnd) {
+                        workspace.request(.seekToEnd)
+                    }
+                    Divider()
+                    Menu(UIStrings.Menu.controlPointVisibility) {
+                        // 表示モードの保持先は ProjectView 側の形の状態。
+                        // メニューからの切替は未接続（トランスポート帯の
+                        // ドロップダウンで切替できる）。
+                        Button(UIStrings.Menu.controlPointOnSelected) {}
+                            .disabled(true)
+                        Button(UIStrings.Menu.controlPointOnMouseOver) {}
+                            .disabled(true)
+                        Button(UIStrings.Menu.controlPointNever) {}
+                            .disabled(true)
                     }
                 }
-                Menu("アイテム操作") {
-                    Menu("整列") {
-                        Button("左揃え") {}
-                        Button("中央揃え") {}
-                        Button("右揃え") {}
+                Menu(UIStrings.Menu.itemControl) {
+                    Button(UIStrings.Menu.deleteSelection) {
+                        workspace.request(.deleteSelection)
                     }
-                    Button("既定値に設定") {}
+                    Button(UIStrings.Menu.deleteAndMoveAll) {
+                        workspace.request(.deleteAndMoveAll)
+                    }
+                    Divider()
+                    Button(UIStrings.Menu.group) {
+                        workspace.request(.groupSelection)
+                    }
+                    Button(UIStrings.Menu.ungroup) {
+                        workspace.request(.ungroupSelection)
+                    }
+                    Divider()
+                    Button(UIStrings.Menu.toggleLock) {
+                        workspace.request(.toggleLock)
+                    }
+                    Button(UIStrings.Menu.toggleClipping) {
+                        workspace.request(.toggleClipping)
+                    }
+                    Button(UIStrings.Menu.toggleWaveform) {
+                        workspace.request(.toggleWaveform)
+                    }
+                    Divider()
+                    Button(UIStrings.Menu.selectAll) {
+                        workspace.request(.selectAll)
+                    }
+                    Button(UIStrings.Menu.selectLeftItems) {
+                        workspace.request(.selectLeftItems)
+                    }
+                    Button(UIStrings.Menu.selectRightItems) {
+                        workspace.request(.selectRightItems)
+                    }
+                    Divider()
+                    Menu(UIStrings.Menu.align) {
+                        // 整列の Core 操作が無いため未接続。
+                        Button(UIStrings.Menu.alignLeft) {}.disabled(true)
+                        Button(UIStrings.Menu.alignCenter) {}.disabled(true)
+                        Button(UIStrings.Menu.alignRight) {}.disabled(true)
+                    }
+                    Button(UIStrings.Menu.setToDefault) {}
+                        .disabled(true)
                 }
-                Menu("ボイス操作") {
-                    Button("ボイスを再生成") {}
+                Menu(UIStrings.Menu.voiceControl) {
+                    // キャラクター切替・ボイスモードはキャラクター編集と
+                    // 音声供給（Issue #51）が前提のため未接続。
+                    Button(UIStrings.Menu.changeCharacter) {}.disabled(true)
+                    Button(UIStrings.Menu.changePreviousCharacter) {}.disabled(true)
+                    Button(UIStrings.Menu.changeNextCharacter) {}.disabled(true)
+                    Button(UIStrings.Menu.changeVoiceMode) {}.disabled(true)
                 }
-                Menu("タイムライン操作") {
-                    Button("レイヤーの高さを拡大") {}
-                    Button("レイヤーの高さを縮小") {}
+                Menu(UIStrings.Menu.timelineControl) {
+                    Button(UIStrings.Menu.layerHeightUp) {
+                        workspace.request(.layerHeightUp)
+                    }
+                    Button(UIStrings.Menu.layerHeightDown) {
+                        workspace.request(.layerHeightDown)
+                    }
+                    Button(UIStrings.Menu.zoomInTimeline) {
+                        workspace.request(.zoomInTimeline)
+                    }
+                    Button(UIStrings.Menu.zoomOutTimeline) {
+                        workspace.request(.zoomOutTimeline)
+                    }
                 }
             }
 
             // レイアウトメニュー。
-            CommandMenu("レイアウト") {
-                Menu("レイアウトプリセット") {
-                    Button("現在のレイアウトを保存…") {}
-                    Button("既定のレイアウトに戻す") {}
+            CommandMenu(UIStrings.Menu.layout) {
+                Menu(UIStrings.Menu.layoutPreset) {
+                    Button(UIStrings.Menu.saveLayoutPreset) {}
+                        .disabled(true)
+                    Button(UIStrings.Menu.resetLayout) {
+                        workspace.request(.resetLayout)
+                    }
                 }
-                Menu("ツール") {
-                    Button("アイテム編集") {}
-                    Button("プレビュー") {}
+                Menu(UIStrings.Menu.tools) {
+                    // ドッキング基盤が無いため表示切替は未接続。
+                    Button(UIStrings.Menu.toolItemEditor) {}.disabled(true)
+                    Button(UIStrings.Menu.toolPreview) {}.disabled(true)
                 }
                 Divider()
-                Button("シーンタブを常に表示") {}
+                Button(UIStrings.Menu.alwaysShowSceneTab) {}
+                    .disabled(true)
             }
 
-            // ツールメニュー（本家同梱ツールの並び）。
-            CommandMenu("ツール") {
-                Button("キャラクター編集") {}
-                Button("設定") {}
-                Button("検索") {}
-                Button("素材一覧") {}
-                Button("台本編集") {}
-                Button("文字起こし") {}
-                Button("テンプレート編集") {}
-                Button("ユーザー辞書") {}
-                Button("音量アナライザ") {}
+            // ツールメニュー（本家同梱ツールの並び）。各ツールの
+            // ウィンドウ／ドッキング基盤が無いため全て未接続。
+            CommandMenu(UIStrings.Menu.tools) {
+                Button(UIStrings.Menu.characterEditor) {}.disabled(true)
+                Button(UIStrings.Menu.settingWindow) {}.disabled(true)
+                Button(UIStrings.Menu.toolSearch) {}.disabled(true)
+                Button(UIStrings.Menu.toolMaterials) {}.disabled(true)
+                Button(UIStrings.Menu.toolScenario) {}.disabled(true)
+                Button(UIStrings.Menu.toolTranscription) {}.disabled(true)
+                Button(UIStrings.Menu.toolTemplateEditor) {}.disabled(true)
+                Button(UIStrings.Menu.toolUserDictionary) {}.disabled(true)
+                Button(UIStrings.Menu.toolVolumeAnalyzer) {}.disabled(true)
             }
 
-            // ヘルプメニュー。
+            // ヘルプメニュー。本家の FAQ／問い合わせ／FANBOX は
+            // OpenUri コマンドで公式 URL を開く実動項目。
             CommandGroup(after: .help) {
-                Button("FAQ") {}
-                Button("問い合わせ") {}
+                Button(UIStrings.Menu.faq) {
+                    openURL("https://manjubox.net/ymm4/faq/")
+                }
+                Button(UIStrings.Menu.contact) {
+                    openURL("https://manjubox.net/contact/")
+                }
+                Button(UIStrings.Menu.fanbox) {
+                    openURL("https://www.pixiv.net/fanbox/creator/586643")
+                }
                 Divider()
-                Button("バージョン情報") { workspace.isAboutPresented = true }
+                Button(UIStrings.Menu.about) { workspace.isAboutPresented = true }
             }
         }
+    }
+
+    private func openURL(_ string: String) {
+        guard let url = URL(string: string) else { return }
+        NSWorkspace.shared.open(url)
     }
 }
