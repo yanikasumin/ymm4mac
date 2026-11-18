@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import YMM4Core
 
 /// バンドル化されていない実行ファイルとして起動された場合でも、
 /// 通常のアプリとして Dock にアイコンが表示されるようにする保険。
@@ -9,6 +10,13 @@ import SwiftUI
 final class DebugAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // ユーザー辞書を設定ファイルから読み込む（TEXT60 の設定層）。
+        UserDictionaryStore.shared.load()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // 集約中の辞書保存を終了前に確定する。
+        UserDictionaryStore.shared.flushPendingSave()
     }
 }
 
@@ -16,8 +24,12 @@ final class DebugAppDelegate: NSObject, NSApplicationDelegate {
 struct YMM4MacDebugApp: App {
     @NSApplicationDelegateAdaptor(DebugAppDelegate.self) private var appDelegate
     @StateObject private var workspace = WorkspaceState()
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
+        // 修飾子は直前のシーンに結び付くため、主ウィンドウの大きさ・
+        // メニュー定義は WindowGroup 側に付け、辞書ウィンドウには
+        // 専用の大きさだけを付ける（R18-01）。
         WindowGroup {
             ContentView()
                 .environmentObject(workspace)
@@ -202,7 +214,9 @@ struct YMM4MacDebugApp: App {
                 Button(UIStrings.Menu.toolScenario) {}.disabled(true)
                 Button(UIStrings.Menu.toolTranscription) {}.disabled(true)
                 Button(UIStrings.Menu.toolTemplateEditor) {}.disabled(true)
-                Button(UIStrings.Menu.toolUserDictionary) {}.disabled(true)
+                Button(UIStrings.Menu.toolUserDictionary) {
+                    openWindow(id: "user-dictionary")
+                }
                 Button(UIStrings.Menu.toolVolumeAnalyzer) {}.disabled(true)
             }
 
@@ -222,6 +236,13 @@ struct YMM4MacDebugApp: App {
                 Button(UIStrings.Menu.about) { workspace.isAboutPresented = true }
             }
         }
+
+        // ユーザー辞書の編集ウィンドウ（TEXT60 の辞書設定層）。
+        Window(UIStrings.Menu.toolUserDictionary, id: "user-dictionary") {
+            UserDictionaryEditorView()
+                .environmentObject(workspace)
+        }
+        .defaultSize(width: 860, height: 520)
     }
 
     private func openURL(_ string: String) {
