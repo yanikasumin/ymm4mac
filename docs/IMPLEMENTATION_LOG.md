@@ -1261,6 +1261,8 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 **検証。** 棚卸しの実数: 定義層は95種、メタデータ既存は3種、今回92種を追加し全95種が揃った。保存キーと本家プロパティの照合では、差分は全て旧 API プロパティ・decode 専用の互換キー（CenterPoint の Mode）・入れ子列挙の宣言として説明が付いた。Animation の既定値・最小・最大は本家 `new Animation(...)` の初期化子と264件照合し、不一致0。Blend の選択肢33件はアイテム側メタデータの既存一覧と集合一致。新規テスト5件（全95種の網羅＝記述子 ID 列と保存キーの一致、ID 一意性、対象外キーの不在、全記述子の書き込み往復、アニメーション既定値の範囲内確認）と既存 PropertyMetadataTests 17件が、Linux と Mac の双方で全合格（計22件・0失敗）。Mac 実機でルートパッケージのビルド成功・警告0。フルスイートは他作業と並行中のため未実施（対象テストのみ実行）。
 
 **未解決。** 対象外とした複合プロパティ18件を編集 UI から扱うには、記述子体系へ入れ子オブジェクト用の種別を足す設計判断が別途必要（現行体系の範囲では未確定）。数値プロパティのうち本家に `Range` もスライダ属性も無いものは範囲なし（無制限）とした。本家の `ShowPropertyEditorWhen`（条件付き表示、3件）に対応する仕組みは記述子体系に無いため、該当プロパティも常時表示の前提で記述した。
+
+**追記（FXMETA-COMP で解消）。** 上記の「対象外とした複合プロパティ18件」は、記述子体系へ複合種別（`.object` / `.collection`）を1層だけ足す設計（第7ラウンドで決定）により全件対象化した。本節の「本家との差分」にある対象外の記述は FXMETA 時点の記録であり、現行の実態は本台帳末尾の FXMETA-COMP 節が正本。RepeatOpacity の IsCentering は引き続き対象外。
 #### R6-FIX — レビュー第6ラウンド指摘の処分: リピート再開（R6-01）・開始失敗の通知（R6-03）・チャンク生成の世代競合（IMPLEMENTED、Mac 検証済み）
 
 **何を実装したか。** 実時間再生（MAC-0042）に対するレビュー第6ラウンドの指摘のうち、再生エンジンに関わる3件を処分した。(1) R6-01（P1・修正必須）: リピート有効時、終端到達で表示位置が開始位置へ戻るだけで再生が再開されなかった不具合の修正。(2) R6-03（P2）: 音声エンジンの起動失敗が握りつぶされていたのを、型付きの失敗として通知し UI へ表示できる形にした。(3) 照合課題: 同ラウンドの打ち切られた初回生成にだけ現れた「旧世代のチャンク生成タスクがシーク後の位置から音声を読み取って消費する」競合の指摘候補を実コードで照合し、実在したため本単位で併せて修正した。
@@ -1491,6 +1493,34 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 - R17-02: 期待値生成器が GitHub で再現できない。処分として本節に生成経路と候補座標の照合記録を残す。生成器は作業領域 halftone104-scratch/halftone_ref.py（修正済みインタプリタ noise7-scratch/dxbc_interp.py に sample 命令と v[2] 駆動を追加したもの）で、入力は gpu45-scratch/halftone_dis.txt（halftone.cso の逆アセンブル）。候補座標の実測照合（Distance 6.1、gate を広げて全候補をサンプルさせた取得。形式: 点 → 候補中心の集合）: (10.5, 6.5) → {(15.25, 13.207), (9.15, 13.207), (18.3, 7.924), (12.2, 7.924), (6.1, 7.924), (15.25, 2.641), (9.15, 2.641)}。(10.5, 12.0) → {(12.2, 18.49), (6.1, 18.49), (15.25, 13.207), (9.15, 13.207), (3.05, 13.207), (12.2, 7.924), (6.1, 7.924)}。(20.0, 17.0) → {(21.35, 23.772), (15.25, 23.772), (24.4, 18.49), (18.3, 18.49), (12.2, 18.49), (21.35, 13.207), (15.25, 13.207)}。(4.0, 3.0) → {(6.1, 7.924), (0.0, 7.924), (9.15, 2.641), (3.05, 2.641), (-3.05, 2.641), (6.1, -2.641), (0.0, -2.641)}。(30.0, 28.0) → {(33.55, 34.338), (27.45, 34.338), (36.6, 29.055), (30.5, 29.055), (24.4, 29.055), (33.55, 23.772), (27.45, 23.772)}。判別照合: (15.86, 6.5)（x/d = 2.6、奇数行）の自列は {12.2, 18.3, 24.4} で floor(x/d+0.5) = 3 が中心。(15.86, 12.0)（偶数行）の自列は {9.15, 15.25, 21.35} で floor(x/d) = 2 が中心。負座標: (-2.44, 12.0) の自列は {-9.15, -3.05, 3.05}、(-3.66, 6.5) の自列は {-12.2, -6.1, 0.0}。いずれも本節の格子規則と一致する。
 - 残差の原因について: 検証済みなのは「対象ケースで最大 2/255 の残差があり、許容差 2 で全画素比較が通過した」ことまで。残差が GPU サンプラの補間精度に由来するか、演算順序や丸め等の別の数値演算差に由来するかは未解決として区別する（当初記録の「サンプラ補間精度級と判断」は断定として強すぎたため、本追記で改める）。
 
+#### FXMETA-COMP — 複合プロパティ18件の記述子対象化（IMPLEMENTED / VERIFIED）
+
+**何を実装したか。** FXMETA で対象外として記録した複合プロパティ18件（ブラシ7件: Shadow / InnerShadow / FillBackground / FillForeground / FrameLine の Brush、Outline の StrokeBrush、DisplacementMap の Brush。Transform 3件: DisplacementMap / NoiseColorShift / NoiseDisplacementMap。NoiseParameter 3件: Noise / NoiseColorShift / NoiseDisplacementMap。Mosaic の MosaicParameter、Mask の ShapeParameter、Gradient の Stops、MeshDeformation の Points、MotionTracking の Path）を、記述子体系へ複合種別を1層だけ足して対象化した（設計は第7ラウンドで決定済み）。固有パラメータ記述子は 509 件 → 527 件。
+
+**どこを変更したか。** `Sources/YMM4Core/Editing/PropertyMetadata.swift`（`PropertyKind` へ `.object` / `.collection` を追加。関連値は持たせず Equatable を維持し、子・要素へのアクセスは `PropertyAccess` 側の新ケース `.object(children:)` / `.collection(count:elements:insert:remove:)` が持つ。`PropertyDescriptor` へ橋渡し用の computed property / メソッド（`children` / `collectionCount` / `collectionElements(at:)` / `insertCollectionElement()` / `removeCollectionElement(at:)`）とファクトリ `.object(...)` / `.collection(...)` を追加）。新規 `Sources/YMM4Core/Editing/EffectPropertyMetadataComposite.swift`（複合記述子の構築一式）。既存ビルダー4ファイル（`EffectPropertyMetadataGPUShadowMask.swift` / `EffectPropertyMetadataGPUTransform.swift` / `EffectPropertyMetadataGPUColor.swift` / `EffectPropertyMetadataDraw.swift`）へ、各定義の保存キー順の位置に複合記述子を差し込んだ。`EffectPropertyMetadata.swift` 冒頭の対象外コメントを実態へ更新。UI は `Apps/DebugApp/Sources/YMM4MacDebug/PropertyInspectorView.swift`（`PropertyRowView` の access 分岐へ `.object` / `.collection` を追加）。テストは `Tests/YMM4CoreTests/Editing/EffectPropertyMetadataTests.swift`（期待 ID 列へ18キーを保存キー順で追加、対象外一覧を RepeatOpacity.IsCentering のみへ更新、新規テスト8件を追加）。
+
+**どう実装したか。**
+- 型付きブラシ（`Brush` クラス。Shadow / FillBackground / FillForeground / FrameLine）: 子は現在のパラメータ型のフィールドから保存キー順に生成する。対象は10種のパラメータ型（solidColor / linearGradient / radialGradient / checkered / dot / stripe / gridLine / bitmap / noise / gradientMesh）。Animation は `.animation`、色は `.color`、列挙（CoordinateMode / ExtendMode / NoiseType）は `.enumeration`、グラデーションの Stops は `.collection`、グラデーションメッシュの Points は `.collection`、入れ子の `BrushDrawingTransform` は `.object` で再帰（保存形式ではパラメータ本体へインラインに並ぶが、モデル上の入れ子構造どおりに表す）。bitmap の ContentOffset は FXMETA の TextureEffect と同じく秒の数値で読み書きする。noise パラメータ内の生保持 NoiseParameter は、非 nil のときだけ生保持の汎用子記述子で対象化する。`.preserved` のパラメータ型は子なし（空の object)。パラメータ型そのものの切替 UI は範囲外（本家は型選択の専用 UI を持つ）。ブラシが未設定（nil）の間は子を持たない。
+- 生保持（`PreservedObject`）の複合（上記ブラシ形の InnerShadow Brush / Outline StrokeBrush / DisplacementMap Brush、Transform 3件、NoiseParameter 3件、Mask の ShapeParameter）: 子は保存 JSON のフィールドから汎用的に生成する。フィールドの置き場は形状で決める — 値が `{Type, Parameter}` 形（本家 `Plugin.Brush.Brush` の保存形式。デコンパイル済み本家で InnerShadow / Outline / DisplacementMap のブラシが `Plugin.Brush.Brush` 型であることを確認）なら Parameter オブジェクトの中、それ以外（多態パラメータが $type 付きで直接保存される形。DisplacementMap の Transform は `DisplacementMapTransformBase` の直接保存、NoiseParameter は実プロジェクト2件で $type 直下にフィールドを持つことを実測）ならオブジェクト自身のフィールド。種別の判定: 数値→`.number`、真偽→`.boolean`、文字列→`.text`（ただし `#AARRGGBB` 形式は `.color`)、`Values` キーを持つオブジェクト→`.animation`（本家 Animation の保存形式。読み書きは定義層の既存コーデック `decodeLegacyAnimation` / `encodeAnimation` を使う。本家が範囲 (int.MinValue, int.MaxValue) で読む経路と同じ）、それ以外のオブジェクト→`.object` で再帰（深さ上限3)。`$type` は型判別子であり子にしない。配列と null は汎用の子で表現できないため子にしない。読み書きは都度ルート JSON からキー列を辿るフィールド置換で行い、触っていないフィールド（未知キー含む）はそのまま残る。表示名はフィールド名そのまま。
+- MosaicParameter（型付き）: sized は Size（`.animation`）のみを子に持つ（本家の組み込み6形状とも持つプロパティは Size だけ、という既存モデル側の実測どおり）。それ以外の $type は生保持として汎用子記述子を付ける。
+- コレクション: Gradient の Stops（要素は Offset `.number` 0〜1 と Color `.color`、Gradient 効果とグラデーションブラシで構築を共用）、MeshDeformation の Points（要素は X / Y `.animation` と IsSelected `.boolean`)、GradientMesh の Points（要素は GradientMeshPoint の全フィールド）、MotionTracking の Rects（要素は Top / Bottom / Left / Right `.number` と IsTracking `.boolean`)。追加は各モデルの既定値の要素を末尾へ足し、削除は位置指定。
+- MotionTracking の Path は `.object` として Target（`.enumeration`。選択肢はメンバ名 Background / CurrentItem)、Rects（`.collection`)、AlgorithmName（`.text`）を保存キー順に持つ。`IsEditing` は保存対象外の実行時状態のため子にしない。
+- UI: object は表示名の見出し＋子行をインデントして `PropertyRowView` を再帰表示する。collection は要素ごとに子行をまとめ、追加・削除ボタンを付け、操作後は `onEdited` を呼ぶ（追加・削除では行ローカルの世代カウンタも進め、再描画を二重に促す）。複合の表示名はプロパティ名そのまま（本家 Texts に根拠のある文言だけを使う従来方針。複合プロパティ自体に根拠のある表示名は取れなかった）。
+
+**本家との差分。** (1) 本家は複合プロパティごとに専用エディタ（ブラシエディタ、グラデーションエディタ等）を持つが、こちらは汎用の入れ子行で全複合を一様に扱う。専用エディタ固有の操作（パラメータ型の切替、グラデーションの視覚編集、メッシュ点のキャンバス編集、トラッキング矩形の映像上編集）は対象外。(2) `BrushDrawingTransform` は保存形式ではインラインだが、こちらでは `.object` の入れ子として表示する（保存形式は変えない）。(3) 生保持の Animation フィールドを編集すると、そのフィールドは既存コーデックの標準形（Values / Span / AnimationType / Bezier の4キー）で書き戻される。触っていないフィールドは保持されるが、編集した Animation フィールド内の未知キーは保持されない（型付きプロパティの Animation と同じ扱い）。
+
+**検証。** Mac 実機（検証コピー ~/ymm4-work/fxmeta-r2/YMM4Mac): ルートパッケージ `swift build` 成功、DebugApp `swift build` 成功。対象テスト `swift test --filter "EffectPropertyMetadataTests|PropertyMetadataTests"` は 30 件全合格（EffectPropertyMetadataTests 13件 = 従来5件 + 新規8件、PropertyMetadataTests 17件）。新規8件の内訳: 対象18件全てに複合記述子が付くこと、型付きブラシ単色の色変更（未知入れ子キーの保持を含む）、型付きブラシ線形グラデーションの Stops 追加・削除と Offset 変更、型付き MosaicParameter の Size 変更（未知キーの保持を含む）、Gradient の Stops 往復、Mesh Points の X 変更・選択切替（未知キーの保持を含む）、生保持 NoiseParameter の数値・Animation 書き換え（$type と未知フィールドの保持を含む）、生保持ブラシ形の Parameter 内 Color 書き換え。いずれも `VideoEffectRegistry.encode` の往復で保存 JSON を確認した。既存テストの期待 ID 列は18キーを保存キー順へ追加したものへ更新し、従来の509記述子の id・並び・グループ名は変更していない。Linux では YMM4CoreTests ターゲットのビルド成功までを確認（`swift test` 全体の実行は、YMM4GPUTests が macOS 限定の型を参照して Linux ではビルドできない既存事情のため不可。この失敗は変更前の main 057d0db でも同一に再現することを作業ツリー外の検証コピーで確認済みで、本変更とは無関係）。AudioDriftTests は対象外の変更のため未実行。
+
+**未解決。** (1) パラメータ型の切替 UI（ブラシの型、モザイク形状、生保持の $type 切替）は未実装。本家の専用エディタ相当の操作であり、必要になれば別単位で扱う。(2) 生保持の入れ子で深さ4以上のオブジェクトと、配列・null のフィールドは編集対象にできない（値は保持される）。(3) 複合の子記述子の表示名はフィールド名そのままで、本家の専用エディタが持つ文言との一致は未確認（根拠が取れない文言は作らない方針のため）。
+
+**追記（フルスイート確認の結果）。** Mac 実機でフルスイート（AudioDrift 除外）を1回実行した際は 587 件中 1 件の失敗があったが、その実行は出力を絞っていたため失敗したテストを特定できなかった。その後の切り分け再実行では、YMM4GPUTests は 42 件全合格、YMM4CoreTests は AudioResamplerQualityTests と AudioDrift を除く 544 件が全合格だった。残る AudioResamplerQualityTests（9件、dB 実測の主張を持つリサンプラ品質スイート）は、本変更とコードを共有しない（差分は Editing と DebugApp のインスペクタのみ）うえ、現在の Mac 環境では単独実行でも極端に時間がかかり（`testFormalStopbandSweep` のカーネル計算で長時間 CPU を占有する。`sample` で確認済み）、本記録の時点では完走を確認できていない。最初の1件の失敗は、このスイートか、並行実行時の負荷に起因する不安定さのどちらかと整合するが、断定はしない。
+#### LIMITS — #56 / #61 / InOutCrash の現状確定（2026-11-19、締切時点の処分記録）
+
+**#56（最重フレームの合成時間）。** 未完のまま開いた状態を維持する。性能監査（2026-11-17）の「最重フレーム合成 18.1〜18.8ms」は R6-02 以前の測定であり、その後の実測は次のとおり: プレビューは背景ワーカー化（R6-02）により表示が合成に阻害されなくなり、最密窓での持続は 26.5 fps（Phase E、素材不在条件）。ただし完了条件である「最重クラスのフレームでも合成が 16.7ms 予算内」は未達のままである。主因の同期実行（完了待ち）は描画失敗の検出（MAC-0021）の前提を兼ねており、解消には失敗検出の再設計と提出のフレーム単位への集約が一体で必要になるため、設計単位として残す。
+
+**#61（コンプレッサ Ratio≠1 の波形等価性）。** Issue 自身の定めどおり、本家を動かせる環境（Golden Master）が無い間は「未検証」のまま閉じない。係数法則（EnvelopeFollower）は再構成であり、本家の NWaves が逆コンパイル集合に無いことが制約の本体である。Ratio=1 の一致と BS.1770 側の検証済みという現状に変更はない。
+
+**InOutCrash（未実装の維持）。** 本家の CrashMeshBuilder は .NET のオブジェクト同一性ハッシュ（GetHashCode）を種にメッシュを破砕するため、本家の出力自体が実行ごとに非決定的であり、画素単位の一致は原理的に検証できない。加えて移植側の GPU 層には汎用メッシュ描画経路が無い（全面四角形とコンピュートのみ）。実装にはメッシュ描画基盤が前提であり、MeshDeformation の描画と同根の土台仕事として切り出す。現行の素通し（未実装の明示）を維持する。
 #### LIPSYNC — 口パクの振幅評価と口形の決定（IMPLEMENTED、Mac 検証済み）
 
 **本家の規則（逆コンパイルで確認）。** 口パクは2つの独立した経路からなる。(1) 音量: LipSyncEnvelope が声の音声（48kHz へリサンプル、音量・エコー・エフェクトなし）からフレームごとの RMS 包絡を計算する。窓の長さは Hz × smooth / fps × 2（インターリーブ済みサンプル数、上限 16,777,216）、窓の中心がフレーム位置に来るよう配置され、範囲外は 0 として数える（分母は常に窓長）。smooth はキャラクターの MouseSmooth（既定 4）。計算が無い場合の音量は、声の範囲内なら 0、範囲外・声なしなら −1。(2) 口形: 音量からは決まらず、声の LipSyncFrames（lab 解析由来の口形時系列。Pronounce 側が優先）から、その時刻以前の最後の要素の口形を取る。時系列が無ければ Silent。
@@ -1580,6 +1610,29 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **検証。** 新規テスト PlaneSplitBspTests 7件が Mac で合格: 交わる組での要否判定、共面・画面分離での不要判定、交わる2枚での分割（3断片、奥→平面→手前の順、切断が x=0 の線分、奥断片は z<=0・手前は z>=0）、交わらない2枚の奥→手前順序、退化した四隅での nil、マスク多角形の右半分への切取り。既存の DrawOrderingTests 15件も引き続き合格。
 
+#### FXMETA-R21 — 第21ラウンド指摘への処分（PR #117 へ追加）
+
+- **R21-117-01（P1、生保持アニメーションの編集で配列内の未知フィールドが消失）**: 生保持オブジェクト内の汎用アニメーションの書き戻しを、保存 JSON の既存内容を土台にした重ね合わせへ変更した。オブジェクト同士はキー単位で再帰し、配列同士は要素単位で重ねる（CodecSupport.mergePreservingUnknownFields）。Values の各要素で変更対象外のキーが保持され、アニメーション自体の未知キーも残る。試験は Values 要素内の未知キーとアニメーションの未知キーが編集後も残ることまで確認する形へ拡張した。
+- **R21-117-02（P1、グラデーションメッシュの格子不整合）**: 格子寸法と点列を単一の操作として扱う形にした。GradientMeshBrushParameter.resizeGrid が既存の点を (行, 列) の位置で保持しながら寸法と点列を一体で組み替える（寸法は本家 UI の範囲 2〜50 へ丸める）。横・縦の個数の変更はこの経路を通し、点の追加は末尾へ1行、削除は対象要素を含む1行を取り除く操作とした。常に points.count == 横 × 縦 が保たれることを記述子経由の試験で固定した。
+- **R21-117-03（QA、未特定の失敗と未検証の音声試験）**: 未確定のまま独立した QA 残件として維持する。なお FXMETA 実施時に Mac で継続していたリサンプラ品質試験の単独実行は、クラス名フィルタが0件に一致して終了していた（この Mac ではクラス名フィルタが一致しない場合がある）ため、実質的には未実行だった。方式名フィルタでの再実行を統合確認時に行う。
+
+検証: 対象試験（EffectPropertyMetadataTests / PropertyMetadataTests）は Mac で再実行する。あわせて main（PR #115・#113・#114）を取り込んだ。
+
+#### FXMETA-R22 — 第22ラウンド指摘への処分（PR #117 へ追加）
+
+- **R22-117-01（P2、コレクション挿入/削除が無変更でも成功を報告する）**: `PropertyAccess.collection` の `insert` / `remove` クロージャの戻り値を `Bool` へ変更し、「状態が実際に変わったか」を返す契約にした（`PropertyDescriptor.collection` ファクトリと `insertCollectionElement` / `removeCollectionElement(at:)` も連動）。各ビルダの処分: グラデーションメッシュの Points は行追加が上限50行へ丸め込まれた場合と、最小2行での行削除・範囲外削除で false を返す。グラデーションの Stops、メッシュ変形の Points、モーショントラッキングの Rects は範囲外削除で false を返す（追加と通常の削除は true）。UI（`CollectionRowView`）は true の場合にだけ世代カウンタの増加と `onEdited` 通知を行う。試験はメッシュの最小行数での削除・最大行数での追加が false で状態不変であること、上限・下限までの通常操作が true であること、Stops とメッシュ変形 Points の範囲外削除が false であることを固定した。
+
+#### FXMETA-R23 — 第23ラウンド指摘への処分（PR #117 へ追加）
+
+- **R23-117-01（P2、不正な既存格子寸法で resizeGrid がオーバーフローする）**: `GradientMeshBrushParameter.decode` は JSON の HorizontalCount / VerticalCount をそのまま採用するため、読み込み済みの旧寸法には範囲の保証がない。従来の `resizeGrid` は `row * oldHorizontal + column` を無検査で計算しており、oldHorizontal=Int.max 等の壊れた保存ファイル由来の値で乗算・加算がオーバーフローして trap し得た（`indices.contains` の検査は添字計算の後だった）。処分: 旧添字を求める前に行・列が旧寸法の範囲内であることを確認し、添字計算を `multipliedReportingOverflow` / `addingReportingOverflow` へ置き換えた。オーバーフローする位置は既存点を引かず既定点で埋め、正常な新寸法へ復元する（例外・trap で落とさない）。decode 側の丸めは行わない（正当な範囲の寸法・点列のラウンドトリップ保持を優先し、安全化は resizeGrid 側に集約）。
+
+検証: 新規テスト2件を BrushParameterTests へ追加し Mac で合格 — `testGradientMeshResizeGridWithCorruptOldDimensions`（horizontalCount=Int.max・verticalCount=2・点列2件で resizeGrid が trap せず 3×3 へ復元され、旧添字が安全に求まる行0は既存点を保持し、オーバーフローする行は既定点で埋まる）と `testGradientMeshResizeGridPreservesPointsByPosition`（2×2→3×2 で既存点が (行, 列) 位置どおり保持される回帰）。あわせて BrushParameterTests 全18件、EffectPropertyMetadataTests 16件、PropertyMetadataTests 17件が Mac で全合格（いずれも方式名フィルタで実行）。
+
+#### FXMETA-R24 — 第24ラウンド指摘への処分（PR #117 へ追加）
+
+- **R24-117-01（P2、行追加の入口で不正な旧縦寸法が trap / 意図しない行削減になる）**: GradientMesh の Points コレクション insert クロージャ（`EffectPropertyMetadataComposite.swift`）は `vertical: parameter.verticalCount + 1` を呼び出し側で計算していた。`GradientMeshBrushParameter.decode` は旧寸法を丸めず復元するため、verticalCount=Int.max では +1 自体が trap し、verticalCount=51 では resizeGrid 内で 52 が上限50へ丸められ、「行追加」のつもりが末尾行を失うのに verticalCount が変化するため true（変更あり）を返していた。処分: insert の入口で旧寸法を検証し、正常範囲（縦は追加後に上限へ収まる 2〜49行、横は 2〜50）のときだけ +1 して進め、範囲外（50行以上・負数・0・1・巨大値、および横の異常値）では状態を変えず false を返す。成功報告は「縦がちょうど +1 され横が不変」という事後条件で確認する。不正な格子の安全化は resizeGrid 側の責務（R23-117-01）に残し、insert は修復を兼ねない。削除経路（remove）は既存のガード（verticalCount > 2、`rowStart + horizontalCount <= points.count`）で実質的に安全なため変更していない。
+
+検証: 新規テスト1件を EffectPropertyMetadataTests へ追加し Mac で合格 — `testGradientMeshInsertRejectsInvalidGridDimensions`（縦 Int.max で trap せず false・状態不変、縦51行で false・末尾行を失わない、縦1行で false、横51で縦が正常でも false・寸法不変、縦49行で true になり50行になる回帰）。縦50行での追加が false であることは既存の `testGradientMeshCollectionReportsNoChangeAtGridLimits` が覆うため流用した。あわせて EffectPropertyMetadataTests 全17件、BrushParameterTests 全18件、PropertyMetadataTests 全17件が Mac で全合格（いずれも方式名フィルタで実行）。
 #### LIPSYNC-R21 — 第21ラウンド指摘への処分（PR #116 へ追加）
 
 - **R21-116-01（P2、窓開始位置の溢れ）**: 窓長の検査に加え、開始位置の計算に使う (smooth + 1) と Int64 の乗算についても、ループ前に両端のフレームで溢れ検査を行い、溢れる場合は nil へ倒すようにした。窓長が偶然に範囲内へ収まる組合せ（Hz=1、fps と smooth が最大値）でも実行時トラップにならないことを試験で固定した。

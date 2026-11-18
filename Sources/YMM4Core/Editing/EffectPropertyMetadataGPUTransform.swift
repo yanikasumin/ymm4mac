@@ -245,6 +245,10 @@ public extension EffectPropertyMetadata {
                 options: displacementMapTransformModeOptions,
                 get: { d.mode }, set: { d.mode = $0 }
             ),
+            preservedDescriptor(
+                id: "Transform", displayName: "Transform", group: "ディスプレイスメントマップ",
+                get: { d.transform }, set: { d.transform = $0 }
+            ),
             .animation(
                 id: "Blur", displayName: "ぼかし度", group: "ディスプレイスメントマップ",
                 get: { d.blur }, set: { d.blur = $0 }
@@ -252,6 +256,10 @@ public extension EffectPropertyMetadata {
             .boolean(
                 id: "IsPatternMapPreviewEnabled", displayName: "パターンを表示", group: "ディスプレイスメントマップ",
                 get: { d.isPatternMapPreviewEnabled }, set: { d.isPatternMapPreviewEnabled = $0 }
+            ),
+            preservedDescriptor(
+                id: "Brush", displayName: "Brush", group: "ディスプレイスメントマップ",
+                get: { d.brush }, set: { d.brush = $0 }
             )
         ]
     }
@@ -356,7 +364,8 @@ public extension EffectPropertyMetadata {
             .animation(
                 id: "Smoothness", displayName: "なめらかさ", group: "メッシュ変形",
                 get: { d.smoothness }, set: { d.smoothness = $0 }
-            )
+            ),
+            meshPointsCollection(d)
         ]
     }
 
@@ -387,6 +396,10 @@ public extension EffectPropertyMetadata {
                 options: displacementMapTransformModeOptions,
                 get: { d.mode }, set: { d.mode = $0 }
             ),
+            preservedDescriptor(
+                id: "Transform", displayName: "Transform", group: "ノイズ歪み",
+                get: { d.transform }, set: { d.transform = $0 }
+            ),
             .animation(
                 id: "Blur", displayName: "ぼかし度", group: "ノイズ歪み",
                 get: { d.blur }, set: { d.blur = $0 }
@@ -395,6 +408,10 @@ public extension EffectPropertyMetadata {
                 id: "NoiseType", displayName: "種類", group: "ノイズ",
                 options: noiseTypeOptions,
                 get: { d.noiseType }, set: { d.noiseType = $0 }
+            ),
+            preservedDescriptor(
+                id: "NoiseParameter", displayName: "NoiseParameter", group: "ノイズ",
+                get: { d.noiseParameter }, set: { d.noiseParameter = $0 }
             )
         ]
     }
@@ -406,6 +423,10 @@ public extension EffectPropertyMetadata {
                 id: "NoiseType", displayName: "種類", group: "ノイズ",
                 options: noiseTypeOptions,
                 get: { d.noiseType }, set: { d.noiseType = $0 }
+            ),
+            preservedDescriptor(
+                id: "NoiseParameter", displayName: "NoiseParameter", group: "ノイズ",
+                get: { d.noiseParameter }, set: { d.noiseParameter = $0 }
             ),
             .boolean(
                 id: "IsColor", displayName: "色", group: "ノイズ",

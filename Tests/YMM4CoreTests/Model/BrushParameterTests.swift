@@ -376,6 +376,68 @@ final class BrushParameterModelTests: XCTestCase {
         XCTAssertFalse(parameter.points[1].isSelected)
     }
 
+    func testGradientMeshResizeGridPreservesPointsByPosition() {
+        let parameter = GradientMeshBrushParameter()
+        // 2×2（Red / Gold / RoyalBlue / Cyan）→ 3×2 へ広げる。
+        // 既存点は (行, 列) 位置どおり残り、新しい列は既定点で埋まる。
+        parameter.resizeGrid(horizontal: 3, vertical: 2)
+        XCTAssertEqual(parameter.horizontalCount, 3)
+        XCTAssertEqual(parameter.verticalCount, 2)
+        XCTAssertEqual(parameter.points.count, 6)
+        XCTAssertEqual(
+            parameter.points[0].color,
+            Color(alpha: 255, red: 255, green: 0, blue: 0)
+        )
+        XCTAssertEqual(
+            parameter.points[1].color,
+            Color(alpha: 255, red: 255, green: 215, blue: 0)
+        )
+        XCTAssertEqual(parameter.points[2].color, .white)
+        XCTAssertEqual(
+            parameter.points[3].color,
+            Color(alpha: 255, red: 65, green: 105, blue: 225)
+        )
+        XCTAssertEqual(
+            parameter.points[4].color,
+            Color(alpha: 255, red: 0, green: 255, blue: 255)
+        )
+        XCTAssertEqual(parameter.points[5].color, .white)
+    }
+
+    func testGradientMeshResizeGridWithCorruptOldDimensions() {
+        let parameter = GradientMeshBrushParameter()
+        // 壊れた保存ファイル由来の異常寸法（decode は JSON の値を
+        // そのまま採用する）と、寸法に見合わない少量の点列。
+        // 素朴な添字計算では乗算・加算がオーバーフローして trap する
+        // ケース（R23-117-01）。
+        parameter.horizontalCount = Int.max
+        parameter.verticalCount = 2
+        parameter.points = [
+            GradientMeshPointValue(
+                color: Color(alpha: 255, red: 255, green: 0, blue: 0)
+            ),
+            GradientMeshPointValue(
+                color: Color(alpha: 255, red: 0, green: 0, blue: 255)
+            ),
+        ]
+        parameter.resizeGrid(horizontal: 3, vertical: 3)
+        XCTAssertEqual(parameter.horizontalCount, 3)
+        XCTAssertEqual(parameter.verticalCount, 3)
+        XCTAssertEqual(parameter.points.count, 9)
+        // 行0は旧添字が安全に求まるため既存点が残る。
+        XCTAssertEqual(
+            parameter.points[0].color,
+            Color(alpha: 255, red: 255, green: 0, blue: 0)
+        )
+        XCTAssertEqual(
+            parameter.points[1].color,
+            Color(alpha: 255, red: 0, green: 0, blue: 255)
+        )
+        // 行1以降は旧添字がオーバーフローするため既定点で埋まる。
+        XCTAssertEqual(parameter.points[3].color, .white)
+        XCTAssertEqual(parameter.points[8].color, .white)
+    }
+
     func testCommunityBrushStaysPreserved() {
         let parameter: JSONValue = .object([
             (key: "$type", value: .string("YukkuriMovieMaker.Plugin.Community.Brush.Pattern.Asanoha.AsanohaBrushParameter, YukkuriMovieMaker.Plugin.Community")),

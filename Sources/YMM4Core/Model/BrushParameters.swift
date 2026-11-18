@@ -762,6 +762,47 @@ public final class GradientMeshBrushParameter {
 
     public init() {}
 
+    /// 格子寸法と点列を一体で変更し、常に
+    /// `points.count == horizontalCount * verticalCount` を保つ。
+    /// 既存の点は (行, 列) の位置で保持し、新しい位置は既定点で
+    /// 埋める。寸法は本家 UI の範囲（2〜上限）へ丸める。編集操作は
+    /// 寸法と点列を別々に触らず、必ずこの経路を通す（R21-117-02）。
+    public func resizeGrid(horizontal newHorizontal: Int, vertical newVertical: Int) {
+        let h = min(max(newHorizontal, 2), Self.maximumPointCount)
+        let v = min(max(newVertical, 2), Self.maximumPointCount)
+        let oldPoints = points
+        let oldHorizontal = horizontalCount
+        let oldVertical = verticalCount
+        var rebuilt: [GradientMeshPointValue] = []
+        rebuilt.reserveCapacity(h * v)
+        for row in 0..<v {
+            for column in 0..<h {
+                // 旧寸法は decode で JSON の値をそのまま採用するため
+                // 保証がなく、極端な値（Int.max 等）では素朴な
+                // `row * oldHorizontal + column` がオーバーフローで
+                // trap する。範囲内であることを先に確認し、添字計算は
+                // オーバーフロー報告付き演算で行う。不正な旧寸法の位置は
+                // 既存点を引かず既定点で埋め、新寸法へ復元する
+                // （R23-117-01）。
+                var reused: GradientMeshPointValue?
+                if row < oldVertical, column < oldHorizontal {
+                    let (product, multiplyOverflow) =
+                        row.multipliedReportingOverflow(by: oldHorizontal)
+                    let (oldIndex, addOverflow) =
+                        product.addingReportingOverflow(column)
+                    if !multiplyOverflow, !addOverflow,
+                       oldPoints.indices.contains(oldIndex) {
+                        reused = oldPoints[oldIndex]
+                    }
+                }
+                rebuilt.append(reused ?? GradientMeshPointValue())
+            }
+        }
+        horizontalCount = h
+        verticalCount = v
+        points = rebuilt
+    }
+
     func forEachAnimation(_ body: (inout Animation) -> Void) {
         body(&width)
         body(&height)

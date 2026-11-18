@@ -43,18 +43,36 @@ struct PropertyInspectorView: View {
 }
 
 /// 記述子1件分の編集行。種類ごとに部品を切り替える。
+/// 複合オブジェクト／コレクションは見出し＋子行の縦並びにし、
+/// 子行はこの行自身を再帰利用する。
 private struct PropertyRowView: View {
     let descriptor: PropertyDescriptor
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
 
+    @ViewBuilder
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Text(descriptor.displayName)
-                .font(.callout)
-                .frame(width: 110, alignment: .leading)
-                .lineLimit(1)
-            editor
+        switch descriptor.access {
+        case .object:
+            ObjectRowView(
+                descriptor: descriptor,
+                animationContext: animationContext,
+                onEdited: onEdited
+            )
+        case .collection:
+            CollectionRowView(
+                descriptor: descriptor,
+                animationContext: animationContext,
+                onEdited: onEdited
+            )
+        default:
+            HStack(alignment: .center, spacing: 8) {
+                Text(descriptor.displayName)
+                    .font(.callout)
+                    .frame(width: 110, alignment: .leading)
+                    .lineLimit(1)
+                editor
+            }
         }
     }
 
@@ -89,7 +107,91 @@ private struct PropertyRowView: View {
             AnimationRowView(
                 descriptor: descriptor, animationContext: animationContext, onEdited: onEdited
             )
+        case .object, .collection:
+            // body 側で専用レイアウトへ振り分けるため、ここには来ない。
+            EmptyView()
         }
+    }
+}
+
+/// 複合オブジェクトの行。表示名を見出しにし、子行をインデントして並べる。
+private struct ObjectRowView: View {
+    let descriptor: PropertyDescriptor
+    let animationContext: AnimationEvaluationContext
+    var onEdited: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(descriptor.displayName)
+                .font(.callout)
+                .bold()
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(descriptor.children ?? [], id: \.id) { child in
+                    PropertyRowView(
+                        descriptor: child,
+                        animationContext: animationContext,
+                        onEdited: onEdited
+                    )
+                }
+            }
+            .padding(.leading, 14)
+        }
+    }
+}
+
+/// 複合コレクションの行。要素ごとに子行をまとめ、要素の追加・削除の
+/// ボタンを付ける。追加・削除は構造の変更なので、この行の再描画を
+/// ローカルの世代カウンタでも促す（親の再生成と二重に効く）。
+/// 状態が実際に変わらなかった操作（要素数の上限・下限で丸め込まれた
+/// 場合）では再描画も編集通知もしない（R22-117-01）。
+private struct CollectionRowView: View {
+    let descriptor: PropertyDescriptor
+    let animationContext: AnimationEvaluationContext
+    var onEdited: () -> Void
+    @State private var revision = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(descriptor.displayName)
+                    .font(.callout)
+                    .bold()
+                Spacer()
+                Button("追加") {
+                    if descriptor.insertCollectionElement() {
+                        revision += 1
+                        onEdited()
+                    }
+                }
+            }
+            ForEach(0..<(descriptor.collectionCount ?? 0), id: \.self) { index in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .center, spacing: 8) {
+                        Text("\(index + 1)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("削除") {
+                            if descriptor.removeCollectionElement(at: index) {
+                                revision += 1
+                                onEdited()
+                            }
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(descriptor.collectionElements(at: index) ?? [], id: \.id) { child in
+                            PropertyRowView(
+                                descriptor: child,
+                                animationContext: animationContext,
+                                onEdited: onEdited
+                            )
+                        }
+                    }
+                    .padding(.leading, 14)
+                }
+            }
+        }
+        .id(revision)
     }
 }
 

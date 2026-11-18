@@ -317,6 +317,7 @@ public extension EffectPropertyMetadata {
                 id: "IsFixedSize", displayName: "サイズを固定", group: "モーショントラッキング",
                 get: { d.isFixedSize }, set: { d.isFixedSize = $0 }
             ),
+            motionTrackingPathDescriptor(d),
             .number(
                 id: "ControlPointVisibleSeconds", displayName: "制御点表示", group: "制御点", range: 0...60,
                 get: { d.controlPointVisibleSeconds }, set: { d.controlPointVisibleSeconds = $0 }

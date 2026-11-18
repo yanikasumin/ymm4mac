@@ -376,7 +376,8 @@ public extension EffectPropertyMetadata {
                 id: "MosaicType", displayName: "種類", group: "モザイク",
                 options: mosaicTypeOptions,
                 get: { d.mosaicType }, set: { d.mosaicType = $0 }
-            )
+            ),
+            mosaicParameterDescriptor(d)
         ]
     }
 
@@ -388,6 +389,10 @@ public extension EffectPropertyMetadata {
                 options: displacementMapTransformModeOptions,
                 get: { d.mode }, set: { d.mode = $0 }
             ),
+            preservedDescriptor(
+                id: "Transform", displayName: "Transform", group: "ノイズ色ずれ",
+                get: { d.transform }, set: { d.transform = $0 }
+            ),
             .animation(
                 id: "Blur", displayName: "ぼかし度", group: "ノイズ色ずれ",
                 get: { d.blur }, set: { d.blur = $0 }
@@ -396,6 +401,10 @@ public extension EffectPropertyMetadata {
                 id: "NoiseType", displayName: "種類", group: "ノイズ",
                 options: noiseTypeOptions,
                 get: { d.noiseType }, set: { d.noiseType = $0 }
+            ),
+            preservedDescriptor(
+                id: "NoiseParameter", displayName: "NoiseParameter", group: "ノイズ",
+                get: { d.noiseParameter }, set: { d.noiseParameter = $0 }
             )
         ]
     }

@@ -127,6 +127,10 @@ public extension EffectPropertyMetadata {
                 id: "IsBackgroundOnly", displayName: "背景のみ", group: "背景塗りつぶし",
                 get: { d.isBackgroundOnly }, set: { d.isBackgroundOnly = $0 }
             ),
+            brushDescriptor(
+                id: "Brush", displayName: "Brush", group: "背景塗りつぶし",
+                get: { d.brush }
+            ),
             .animation(
                 id: "Top", displayName: "上", group: "余白",
                 get: { d.top }, set: { d.top = $0 }
@@ -161,6 +165,10 @@ public extension EffectPropertyMetadata {
             .boolean(
                 id: "IsBrushOnly", displayName: "模様のみ", group: "前景塗りつぶし",
                 get: { d.isBrushOnly }, set: { d.isBrushOnly = $0 }
+            ),
+            brushDescriptor(
+                id: "Brush", displayName: "Brush", group: "前景塗りつぶし",
+                get: { d.brush }
             )
         ]
     }
@@ -201,6 +209,10 @@ public extension EffectPropertyMetadata {
             .animation(
                 id: "Right", displayName: "右", group: "余白",
                 get: { d.right }, set: { d.right = $0 }
+            ),
+            brushDescriptor(
+                id: "Brush", displayName: "Brush", group: "枠線",
+                get: { d.brush }
             )
         ]
     }
@@ -212,6 +224,10 @@ public extension EffectPropertyMetadata {
                 id: "GradientType", displayName: "種類", group: "グラデーション",
                 options: gradientTypeOptions,
                 get: { d.gradientType }, set: { d.gradientType = $0 }
+            ),
+            gradientStopsCollection(
+                group: "グラデーション",
+                get: { d.stops }, set: { d.stops = $0 }
             ),
             .animation(
                 id: "X", displayName: "X", group: "グラデーション",
@@ -269,6 +285,10 @@ public extension EffectPropertyMetadata {
                 id: "BlendMode", displayName: "合成モード", group: "影（内側）",
                 options: blendOptions,
                 get: { d.blendMode }, set: { d.blendMode = $0 }
+            ),
+            preservedDescriptor(
+                id: "Brush", displayName: "Brush", group: "影（内側）",
+                get: { d.brush }, set: { d.brush = $0 }
             )
         ]
     }
@@ -295,6 +315,10 @@ public extension EffectPropertyMetadata {
             .text(
                 id: "ShapeType2", displayName: "種類", group: "図形切り抜き",
                 get: { d.shapeType2 }, set: { d.shapeType2 = $0 }
+            ),
+            preservedDescriptor(
+                id: "ShapeParameter", displayName: "ShapeParameter", group: "図形切り抜き",
+                get: { d.shapeParameter }, set: { d.shapeParameter = $0 }
             ),
             .animation(
                 id: "Blur", displayName: "ぼかし", group: "図形切り抜き",
@@ -346,6 +370,10 @@ public extension EffectPropertyMetadata {
                 id: "Rotation", displayName: "回転角", group: "縁取り / 描画",
                 get: { d.rotation }, set: { d.rotation = $0 }
             ),
+            preservedDescriptor(
+                id: "StrokeBrush", displayName: "StrokeBrush", group: "縁取り",
+                get: { d.strokeBrush }, set: { d.strokeBrush = $0 }
+            ),
             .boolean(
                 id: "IsOutlineOnly", displayName: "縁のみ", group: "縁取り",
                 get: { d.isOutlineOnly }, set: { d.isOutlineOnly = $0 }
@@ -387,6 +415,10 @@ public extension EffectPropertyMetadata {
             .boolean(
                 id: "IsRotateAtCenter", displayName: "中心で回転", group: "影",
                 get: { d.isRotateAtCenter }, set: { d.isRotateAtCenter = $0 }
+            ),
+            brushDescriptor(
+                id: "Brush", displayName: "Brush", group: "影",
+                get: { d.brush }
             )
         ]
     }

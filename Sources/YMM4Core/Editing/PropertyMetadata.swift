@@ -41,6 +41,12 @@ public enum PropertyKind: Equatable, Sendable {
     /// アニメーション付き数値。範囲は `Animation` 自身の定義値
     /// （minValue / maxValue）が持つため、ここでは持たない。
     case animation
+    /// 複合オブジェクト（ブラシ等の入れ子）。子記述子の列は
+    /// `PropertyAccess.object` 側が持つ（種別自体は関連値を持たない）。
+    case object
+    /// 複合コレクション（色停止点列・制御点列等）。要素の列挙と
+    /// 追加・削除は `PropertyAccess.collection` 側が持つ。
+    case collection
 }
 
 /// プロパティへの型付き読み書き。記述子と対象オブジェクトを結び付ける
@@ -62,6 +68,21 @@ public enum PropertyAccess {
         setFirstValue: (Double) -> Void,
         setType: (AnimationType) -> Void,
         setValueAtSegment: (Int, Double) -> Void
+    )
+    /// 複合オブジェクト。子記述子は呼び出しのたびに現在の対象から
+    /// 生成する（対象の内部型が切り替わりうるため、生成済みの列を
+    /// 保持しない）。
+    case object(children: () -> [PropertyDescriptor])
+    /// 複合コレクション。`elements` は要素1件分の子記述子を返す。
+    /// `insert` は既定値の要素を末尾へ追加し、`remove` は指定位置の
+    /// 要素を取り除く。どちらも状態が実際に変わった場合にだけ true を
+    /// 返す（要素数の上限・下限で丸め込まれて無変更になった場合や、
+    /// 範囲外の位置を指定された場合は false。R22-117-01）。
+    case collection(
+        count: () -> Int,
+        elements: (Int) -> [PropertyDescriptor],
+        insert: () -> Bool,
+        remove: (Int) -> Bool
     )
 }
 
@@ -198,6 +219,41 @@ public struct PropertyDescriptor {
         setType(type)
         return true
     }
+
+    /// 複合オブジェクトの子記述子（object でなければ nil）。
+    /// 対象が未設定（nil）の複合では空の列が返る。
+    public var children: [PropertyDescriptor]? {
+        guard case .object(let children) = access else { return nil }
+        return children()
+    }
+
+    /// 複合コレクションの要素数（collection でなければ nil）。
+    public var collectionCount: Int? {
+        guard case .collection(let count, _, _, _) = access else { return nil }
+        return count()
+    }
+
+    /// 複合コレクションの要素1件分の子記述子（collection でなければ nil）。
+    public func collectionElements(at index: Int) -> [PropertyDescriptor]? {
+        guard case .collection(_, let elements, _, _) = access else { return nil }
+        return elements(index)
+    }
+
+    /// 複合コレクションへ既定値の要素を末尾へ追加する。
+    /// 状態が実際に変わった場合にだけ true を返す。
+    @discardableResult
+    public func insertCollectionElement() -> Bool {
+        guard case .collection(_, _, let insert, _) = access else { return false }
+        return insert()
+    }
+
+    /// 複合コレクションの要素を取り除く。
+    /// 状態が実際に変わった場合にだけ true を返す。
+    @discardableResult
+    public func removeCollectionElement(at index: Int) -> Bool {
+        guard case .collection(_, _, _, let remove) = access else { return false }
+        return remove(index)
+    }
 }
 
 // MARK: - 記述子の構築（共通ファクトリ）
@@ -276,6 +332,38 @@ extension PropertyDescriptor {
             id: id, displayName: displayName, group: group,
             kind: .color,
             access: .color(get: get, set: set)
+        )
+    }
+
+    /// 複合オブジェクト。子記述子は対象の現在の内部状態から
+    /// 都度生成される。
+    public static func object(
+        id: String, displayName: String, group: String,
+        children: @escaping () -> [PropertyDescriptor]
+    ) -> PropertyDescriptor {
+        PropertyDescriptor(
+            id: id, displayName: displayName, group: group,
+            kind: .object,
+            access: .object(children: children)
+        )
+    }
+
+    /// 複合コレクション。要素の子記述子・追加・削除は対象の
+    /// 現在の要素列に対して働く。追加・削除は状態が実際に変わった
+    /// 場合にだけ true を返す（`PropertyAccess.collection` の契約）。
+    public static func collection(
+        id: String, displayName: String, group: String,
+        count: @escaping () -> Int,
+        elements: @escaping (Int) -> [PropertyDescriptor],
+        insert: @escaping () -> Bool,
+        remove: @escaping (Int) -> Bool
+    ) -> PropertyDescriptor {
+        PropertyDescriptor(
+            id: id, displayName: displayName, group: group,
+            kind: .collection,
+            access: .collection(
+                count: count, elements: elements, insert: insert, remove: remove
+            )
         )
     }
 
