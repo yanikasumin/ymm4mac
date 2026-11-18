@@ -21,15 +21,16 @@ private final class FakeSession: PreviewRenderSession {
         return frames
     }
 
-    /// 設定されている間、描画のたびにこの種別の診断を記録する。
-    var recordKindOnRender: String?
+    /// このフレーム集合の描画では診断を記録する。描画中に変更
+    /// しない前提の不変設定（テスト側との競合を作らない。R16-01）。
+    var recordKindOnFrames: Set<Int> = []
 
     func render(frame: Int, timeline: Timeline, usage: TimelineSourceUsage) -> CGImage? {
         lock.lock()
         frames.append(frame)
         lock.unlock()
-        if let recordKindOnRender {
-            diagnostics.record(kind: recordKindOnRender, message: "テスト用の失敗")
+        if recordKindOnFrames.contains(frame) {
+            diagnostics.record(kind: "alphaMaskWarp", message: "テスト用の失敗")
         }
         if blockRenders {
             _ = gate.wait(timeout: .now() + 10)
@@ -304,10 +305,9 @@ final class PreviewRenderWorkerTests: XCTestCase {
             identity: idA, timelines: [], timeline: Timeline(),
             baseDirectory: nil
         )
-        sessionA.recordKindOnRender = "alphaMaskWarp"
+        sessionA.recordKindOnFrames = [1]
         worker.request(frame: 1, usage: .paused, identity: idA)
         waitUntil("A rendered frame 1") { sessionA.renderedFrames == [1] }
-        sessionA.recordKindOnRender = nil
         worker.request(frame: 2, usage: .paused, identity: idA)
         waitUntil("A rendered frame 2") { sessionA.renderedFrames == [1, 2] }
         worker.setModel(
