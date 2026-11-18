@@ -1284,9 +1284,15 @@ public final class MetalGraphicsDevices {
         // Rhombus: 1 + Distance/√2）。候補集合は逆アセンブルから
         // 読み取った格子オフセットそのまま:
         // Rectangle = セル中心の 3×3 近傍、Rhombus = √2・Distance
-        // 四方のセル四隅＋中心、Triangle = パリティ調整した基点 B へ
-        // {(±0.5, 0.866), (±1, 0), (0.5, 0.433), (0, −0.433),
-        // (1, −0.433)}・Distance を加えた7点。
+        // 四方のセル四隅＋中心。
+        // Triangle の候補集合は、修正済み DXBC インタプリタの実行で
+        // 実測して確定した（Issue #104。旧抽出は基点の取り方が誤りで
+        // 格子点でない候補が混ざっていた）: 行は高さ 0.866・Distance
+        // ごとに並び、中心は行の中央（(j+0.5)・0.866・Distance）。
+        // 奇数行は中心が Distance の整数倍、偶数行は半セルずれる。
+        // 候補は自列の3点＋上下行の2点ずつの計7点で、自列の中心
+        // インデックスは奇数行が round（floor(x+0.5)）、偶数行が
+        // floor で決まる。
         // モード 1 以外の未知値は本家どおり Rhombus の分岐へ落ちる。
         struct HalfToneUniforms {
             float4 inputPlane;
@@ -1331,19 +1337,30 @@ public final class MetalGraphicsDevices {
                 }
             } else if (uniforms.mode == 0) {
                 k = 1.0 + d * 0.57735027;
-                float fx = point.x / d;
-                float fy = point.y / (d * 0.8660254);
-                float iy = floor(fy);
-                bool odd = fract(abs(iy) * 0.5) != 0.0;
-                float cx = odd ? ymm4HalfToneAdjustedIndex(fx) : floor(fx);
-                float2 b = float2(cx * d, iy * d * 0.8660254);
-                centers[0] = b + d * float2(0.5, 0.8660254);
-                centers[1] = b + d * float2(-0.5, 0.8660254);
-                centers[2] = b + d * float2(1.0, 0.0);
-                centers[3] = b + d * float2(0.5, 0.4330127);
-                centers[4] = b + d * float2(-1.0, 0.0);
-                centers[5] = b + d * float2(0.0, -0.4330127);
-                centers[6] = b + d * float2(1.0, -0.4330127);
+                float rowH = d * 0.8660254;
+                float j = floor(point.y / rowH);
+                float yMid = (j + 0.5) * rowH;
+                // 行のパリティ（負の行でも成り立つ形で判定する）。
+                bool oddRow = (j - 2.0 * floor(j * 0.5)) != 0.0;
+                if (oddRow) {
+                    float m = floor(point.x / d + 0.5);
+                    centers[0] = float2((m - 1.0) * d, yMid);
+                    centers[1] = float2(m * d, yMid);
+                    centers[2] = float2((m + 1.0) * d, yMid);
+                    centers[3] = float2((m - 0.5) * d, yMid - rowH);
+                    centers[4] = float2((m + 0.5) * d, yMid - rowH);
+                    centers[5] = float2((m - 0.5) * d, yMid + rowH);
+                    centers[6] = float2((m + 0.5) * d, yMid + rowH);
+                } else {
+                    float m = floor(point.x / d);
+                    centers[0] = float2((m - 0.5) * d, yMid);
+                    centers[1] = float2((m + 0.5) * d, yMid);
+                    centers[2] = float2((m + 1.5) * d, yMid);
+                    centers[3] = float2(m * d, yMid - rowH);
+                    centers[4] = float2((m + 1.0) * d, yMid - rowH);
+                    centers[5] = float2(m * d, yMid + rowH);
+                    centers[6] = float2((m + 1.0) * d, yMid + rowH);
+                }
                 count = 7;
             } else {
                 k = 1.0 + d * 0.70710678;
