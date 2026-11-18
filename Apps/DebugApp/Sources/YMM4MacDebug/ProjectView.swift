@@ -1,4 +1,5 @@
 import AppKit
+import PreviewCore
 import SwiftUI
 import UniformTypeIdentifiers
 import YMM4Core
@@ -30,15 +31,29 @@ struct ProjectView: View {
     /// プレビュー描画ワーカー（R6-02）。合成は専用キューで行い、
     /// 描画モデルは編集モデルから独立したスナップショットを使う。
     @State private var previewWorker = PreviewRenderWorker()
-    /// ワーカーへ渡したモデルの版数（ワーカー側の採番と一致する）。
-    /// 完成画像の新旧判定に使う。ビューの生存期間中は単調増加させる。
+    /// ワーカーへ渡したモデルの版数。採番はここ（呼び出し側）で
+    /// 一元的に行い、ワーカーは受け取った識別子をそのまま返す
+    /// （第11ラウンド R11-04）。ビューの生存期間中は単調増加。
     @State private var previewModelVersion = 0
+    /// セッションの世代。再初期化のたびに増やし、同じファイル＋
+    /// タイムラインの再初期化でも旧セッションの結果と区別する
+    /// （R11-04）。
+    @State private var previewSessionGeneration = 0
     /// 現在のプレビューセッションキー（完成画像の新旧判定に使う）。
     @State private var previewSessionKey: PreviewBox.SessionKey?
     /// 編集が入ってスナップショットの作り直しが必要な状態か。
     @State private var previewModelDirty = true
     /// 直近のスナップショット生成時刻（連続編集時の間引き用）。
     @State private var lastPreviewSnapshotAt = Date.distantPast
+    /// 間引き・失敗時の遅延確定はこの 1 件に集約する（R11-06）。
+    /// セッション切替時に取り消す。
+    @State private var pendingModelRefreshItem: DispatchWorkItem?
+    /// 現在表示中の画像の識別子とフレーム（サムネイル保存が現在
+    /// 位置・現在モデルの画像かを確認するために使う。R11-08）。
+    @State private var displayedPreviewIdentity: PreviewRenderWorker.Identity?
+    @State private var displayedPreviewFrame: Int?
+    /// 対応画像の完成を待っているサムネイル保存の形式。
+    @State private var pendingThumbnailFormat: ThumbnailFormat?
     /// プレビュー上でのドラッグ移動の作業状態（開始時点の評価値と
     /// 開始点を保持し、移動量は常に開始時点からの差分で書き込む）。
     @State private var previewDrag: PreviewDragState?
@@ -738,9 +753,9 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 handleDrag = nil
-                // ドラッグ中の間引きで残った未反映分を確定させる。
-                refreshPreviewModel(force: true)
-                requestPreviewRender()
+                // ドラッグ中の間引きで残った未反映分を確定させる
+                // （再生中なら単一入口の規則で dirty に保留される）。
+                requestPreviewRender(modelChanged: true, forceModelRefresh: true)
             }
     }
 
@@ -813,9 +828,9 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 previewDrag = nil
-                // ドラッグ中の間引きで残った未反映分を確定させる。
-                refreshPreviewModel(force: true)
-                requestPreviewRender()
+                // ドラッグ中の間引きで残った未反映分を確定させる
+                // （再生中なら単一入口の規則で dirty に保留される）。
+                requestPreviewRender(modelChanged: true, forceModelRefresh: true)
             }
     }
 
@@ -1306,10 +1321,21 @@ struct ProjectView: View {
 
     /// 現在のプレビュー画像をサムネイルとして保存する
     /// （本家 SaveThumbnail。保存先はダイアログで聞く）。
+    /// 合成は非同期のため、現在位置・現在モデルに対応する画像が
+    /// 表示済みのときだけ即時に保存し、未完成なら完成を待ってから
+    /// 保存する（シーク直後の旧フレームを誤って保存しない。R11-08）。
     private func saveThumbnail(format: ThumbnailFormat, timeline: Timeline) {
-        // 合成は非同期になったため、サムネイルは現在表示中の画像を
-        // 使う（R6-02）。念のため再合成も要求しておく。
+        if displayedPreviewIdentity == currentPreviewIdentity,
+           displayedPreviewFrame == Int(previewFrame), previewImage != nil {
+            writeThumbnail(format: format, timeline: timeline)
+            return
+        }
+        pendingThumbnailFormat = format
         requestPreviewRender()
+    }
+
+    /// 表示中の画像をファイルへ書き出す（保存先はダイアログで聞く）。
+    private func writeThumbnail(format: ThumbnailFormat, timeline: Timeline) {
         guard let previewImage else {
             workspace.statusMessage = "サムネイルを保存できませんでした（プレビュー画像がありません）"
             return
@@ -2108,7 +2134,13 @@ struct ProjectView: View {
     /// セッション（ファイル＋タイムライン）が変わったときの初期化。
     /// フレームはタイムラインの現在フレームへ合わせる。
     private func resetPreview() {
-        previewWorker.invalidate()
+        previewWorker.invalidate(generation: previewSessionGeneration)
+        previewSessionGeneration += 1
+        pendingModelRefreshItem?.cancel()
+        pendingModelRefreshItem = nil
+        pendingThumbnailFormat = nil
+        displayedPreviewIdentity = nil
+        displayedPreviewFrame = nil
         previewImage = nil
         previewError = nil
         previewSessionKey = nil
@@ -2127,71 +2159,124 @@ struct ProjectView: View {
         requestPreviewRender()
     }
 
-    /// ワーカーからの完成通知を、セッションとモデル版数が現在の
-    /// ものと一致する場合だけ表示へ反映する（古いセッション・編集前の
-    /// モデルの結果は捨てる。それ以外は、後続の要求があっても採用
-    /// する — 第9ラウンドの二段階規則）。
+    /// ワーカーからの完成通知を、識別子（セッションキー・世代・
+    /// モデル版数）が現在のものと一致する場合だけ表示へ反映する
+    /// （古いセッション・編集前のモデルの結果は捨てる。それ以外は、
+    /// 後続の要求があっても採用する — 第9ラウンドの二段階規則）。
     private func wirePreviewWorker() {
-        previewWorker.onImage = { image, key, version, _ in
-            guard key == previewSessionKey, version == previewModelVersion
+        previewWorker.onImage = { image, identity, frame in
+            guard identity.key == previewSessionKey,
+                  identity.generation == previewSessionGeneration,
+                  identity.version == previewModelVersion
             else { return }
             previewImage = image
             previewError = nil
+            displayedPreviewIdentity = identity
+            displayedPreviewFrame = frame
+            // サムネイル保存が対応画像を待っている場合はここで進める
+            // （R11-08）。
+            if let format = pendingThumbnailFormat,
+               frame == Int(previewFrame), let timeline {
+                pendingThumbnailFormat = nil
+                writeThumbnail(format: format, timeline: timeline)
+            }
         }
-        previewWorker.onRenderFailed = { key, version, _ in
-            guard key == previewSessionKey, version == previewModelVersion
+        previewWorker.onRenderFailed = { identity, _ in
+            guard identity.key == previewSessionKey,
+                  identity.generation == previewSessionGeneration,
+                  identity.version == previewModelVersion
             else { return }
             previewImage = nil
+            displayedPreviewIdentity = nil
+            displayedPreviewFrame = nil
             // アイテム0件の空タイムラインで合成結果が得られない場合は
             // エラー表示にせず、プレースホルダ文言に任せる。
             previewError = (timeline?.items.isEmpty ?? true)
                 ? nil
                 : "合成に失敗しました（例外または出力なし）"
         }
-        previewWorker.onModelFailed = { message in
+        previewWorker.onModelFailed = { message, identity in
+            // 識別子が現在のモデルと一致する場合だけ表示する
+            // （旧モデルの失敗が新モデルを上書きしない。R11-03）。
+            guard identity.key == previewSessionKey,
+                  identity.generation == previewSessionGeneration,
+                  identity.version == previewModelVersion
+            else { return }
             // 初期化失敗の理由をそのまま表示する（Issue #50）。
             previewError = message
         }
     }
 
+    /// 現在の識別子（モデルをワーカーへ渡すときに確定する）。
+    private var currentPreviewIdentity: PreviewRenderWorker.Identity? {
+        guard let key = previewSessionKey else { return nil }
+        return PreviewRenderWorker.Identity(
+            key: key, generation: previewSessionGeneration,
+            version: previewModelVersion
+        )
+    }
+
+    /// 遅延確定を 1 件に集約して登録する（R11-06）。既存の予約は
+    /// 取り消して置き換え、セッション切替時は resetPreview で消す。
+    /// 発火時に再生状態を再判定するため、再生中に発火してもモデル
+    /// には触らない。
+    private func scheduleTrailingModelRefresh(delay: TimeInterval = 0.1) {
+        pendingModelRefreshItem?.cancel()
+        let item = DispatchWorkItem {
+            if previewModelDirty { requestPreviewRender(modelChanged: true) }
+        }
+        pendingModelRefreshItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
     /// 編集モデルのスナップショットを作り直してワーカーへ渡す。
     /// JSON 往復のコストは実プロジェクト（158 アイテム）で約 28 ms
     /// （実測）あるため、連続編集時は 100 ms 未満の間隔では間引き、
-    /// 間引いた場合は少し遅れて確実に反映する。
+    /// 間引いた場合は少し遅れて確実に反映する。生成に失敗した場合は
+    /// 理由を利用者へ示し、dirty のまま遅延再試行を予約する
+    /// （失敗を無言で消さない。R11-06）。
     private func refreshPreviewModel(force: Bool = false) {
-        guard let timeline, let key = previewSessionKey else { return }
+        guard let timeline, previewSessionKey != nil else { return }
         if !force, Date().timeIntervalSince(lastPreviewSnapshotAt) < 0.1 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                if previewModelDirty { requestPreviewRender() }
-            }
+            scheduleTrailingModelRefresh()
             return
         }
-        guard let snapshot = try? project.makeExportSnapshot(of: timeline)
-        else { return }
+        let snapshot: (timelines: [Timeline], timeline: Timeline)
+        do {
+            snapshot = try project.makeExportSnapshot(of: timeline)
+        } catch {
+            workspace.statusMessage =
+                "プレビューモデルの生成に失敗しました: \(error)"
+            scheduleTrailingModelRefresh(delay: 0.3)
+            return
+        }
         lastPreviewSnapshotAt = Date()
         previewModelDirty = false
         previewModelVersion += 1
+        guard let identity = currentPreviewIdentity else { return }
         previewWorker.setModel(
-            key: key, timelines: snapshot.timelines,
+            identity: identity, timelines: snapshot.timelines,
             timeline: snapshot.timeline, baseDirectory: baseDirectory
         )
     }
 
     /// プレビュー再合成の単一の入口（R6-02）。位置の変更と描画要求を
-    /// 分離し、全ての経路をここへ集約する。
+    /// 分離し、全ての経路をここへ集約する。モデルへ触るかどうかは
+    /// 要求の属性ではなく実際の再生状態で決める（R11-02）。
     /// - 再生中: モデルには触らず、フレーム要求だけを出す（編集は
-    ///   previewModelDirty に残り、停止後の要求で反映される）。
+    ///   previewModelDirty に残り、停止への遷移時に反映される）。
     /// - 停止中: 編集が入っていればスナップショットを作り直してから
     ///   要求する。
     private func requestPreviewRender(
-        usage: TimelineSourceUsage = .paused, modelChanged: Bool = false
+        usage: TimelineSourceUsage = .paused, modelChanged: Bool = false,
+        forceModelRefresh: Bool = false
     ) {
         if modelChanged { previewModelDirty = true }
-        if usage == .playing {
+        if isPlayingForm {
             previewWorker.request(frame: Int(previewFrame), usage: .playing)
             return
         }
-        if previewModelDirty { refreshPreviewModel() }
+        if previewModelDirty { refreshPreviewModel(force: forceModelRefresh) }
         previewWorker.request(frame: Int(previewFrame), usage: usage)
     }
 
@@ -2230,7 +2315,17 @@ struct ProjectView: View {
         engine.onPlayingStateChanged = { isPlaying in
             isPlayingForm = isPlaying
             if isPlaying { playbackError = nil }
-            if !isPlaying { syncMeterValues() }
+            if !isPlaying {
+                syncMeterValues()
+                // 再生中に保留した編集をここで確定する。末尾到達の
+                // 自然終了ではこの後の位置通知が来ないため、遷移の
+                // 時点で明示的に反映と最終フレーム要求を行う
+                // （R11-05）。
+                if previewModelDirty {
+                    refreshPreviewModel(force: true)
+                    requestPreviewRender()
+                }
+            }
         }
         engine.onStartFailed = { error in
             // 開始失敗の理由をそのまま診断タブへ表示する（R6-03）。

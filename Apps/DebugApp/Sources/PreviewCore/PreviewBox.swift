@@ -6,24 +6,29 @@ import YMM4GPU
 /// 合成プレビューの保持者。デバイス・文脈・合成器をセッション（ファイル＋
 /// タイムライン）ごとに作り、フレームが変わるたびに再合成する。
 /// 合成結果は CGImage として読み戻し、SwiftUI の Image で表示する。
-final class PreviewBox {
+public final class PreviewBox: PreviewRenderSession {
     /// 再合成キー（ファイルとタイムラインが変わったら作り直す）。
-    struct SessionKey: Equatable {
-        var url: URL
-        var timelineIndex: Int
+    public struct SessionKey: Equatable {
+        public var url: URL
+        public var timelineIndex: Int
+
+        public init(url: URL, timelineIndex: Int) {
+            self.url = url
+            self.timelineIndex = timelineIndex
+        }
     }
 
-    let key: SessionKey
+    public let key: SessionKey
     /// Metal 初期化に失敗した場合の、利用者向けの理由文。成功時は nil。
     /// プレビューの入口（ProjectView）はこれを表示して、失敗が無言に
     /// ならないようにする（Issue #50）。
-    let initializationFailure: String?
+    public let initializationFailure: String?
     private let devices: MetalGraphicsDevices?
     private let context: MetalGraphicsContext?
     private let composer: TimelineComposer?
     private var isDisposed = false
 
-    init(key: SessionKey, timeline: Timeline, timelines: [Timeline]? = nil, baseDirectory: URL?) {
+    public init(key: SessionKey, timeline: Timeline, timelines: [Timeline]? = nil, baseDirectory: URL?) {
         self.key = key
         let devices: MetalGraphicsDevices
         do {
@@ -71,7 +76,7 @@ final class PreviewBox {
     }
 
     /// 指定フレームで合成し、読み戻した画像を返す。失敗時は nil。
-    func render(
+    public func render(
         frame: Int, timeline: Timeline, usage: TimelineSourceUsage = .paused
     ) -> CGImage? {
         guard !isDisposed, let devices, let context, let composer else { return nil }
@@ -87,7 +92,7 @@ final class PreviewBox {
         return devices.makeCGImage(from: output)
     }
 
-    func dispose() {
+    public func dispose() {
         guard !isDisposed else { return }
         isDisposed = true
         composer?.dispose()
