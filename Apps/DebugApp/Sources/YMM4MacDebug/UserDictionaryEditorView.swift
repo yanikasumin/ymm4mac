@@ -15,6 +15,8 @@ struct UserDictionaryEditorView: View {
     @EnvironmentObject private var workspace: WorkspaceState
     @State private var dictionary: UserDictionary = UserDictionaryStore.shared.current
     @State private var selectedList: ListKind = .asterisk
+    /// 直近の保存の失敗理由（R18-03: 失敗を画面へ出す）。
+    @State private var saveError: String?
 
     private enum ListKind: String, CaseIterable, Identifiable {
         case asterisk = "アスタリスク"
@@ -60,10 +62,39 @@ struct UserDictionaryEditorView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+
+            // 保存失敗の表示と再試行（R18-03）。
+            if let saveError {
+                HStack(spacing: 8) {
+                    Text("辞書を保存できませんでした: \(saveError)")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                    Button("再試行") {
+                        UserDictionaryStore.shared.save()
+                    }
+                    .font(.caption)
+                }
+            }
         }
         .padding(12)
         .frame(minWidth: 640, minHeight: 420)
-        .onAppear { dictionary = UserDictionaryStore.shared.current }
+        .onAppear {
+            dictionary = UserDictionaryStore.shared.current
+            saveError = UserDictionaryStore.shared.lastSaveError
+            // 保存結果（集約保存の完了も含む）を画面へ反映する。
+            UserDictionaryStore.shared.onSaveResult = { succeeded in
+                DispatchQueue.main.async {
+                    saveError = succeeded
+                        ? nil : UserDictionaryStore.shared.lastSaveError
+                }
+            }
+        }
+        .onDisappear {
+            // 保留中の永続化を確定し、通知先を手放す。
+            UserDictionaryStore.shared.onSaveResult = nil
+            UserDictionaryStore.shared.flushPendingSave()
+        }
     }
 
     /// 選択中のリストの現在値。

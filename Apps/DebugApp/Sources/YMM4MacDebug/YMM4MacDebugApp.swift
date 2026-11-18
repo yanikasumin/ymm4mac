@@ -13,6 +13,11 @@ final class DebugAppDelegate: NSObject, NSApplicationDelegate {
         // ユーザー辞書を設定ファイルから読み込む（TEXT60 の設定層）。
         UserDictionaryStore.shared.load()
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // 集約中の辞書保存を終了前に確定する。
+        UserDictionaryStore.shared.flushPendingSave()
+    }
 }
 
 @main
@@ -22,16 +27,13 @@ struct YMM4MacDebugApp: App {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
+        // 修飾子は直前のシーンに結び付くため、主ウィンドウの大きさ・
+        // メニュー定義は WindowGroup 側に付け、辞書ウィンドウには
+        // 専用の大きさだけを付ける（R18-01）。
         WindowGroup {
             ContentView()
                 .environmentObject(workspace)
         }
-        // ユーザー辞書の編集ウィンドウ（TEXT60 の辞書設定層）。
-        Window(UIStrings.Menu.toolUserDictionary, id: "user-dictionary") {
-            UserDictionaryEditorView()
-                .environmentObject(workspace)
-        }
-        .defaultSize(width: 860, height: 520)
         // ウィンドウの大きさはシーン側で標準の流儀で指定する。
         // 既定サイズで大きく開き、内容の最小サイズまでは自由に
         // リサイズできる（.contentMinSize）。内容側の .frame で
@@ -234,6 +236,13 @@ struct YMM4MacDebugApp: App {
                 Button(UIStrings.Menu.about) { workspace.isAboutPresented = true }
             }
         }
+
+        // ユーザー辞書の編集ウィンドウ（TEXT60 の辞書設定層）。
+        Window(UIStrings.Menu.toolUserDictionary, id: "user-dictionary") {
+            UserDictionaryEditorView()
+                .environmentObject(workspace)
+        }
+        .defaultSize(width: 860, height: 520)
     }
 
     private func openURL(_ string: String) {

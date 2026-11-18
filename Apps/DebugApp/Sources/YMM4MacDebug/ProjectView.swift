@@ -1280,8 +1280,15 @@ struct ProjectView: View {
             layerRowHeight = 32
             previewDisplayZoom = 1.0
         case .userDictionaryChanged:
-            // 辞書の版数が上がっているため、テキスト供給のキャッシュ
-            // キーが変わり、再描画で新しい辞書が適用される。
+            // 辞書は描画の入力だがモデルには含まれないため、変更を
+            // モデルの作り直しとして扱う（R18-02）。版数が上がること
+            // で、表示済み画像の識別子が現在のものと一致しなくなり、
+            // 辞書変更前の画像がサムネイルとして保存される経路と、
+            // 古い描画結果が採用される経路の両方が閉じる。保留中の
+            // サムネイル保存も、対象画像が作り直しで変わるため
+            // 取り消す（R12-06 と同じ扱い）。
+            previewModelDirty = true
+            pendingThumbnail = nil
             requestPreviewRender()
         }
     }

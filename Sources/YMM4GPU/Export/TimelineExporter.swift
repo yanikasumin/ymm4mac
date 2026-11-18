@@ -92,6 +92,11 @@ public final class TimelineExporter {
                 onProgress(frame - range.lowerBound + 1, range.count)
             }
         }
+        // 書き出し中はユーザー辞書を固定する（R18-05）。長時間の
+        // 書き出し中に辞書を編集しても、前半と後半で異なる辞書が
+        // 使われないようにする。
+        UserDictionaryStore.shared.pin()
+        defer { UserDictionaryStore.shared.unpin() }
         let session = ExportSession(writer: writer)
         return session.run(
             configuration: ExportSession.Configuration(
@@ -131,6 +136,9 @@ public final class TimelineExporter {
                 onProgress(frame - range.lowerBound + 1, range.count)
             }
         }
+        // 書き出し中はユーザー辞書を固定する（R18-05、run と同じ）。
+        UserDictionaryStore.shared.pin()
+        defer { UserDictionaryStore.shared.unpin() }
         let session = ExportSession(writer: writer)
         return session.run(
             configuration: ExportSession.Configuration(
