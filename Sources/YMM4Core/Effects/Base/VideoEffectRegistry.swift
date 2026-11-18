@@ -204,9 +204,22 @@ public enum VideoEffectRegistry {
     /// 入れ子オブジェクトの再帰マージ。元の並びを土台にし、共有キーは
     /// （両側ともオブジェクトなら再帰、それ以外は型付き側で）置換、
     /// 元だけのキーは保持、型付き側だけのキーは末尾へ追加する。
+    ///
+    /// 型ガード（Issue #57）: 両側とも `$type` を持ち、その値が異なる
+    /// 場合は別の型のオブジェクト同士であるため、再帰せず型付き側を
+    /// そのまま返す。多態パラメータ（ブラシの Parameter 等）を編集で
+    /// 別の型へ切り替えたとき、旧型の未知キーが新型へ混入するのを
+    /// 防ぐ。どちらか一方でも `$type` を持たない場合は型の同一性を
+    /// 判定できないため、従来どおりマージする（`Animation` のような
+    /// `$type` を持たない入れ子の未知キー保持を壊さない）。
     private static func mergeNestedFields(base: JSONValue, overlay: JSONValue) -> JSONValue {
         guard case .object(let baseFields) = base,
               case .object(let overlayFields) = overlay else {
+            return overlay
+        }
+        if let baseType = baseFields.first(where: { $0.key == "$type" })?.value.stringValue,
+           let overlayType = overlayFields.first(where: { $0.key == "$type" })?.value.stringValue,
+           baseType != overlayType {
             return overlay
         }
         var result: [(key: String, value: JSONValue)] = baseFields.map { field in
