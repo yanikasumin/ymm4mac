@@ -45,8 +45,11 @@ private struct TextLine {
 ///   ベースライン・改行位置が DirectWrite と完全には一致しない。
 /// - 縁取りはグリフ輪郭パスへのストロークで再現する（線幅・結合規則は
 ///   本家の式どおり）。NSAttributedString の stroke 属性は使わない。
-/// - 制御タグ（ルビ・タイミングタグ）とユーザー辞書のアスタリスク
-///   置換は未実装。タイプライターはタグ無しの場合の範囲計算のみ再現する。
+/// - 制御タグ（色・フォント・位置・回転・字間・ルビ・タイミング）と
+///   ユーザー辞書のアスタリスク置換は YMM4Core 側で解析・適用し、
+///   ここでは結果のテキストと装飾を受けて描く。ルビは横書きの
+///   非分割経路でのみ描画する。装飾のオフセット・回転は解析結果に
+///   含まれるが描画では未適用（従来からの差分）。
 /// - ラスタライズ先は有限のテクスチャであり、本家の無限平面コマンド
 ///   リストと違い、テクスチャ範囲外は切り取られる（パディングで緩和）。
 final class MetalTextRasterizer {
@@ -66,14 +69,50 @@ final class MetalTextRasterizer {
         style values: MetalTextStyleValues,
         timeMs: Double,
         durationMs: Double,
-        isTrimEndSpace: Bool
+        isTrimEndSpace: Bool,
+        dictionary: UserDictionary = .default
     ) -> [MetalTextPiece] {
-        // 前処理: 本家 ApplyNormalize（NFC 正規化＋行末スペース除去）。
-        // アスタリスク置換はユーザー辞書（設定層）に依存するため未実装で、
-        // 辞書が空の本家と同じく無変換になる。
-        let (text, decorations) = Self.normalize(
-            text: rawText, decorations: rawDecorations, isTrimEndSpace: isTrimEndSpace
+        // 前処理は本家 TextSource と同じ順序: アスタリスク置換
+        // （ユーザー辞書）→ 正規化（NFC＋行末スペース除去）→ 制御タグ
+        // 解析 → 文字タイミング計算 → 表示区間のフィルタ。
+        // 辞書は設定層がまだ無いため既定値が渡る。既定のアスタリスク
+        // 辞書は全件無効であり、本家の初期状態と同じく無変換になる。
+        let (asteriskedText, asteriskedDecorations) = TextPreprocessor.applyAsterisk(
+            text: rawText, decorations: rawDecorations,
+            wordSets: dictionary.asteriskWordSets
         )
+        let (normalizedText, normalizedDecorations) = Self.normalize(
+            text: asteriskedText, decorations: asteriskedDecorations,
+            isTrimEndSpace: isTrimEndSpace
+        )
+        let parsed = ControlTagParser.parse(
+            text: normalizedText, existingDecorations: normalizedDecorations,
+            baseFontSize: max(1, values.fontSize), baseFont: values.fontName,
+            baseBold: values.bold, baseItalic: values.italic,
+            isVertical: Self.isVertical(values.basePoint),
+            baseLetterSpacing: values.letterSpacing
+        )
+        var text = parsed.text
+        var decorations = parsed.decorations
+        var rubyInfos = parsed.rubyInfos
+        var characterTiming = ControlTagParser.calculateCharacterTimings(
+            textLength: text.unicodeScalars.count,
+            timingTags: parsed.timingTags,
+            baseDisplayIntervalMs: values.displayIntervalMs,
+            displayDirection: values.displayDirection,
+            hideDirection: values.hideDirection,
+            randomSeed: text.unicodeScalars.count
+        )
+        if let timing = characterTiming {
+            let filtered = ControlTagParser.filterActiveSections(
+                text: text, fullDecorations: decorations, fullTiming: timing,
+                fullRubyInfos: rubyInfos, currentTimeMs: timeMs
+            )
+            text = filtered.text
+            decorations = filtered.decorations
+            characterTiming = filtered.timing
+            rubyInfos = filtered.rubyInfos
+        }
         guard !text.isEmpty else { return [] }
 
         let runes = Array(text.unicodeScalars)
@@ -165,16 +204,38 @@ final class MetalTextRasterizer {
             return rasterizeDivided(
                 lines: lines, values: values,
                 positionX: positionX, positionY: positionY, topOffset: topOffset,
-                runeCount: runes.count, timeMs: timeMs, durationMs: durationMs
+                runeCount: runes.count, timeMs: timeMs, durationMs: durationMs,
+                characterTiming: characterTiming
             )
         }
 
-        // タイプライター（タグ無し）の表示範囲。本家 GetTextRange。
-        let visible = Self.visibleRange(
-            values: values, timeMs: timeMs, durationMs: durationMs,
-            runeCount: runes.count
-        )
-        guard visible.start < visible.end else { return [] }
+        // 表示判定: タイミングタグがある場合は文字ごとの表示・非表示
+        // 時刻で判定し、無い場合はタイプライターの表示範囲で判定する
+        // （本家 GetDisplayCharacterFlags の分岐）。タイミングありの場合、
+        // HideInterval による区間内の段階的な消去は近似として省略する。
+        var visibleRunes: Set<Int>? = nil
+        let visible: (start: Int, end: Int)
+        if let timing = characterTiming {
+            var visibleSet = Set<Int>()
+            for index in 0..<runes.count {
+                let displayTime = index < timing.displayTimesMs.count
+                    ? timing.displayTimesMs[index] : 0
+                let hideTime = index < timing.hideTimesMs.count
+                    ? timing.hideTimesMs[index] : Double.greatestFiniteMagnitude
+                if displayTime <= timeMs, timeMs < hideTime {
+                    visibleSet.insert(index)
+                }
+            }
+            visibleRunes = visibleSet
+            visible = (start: 0, end: runes.count)
+            guard !visibleSet.isEmpty else { return [] }
+        } else {
+            visible = Self.visibleRange(
+                values: values, timeMs: timeMs, durationMs: durationMs,
+                runeCount: runes.count
+            )
+            guard visible.start < visible.end else { return [] }
+        }
 
         let pad = Int(ceil(values.fontSize / 7)) + 2
         let textureWidth = min(
@@ -191,7 +252,8 @@ final class MetalTextRasterizer {
             boundsLeft: boundsLeft, boundsTop: boundsTop,
             lines: lines, positionX: positionX, positionY: positionY,
             topOffset: topOffset, values: values,
-            visibleRange: visible, onlyRune: nil
+            visibleRange: visible, onlyRune: nil,
+            visibleRunes: visibleRunes, rubyInfos: rubyInfos
         ) else { return [] }
         return [
             MetalTextPiece(
@@ -217,7 +279,8 @@ final class MetalTextRasterizer {
     private func rasterizeDivided(
         lines: [TextLine], values: MetalTextStyleValues,
         positionX: Double, positionY: Double, topOffset: Double,
-        runeCount: Int, timeMs: Double, durationMs: Double
+        runeCount: Int, timeMs: Double, durationMs: Double,
+        characterTiming: CharacterTimingInfo?
     ) -> [MetalTextPiece] {
         // 全グリフをレイアウト順に平坦化する。
         struct PlacedGlyph {
@@ -252,19 +315,46 @@ final class MetalTextRasterizer {
 
         var pieces: [MetalTextPiece] = []
         for (index, entry) in placed.enumerated() {
-            let timeOffsetMs = min(
-                0, -values.displayIntervalMs * Double(displayRanks[index])
-            )
-            let durationOffsetMs = min(
-                0, -values.hideIntervalMs * Double(count - 1 - hideRanks[index])
-            )
-            // FilterDisplayOutputs（制御タグ無しの場合）。
-            if values.displayIntervalMs != 0, !(0 <= timeMs + timeOffsetMs) {
-                continue
-            }
-            if values.hideIntervalMs != 0,
-               !(timeMs + timeOffsetMs < durationMs + durationOffsetMs + timeOffsetMs) {
-                continue
+            let timeOffsetMs: Double
+            let durationOffsetMs: Double
+            if let timing = characterTiming {
+                // タイミングタグあり: オフセットは文字ごとの絶対時刻
+                // から決まる（本家 GetDisplayCharacterFlags の
+                // CharacterTiming 経路）。HideInterval がある場合の
+                // 区間内の段階的な消去は順位ベースの項で近似する。
+                let rune = entry.glyph.runeIndex
+                let displayTime = rune < timing.displayTimesMs.count
+                    ? timing.displayTimesMs[rune] : 0
+                let hideTime = rune < timing.hideTimesMs.count
+                    ? timing.hideTimesMs[rune] : Double.greatestFiniteMagnitude
+                timeOffsetMs = -displayTime
+                var durationOffset = min(hideTime - durationMs, 0)
+                if values.hideIntervalMs != 0 {
+                    durationOffset += min(
+                        0, -values.hideIntervalMs * Double(count - 1 - hideRanks[index])
+                    )
+                }
+                durationOffsetMs = durationOffset
+                // FilterDisplayOutputs（タイミングありの場合）。
+                if timeMs < displayTime { continue }
+                if values.hideIntervalMs == 0, hideTime.isFinite, timeMs >= hideTime {
+                    continue
+                }
+            } else {
+                timeOffsetMs = min(
+                    0, -values.displayIntervalMs * Double(displayRanks[index])
+                )
+                durationOffsetMs = min(
+                    0, -values.hideIntervalMs * Double(count - 1 - hideRanks[index])
+                )
+                // FilterDisplayOutputs（制御タグ無しの場合）。
+                if values.displayIntervalMs != 0, !(0 <= timeMs + timeOffsetMs) {
+                    continue
+                }
+                if values.hideIntervalMs != 0,
+                   !(timeMs + timeOffsetMs < durationMs + durationOffsetMs + timeOffsetMs) {
+                    continue
+                }
             }
             let glyph = entry.glyph
             let fontAscent = CTFontGetAscent(glyph.font)
@@ -651,7 +741,9 @@ final class MetalTextRasterizer {
         positionX: Double, positionY: Double, topOffset: Double,
         values: MetalTextStyleValues,
         visibleRange: (start: Int, end: Int),
-        onlyRune: Int?
+        onlyRune: Int?,
+        visibleRunes: Set<Int>? = nil,
+        rubyInfos: [RubyInfo] = []
     ) -> MTLTexture? {
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
         let drawn = bytes.withUnsafeMutableBytes { buffer -> Bool in
@@ -667,7 +759,9 @@ final class MetalTextRasterizer {
                     let baselinePlaneY = positionY + topOffset + line.baselineFromTop
                     for glyph in line.glyphs {
                         if let onlyRune, glyph.runeIndex != onlyRune { continue }
-                        if glyph.runeIndex < visibleRange.start
+                        if let visibleRunes {
+                            if !visibleRunes.contains(glyph.runeIndex) { continue }
+                        } else if glyph.runeIndex < visibleRange.start
                             || glyph.runeIndex >= visibleRange.end { continue }
                         let glyphPlaneX = positionX + line.xOffset + glyph.x
                         if pass == 0 {
@@ -693,10 +787,19 @@ final class MetalTextRasterizer {
                             baselinePlaneY: baselinePlaneY,
                             boundsLeft: boundsLeft, boundsTop: boundsTop,
                             height: height, visibleRange: visibleRange,
-                            onlyRune: onlyRune
+                            onlyRune: onlyRune, visibleRunes: visibleRunes
                         )
                     }
                 }
+            }
+            if onlyRune == nil {
+                drawRuby(
+                    bitmap: bitmap, lines: lines, rubyInfos: rubyInfos,
+                    positionX: positionX, positionY: positionY,
+                    topOffset: topOffset,
+                    boundsLeft: boundsLeft, boundsTop: boundsTop,
+                    height: height, values: values
+                )
             }
             return true
         }
@@ -715,6 +818,68 @@ final class MetalTextRasterizer {
             )
         }
         return texture
+    }
+
+    /// ルビを親文字の範囲の中央上に描く（横書き・非分割経路のみ）。
+    /// 本家 RubyHelper の配置の近似: ルビのフォントサイズは親文字の
+    /// サイズに FontSizePercent を掛けたもの（下限 1）、字間は
+    /// アイテムの字間を引き継ぐ。縦書きと文字分割では描かない。
+    private func drawRuby(
+        bitmap: CGContext, lines: [TextLine], rubyInfos: [RubyInfo],
+        positionX: Double, positionY: Double, topOffset: Double,
+        boundsLeft: Double, boundsTop: Double, height: Int,
+        values: MetalTextStyleValues
+    ) {
+        guard !rubyInfos.isEmpty else { return }
+        let fontKey = NSAttributedString.Key(kCTFontAttributeName as String)
+        let colorKey = NSAttributedString.Key(kCTForegroundColorAttributeName as String)
+        let kernKey = NSAttributedString.Key(kCTKernAttributeName as String)
+        for line in lines {
+            let baselinePlaneY = positionY + topOffset + line.baselineFromTop
+            for info in rubyInfos {
+                let parents = line.glyphs.filter {
+                    $0.runeIndex >= info.start
+                        && $0.runeIndex < info.start + info.length
+                }
+                guard let first = parents.first, let last = parents.last
+                else { continue }
+                let rubySize = max(1, first.fontSize * info.fontSizePercent / 100)
+                let resolution = MetalFontResolver.resolve(
+                    named: info.font ?? values.fontName, size: rubySize,
+                    bold: info.bold ?? values.bold,
+                    italic: info.italic ?? values.italic
+                )
+                var attributes: [NSAttributedString.Key: Any] = [
+                    fontKey: resolution.font,
+                    colorKey: Self.cgColor(info.foreground ?? first.color, alphaScale: 1),
+                ]
+                if values.letterSpacing != 0 {
+                    attributes[kernKey] = NSNumber(value: values.letterSpacing)
+                }
+                let attributed = NSAttributedString(
+                    string: info.rubyText, attributes: attributes
+                )
+                let ctLine = CTLineCreateWithAttributedString(
+                    attributed as CFAttributedString
+                )
+                var ascent: CGFloat = 0
+                var descent: CGFloat = 0
+                var leading: CGFloat = 0
+                let width = Double(CTLineGetTypographicBounds(
+                    ctLine, &ascent, &descent, &leading
+                ))
+                let spanLeft = positionX + line.xOffset + first.x
+                let spanRight = positionX + line.xOffset + last.x + last.advance
+                let drawX = (spanLeft + spanRight) / 2 - width / 2 + info.offsetX
+                let rubyBaseline = baselinePlaneY - line.ascent
+                    - Double(descent) + info.offsetY
+                bitmap.textPosition = CGPoint(
+                    x: CGFloat(drawX - boundsLeft),
+                    y: CGFloat(Double(height) - (rubyBaseline - boundsTop))
+                )
+                CTLineDraw(ctLine, bitmap)
+            }
+        }
     }
 
     private func upload(bitmap: CGContext) -> MTLTexture? {
@@ -830,14 +995,17 @@ final class MetalTextRasterizer {
         bitmap: CGContext, line: TextLine, positionX: Double,
         baselinePlaneY: Double,
         boundsLeft: Double, boundsTop: Double, height: Int,
-        visibleRange: (start: Int, end: Int), onlyRune: Int?
+        visibleRange: (start: Int, end: Int), onlyRune: Int?,
+        visibleRunes: Set<Int>? = nil
     ) {
         func segments(_ keyPath: KeyPath<TextGlyph, Bool>) -> [(TextGlyph, TextGlyph)] {
             var result: [(TextGlyph, TextGlyph)] = []
             var current: (TextGlyph, TextGlyph)?
             for glyph in line.glyphs {
                 if let onlyRune, glyph.runeIndex != onlyRune { continue }
-                if glyph.runeIndex < visibleRange.start
+                if let visibleRunes {
+                    if !visibleRunes.contains(glyph.runeIndex) { continue }
+                } else if glyph.runeIndex < visibleRange.start
                     || glyph.runeIndex >= visibleRange.end { continue }
                 if glyph[keyPath: keyPath] {
                     if current == nil {
