@@ -797,8 +797,9 @@ struct ProjectView: View {
     /// ドラッグ移動と同じ規則: 定数なら定数化、それ以外は先頭値のみ。
     private func writeAnimationProperty(item: BaseItem, displayName: String, value: Double) {
         for descriptor in ItemPropertyMetadata.descriptors(for: item)
-        where descriptor.kind == .animation && descriptor.displayName == displayName {
-            guard let animation = descriptor.animationValue else { continue }
+        where descriptor.displayName == displayName {
+            guard case .animation = descriptor.kind,
+                  let animation = descriptor.animationValue else { continue }
             if animation.animationType == .none {
                 descriptor.setAnimationConstantValue(value)
             } else {
@@ -940,8 +941,8 @@ struct ProjectView: View {
     /// （定数なら定数化、それ以外は先頭値のみ書き換え）で、既存の
     /// 記述子経路を通して X/Y へ書き込む。
     private func writeItemPosition(item: BaseItem, x: Double, y: Double) {
-        for descriptor in ItemPropertyMetadata.descriptors(for: item)
-        where descriptor.kind == .animation {
+        for descriptor in ItemPropertyMetadata.descriptors(for: item) {
+            guard case .animation = descriptor.kind else { continue }
             let value: Double
             switch descriptor.displayName {
             case "X": value = x

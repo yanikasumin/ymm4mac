@@ -1479,6 +1479,8 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **次の担当へ（アプリ層の破壊箇所）。** `PropertyKind.animation` への関連値追加により、アプリ層で式位置の `kind == .animation` 比較がコンパイル不能になる。Mac でアプリパッケージをビルドして実測した破壊は `Apps/DebugApp/Sources/YMM4MacDebug/ProjectView.swift` の 800 行目と 944 行目の2箇所のみ（エラー: member 'animation(spec:)' expects argument）。次単位（スライダ UI）で同ファイルに触る際にパターン照合へ直すこと。本単位ではアプリ層に触っていない。
 
+**追随修正（同ブランチで実施）。** 上記2箇所（`ProjectView.swift` の `writeAnimationProperty` / `writeItemPosition`）を `guard case .animation = descriptor.kind` のパターン照合へ置き換えた（意味は従来どおり「animation 種別か」の判定で不変）。Mac（同期先 ~/ymm4-work/fe-slider/YMM4Mac）で `Apps/DebugApp` の `swift build` 成功と `AnimationSliderSpecTests` の合格を確認済み。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
