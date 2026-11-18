@@ -197,8 +197,8 @@ final class DrawOrderingTests: XCTestCase {
     func testSegmentBuilderPlaneSplitWithFakeOrdering() {
         let ordering = FakePlaneSplitOrdering()
         ordering.sortResult = [
-            PlaneSplitFragment(resourceIndex: 0, hasCuts: false),
-            PlaneSplitFragment(resourceIndex: 1, hasCuts: true),
+            PlaneSplitFragment(resourceIndex: 0, vertices: [], cuts: []),
+            PlaneSplitFragment(resourceIndex: 1, vertices: [], cuts: [PlaneSplitCut(a: .zero, b: .zero)]),
         ]
         let builder = DrawSegmentBuilder(ordering: ordering)
         let resources = (0..<2).map { makeResource(layer: $0, quad: sampleQuad()) }
@@ -235,8 +235,8 @@ final class DrawOrderingTests: XCTestCase {
     func testSegmentBuilderSplitsRunAtNilQuad() {
         let ordering = FakePlaneSplitOrdering()
         ordering.sortResult = [
-            PlaneSplitFragment(resourceIndex: 0, hasCuts: false),
-            PlaneSplitFragment(resourceIndex: 1, hasCuts: false),
+            PlaneSplitFragment(resourceIndex: 0, vertices: [], cuts: []),
+            PlaneSplitFragment(resourceIndex: 1, vertices: [], cuts: []),
         ]
         let builder = DrawSegmentBuilder(ordering: ordering)
         let resources = [
@@ -262,8 +262,8 @@ final class DrawOrderingTests: XCTestCase {
     func testSegmentBuilderRunBrokenByAlwaysOnTopChange() {
         let ordering = FakePlaneSplitOrdering()
         ordering.sortResult = [
-            PlaneSplitFragment(resourceIndex: 0, hasCuts: false),
-            PlaneSplitFragment(resourceIndex: 1, hasCuts: false),
+            PlaneSplitFragment(resourceIndex: 0, vertices: [], cuts: []),
+            PlaneSplitFragment(resourceIndex: 1, vertices: [], cuts: []),
         ]
         let builder = DrawSegmentBuilder(ordering: ordering)
         let resources = [
