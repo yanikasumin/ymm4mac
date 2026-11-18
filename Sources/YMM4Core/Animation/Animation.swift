@@ -451,6 +451,53 @@ public struct Animation: Equatable, Sendable {
         return true
     }
 
+    /// 全キーフレーム削除への連動。キーフレーム対応の型では値を
+    /// 先頭（開始値）と末尾（終了値）だけに畳む（有効な値の数が
+    /// キーフレーム数 + 2 から 2 へ戻るため）。
+    public mutating func removeAllKeyFrames() {
+        if animationType.isKeyFrameSupported, values.count > 2 {
+            values = [values[0], values[values.count - 1]]
+        }
+        keyFrames = KeyFrames()
+    }
+
+    /// キーフレームの位置だけを動かす。値はインデックスで対応する
+    /// ため動かさない。隣のキーフレームを越えない範囲へ丸める
+    /// （本家のタイムライン上のドラッグと同じ制約）。
+    ///
+    /// - Returns: 実際に動いたら true。
+    @discardableResult
+    public mutating func moveKeyFrame(from source: Int, to target: Int) -> Bool {
+        guard let index = keyFrames.index(of: source) else { return false }
+        let lower = index > 0 ? keyFrames.frames[index - 1] + 1 : 0
+        let upper = index + 1 < keyFrames.frames.count
+            ? keyFrames.frames[index + 1] - 1 : Int.max
+        let clamped = min(max(target, lower), upper)
+        guard clamped != source else { return false }
+        var frames = keyFrames.frames
+        frames[index] = clamped
+        keyFrames = KeyFrames(frames: frames)
+        return true
+    }
+
+    /// 再生ヘッド位置が属する区間のインデックス。区間は
+    /// [0, キーフレーム..., 長さ] の境界で区切られ、`values` の
+    /// インデックスと一致する（区間 i の開始値が values[i]）。
+    public func segmentIndex(atFrame frame: Int) -> Int {
+        keyFrames.frames.count { $0 <= frame }
+    }
+
+    /// 区間の開始値を書き換える（定義範囲へクランプ）。値列が短い
+    /// 場合は既定値で補ってから書く（防御的措置。通常の編集フロー
+    /// ではキーフレーム連動で常に揃っている）。
+    public mutating func setValue(_ value: Double, atSegment index: Int) {
+        guard index >= 0 else { return }
+        while values.count <= index {
+            values.append(AnimationValue(defaultValue))
+        }
+        values[index] = AnimationValue(clamped(value))
+    }
+
     /// 先頭の値を書き換える。本家 `SetFirstValue`。
     /// 値が無い場合は1つ追加する。
     public mutating func setFirstValue(_ value: Double) {
