@@ -55,7 +55,7 @@
 - BRUSH46 — ブラシ基盤: 型付きブラシモデルと GPU 塗り（Issue #46。MAC 番号は PR 時に付番）
 - MOSAICRECT — 矩形モザイクの本家方式化（5点サンプル平均）
 - GRADMESH — グラデーションメッシュブラシの型付き化と GPU 描画
-- NOISE7 — Noise エフェクト残り7種の実処理化（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）
+- NOISE7 — Noise エフェクト残り7種の実処理化（Block / Perlin / Cellular / Voronoi / Simplex / Marble / Flow）。既存3種の差分に関する記述の一部は NOISEFIX で訂正
 - NOISEFIX — Noise 既存3種（Fractal / Random / Curl）の本家シェーダとの差分是正
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 - INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証

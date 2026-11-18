@@ -58,12 +58,13 @@ def main(dump_path):
         mean = float(d.mean())
         over2 = int((d > 2).sum())
         over5 = int((d > 5).sum())
-        status = "OK" if mx <= 3 and over2 == 0 else (
-            "CHECK" if mx <= 8 else "MISMATCH")
+        status = "OK" if mx == 0 else "MISMATCH"
         print(f"{name}: max={mx} mean={mean:.3f} >2:{over2} >5:{over5} {status}")
         worst.append((name, mx))
-    bad = [n for n, m in worst if m > 3]
+    bad = [n for n, m in worst if m > 0]
     print("summary:", "ALL OK" if not bad else f"needs work: {bad}")
+    if bad:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

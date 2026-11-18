@@ -85,6 +85,16 @@ CASES = [
     case("random-warp", "Random", WarpStrength=25.0),
     case("curl-default", "Curl"),
     case("curl-warp", "Curl", WarpStrength=30.0),
+    # Round-8 review (R8-03) additions: the octave-loop boundary
+    # (Octaves=0 still evaluates once), Curl with non-default
+    # FractalMode, and Random combined with the axes that its
+    # shader handles differently (angle / scale / offset).
+    case("fractal-oct0", "Fractal", Octaves=0.0),
+    case("curl-oct0", "Curl", Octaves=0.0),
+    case("curl-turb", "Curl", FractalMode=1),
+    case("curl-ridge", "Curl", FractalMode=2),
+    case("random-axes", "Random", Angle=30.0, ScaleX=150.0, ScaleY=75.0,
+         ScaleZ=125.0, X=10.0, Y=-5.0, Z=3.0),
 ]
 
 
