@@ -472,6 +472,9 @@ public struct Animation: Equatable, Sendable {
         let lower = index > 0 ? keyFrames.frames[index - 1] + 1 : 0
         let upper = index + 1 < keyFrames.frames.count
             ? keyFrames.frames[index + 1] - 1 : Int.max
+        // 不整合な保存データ（重複・逆転した位置）では下限が上限を
+        // 超え得る。その場合は動かさない（K19 レビュー (b) の境界）。
+        guard lower <= upper else { return false }
         let clamped = min(max(target, lower), upper)
         guard clamped != source else { return false }
         var frames = keyFrames.frames
@@ -488,12 +491,14 @@ public struct Animation: Equatable, Sendable {
     }
 
     /// 区間の開始値を書き換える（定義範囲へクランプ）。値列が短い
-    /// 場合は既定値で補ってから書く（防御的措置。通常の編集フロー
-    /// ではキーフレーム連動で常に揃っている）。
+    /// 場合は、評価時の代用規則（末尾の値で代用する。keyFrameValue）
+    /// と同じ値で補ってから書く。既定値で補うと、編集対象でない
+    /// 位置の評価値まで変わってしまう（K19-03）。区間の範囲外の
+    /// インデックスは受け付けない。
     public mutating func setValue(_ value: Double, atSegment index: Int) {
-        guard index >= 0 else { return }
+        guard index >= 0, index <= keyFrames.frames.count else { return }
         while values.count <= index {
-            values.append(AnimationValue(defaultValue))
+            values.append(AnimationValue(keyFrameValue(values.count)))
         }
         values[index] = AnimationValue(clamped(value))
     }

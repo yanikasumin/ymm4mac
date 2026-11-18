@@ -250,7 +250,8 @@ struct AnimationRowView: View {
             // 開始値を表示する（編集対象と一致させる）。
             let segment = animation.segmentIndex(atFrame: animationContext.frame)
             value = animation.values.indices.contains(segment)
-                ? animation.values[segment].value : animation.defaultValue
+                ? animation.values[segment].value
+                : (animation.values.last?.value ?? animation.defaultValue)
         } else {
             value = animation.map { animationContext.value(of: $0) } ?? 0
         }
@@ -272,7 +273,8 @@ struct AnimationRowView: View {
         guard let animation = descriptor.animationValue else { return 0 }
         if let segment = editingSegment {
             return animation.values.indices.contains(segment)
-                ? animation.values[segment].value : animation.defaultValue
+                ? animation.values[segment].value
+                : (animation.values.last?.value ?? animation.defaultValue)
         }
         return animationContext.value(of: animation)
     }
@@ -284,6 +286,14 @@ struct AnimationRowView: View {
                 .frame(width: 110)
                 .focused($isFocused)
                 .onSubmit { commit() }
+                // 編集対象の区間が変わったら入力欄も追従させる
+                // （K19-01）。入力中（フォーカス保持中）は未確定の
+                // 文字列を破棄しない。
+                .onChange(of: editingSegment) { _, _ in
+                    if !isFocused {
+                        text = formatNumber(displayedValue)
+                    }
+                }
                 // 数値行と同じく、フォーカスを外した時点でも確定する。
                 .onChange(of: isFocused) { _, focused in
                     if !focused { commit() }

@@ -22,6 +22,39 @@ final class AnimationEvaluationTests: XCTestCase {
         )
     }
 
+    /// キーフレーム追加は、追加位置の現在値を挿入する（本家
+    /// Animation の KeyFramesChanging ハンドラと同じ規則）。非線形
+    /// イージングでは区間ごとの再評価で曲線が変わるが、これは
+    /// 本家でも同じ挙動である（K19-02 の本家確認に基づく固定）。
+    func testInsertKeyFrameOnQuadInMatchesHonkeSemantics() {
+        var animation = makeAnimation(type: .quadIn, values: [0, 100])
+        XCTAssertEqual(
+            animation.value(atFrame: 15, length: 20, fps: 30), 56.25,
+            accuracy: 1e-9
+        )
+        XCTAssertTrue(animation.insertKeyFrame(at: 10))
+        // 追加位置の値 25 が挿入され、区間 [10, 20] の二次イージングで
+        // フレーム15 は 25 + 75 * 0.25 = 43.75 になる（本家も同じ）。
+        XCTAssertEqual(animation.values.map(\.value), [0, 25, 100])
+        XCTAssertEqual(
+            animation.value(atFrame: 15, length: 20, fps: 30), 43.75,
+            accuracy: 1e-9
+        )
+    }
+
+    /// 値列が短い保存データへの区間値編集では、補填は評価時の代用
+    /// 規則（末尾の値）に従い、編集対象でない位置の意味を変えない
+    /// （K19-03）。範囲外の区間は受け付けない。
+    func testSetValuePadsWithLastEffectiveValue() {
+        var animation = makeAnimation(
+            type: .linear, values: [10], keyFrames: [10, 20]
+        )
+        animation.setValue(50, atSegment: 2)
+        XCTAssertEqual(animation.values.map(\.value), [10, 10, 50])
+        animation.setValue(99, atSegment: 3)
+        XCTAssertEqual(animation.values.map(\.value), [10, 10, 50])
+    }
+
     // MARK: - 経路4: 区間ごとイージング＋線形補間（非 _Int 版）
 
     func testQuadInAppliesEasingPerSegment() {
