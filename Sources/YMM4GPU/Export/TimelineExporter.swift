@@ -54,9 +54,13 @@ public final class TimelineExporter {
         ) else { return nil }
         self.timeline = timeline
         self.videoProvider = videoProvider
+        let pcmProviderFactory = AVFoundationPCMProviderFactory(baseDirectory: baseDirectory)
         let factory = AudioSourceFactory(
-            providerFactory: AVFoundationPCMProviderFactory(baseDirectory: baseDirectory),
-            sceneTimelineResolver: { id in timelines.first { $0.id == id } }
+            providerFactory: pcmProviderFactory,
+            sceneTimelineResolver: { id in timelines.first { $0.id == id } },
+            voiceProviderResolver: VoicePCMProviderResolver(
+                providerFactory: pcmProviderFactory
+            ).makeResolver()
         )
         self.audioProvider = TimelineExportAudioProvider(
             timeline: timeline, factory: factory,

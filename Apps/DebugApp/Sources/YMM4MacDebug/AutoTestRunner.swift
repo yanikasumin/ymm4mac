@@ -384,13 +384,17 @@ final class AutoTestJob: @unchecked Sendable {
     // MARK: - 音声
 
     private func makeAudioFactory() -> AudioSourceFactory {
-        AudioSourceFactory(
-            providerFactory: AVFoundationPCMProviderFactory(
-                baseDirectory: baseDirectory
-            ),
+        let pcmProviderFactory = AVFoundationPCMProviderFactory(
+            baseDirectory: baseDirectory
+        )
+        return AudioSourceFactory(
+            providerFactory: pcmProviderFactory,
             sceneTimelineResolver: { [timelines] id in
                 timelines.first { $0.id == id }
-            }
+            },
+            voiceProviderResolver: VoicePCMProviderResolver(
+                providerFactory: pcmProviderFactory
+            ).makeResolver()
         )
     }
 

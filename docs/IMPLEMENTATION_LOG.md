@@ -42,6 +42,7 @@
 - MAC-0037 — 音声リサンプラの正式形
 - MAC-0038 — デモ版内蔵のデバッグ用全自動テスト
 - MAC-0039 — DebugApp の .app バンドル化
+- MAC-0040 — VoiceItem の音声供給（Issue #51）
 - PR32 — DebugApp フロントエンドの形
 - UI-FORM — フロントエンドの形の完成（レイアウト・ツールバー・メニュー・コンテキストメニュー・ドロップイン等）
 - UI32-01 — レベルメーターの本家構成化と誤記修正
@@ -842,6 +843,21 @@
 - **照合監査での是正（本家コード実測に基づく）**: トランスポート行の高さを本家 PreviewView.xaml の操作行どおり 24 にし、速度コンボ幅 60・倍率コンボ幅 80・音量 TextBoxSlider 幅 150（ミュート→音量の並び）へ合わせた。レイヤー行高の増減は本家 SizeUpLayer／SizeDownLayer どおり ±1・下限14・上限なしに是正。タイムラインズームは下限 0.01・拡大上限 4000（ZoomIn／ZoomOutTimeline コマンド）、スライダは TimelineView.xaml 572 の TextBoxSlider（全幅120・数値欄41・範囲 0.1–150）＋ TimelineLogScaleConverter の対数変換式をそのまま実装した（ホイール拡大の上限だけは安全のためコマンド上限 4000 を流用）。アイテム追加・セリフ追加・ドロップの配置レイヤーは本家 GetCurrentLayer()（表示中ビューポートの最上段 = Viewport.Top / LayerHeight）に統一した。セリフ行は MinHeight 26（列幅 146／120 は従来から一致）。
 - **根拠が取れず未確認のまま残した値**: エフェクト追加ポップアップの初期サイズ（本家はリサイズ可＋設定に保持で固定寸法なし）、シー��タブ行の高さ 24、プレビュースプリッタのクランプ範囲（120–900）、プレビューハンドルの割当て（隅=拡大率・辺中点=回転角は本家 XAML に直接の根拠がない独自の割当て）。
 - **検証**: Mac 実機でルート＋DebugApp の debug／release ビルド成功・警告0、全テスト 432 件・0 失敗（変更前と同数・回帰なし）。見た目の最終確認は未実施（目視未確認）。
+#### MAC-0040 — VoiceItem の音声供給（Issue #51）（IMPLEMENTED、Mac 検証済み。ただし .NET 実キャッシュでの検証は未実施）
+
+**何を実装したか。** VoiceItem は字幕が出ても音声が無音だった（MAC-0026 で残した未解決）。プロジェクトに既に存在する音声 — .ymmp 内の `VoiceCache` と、カスタム音声ファイル — を書き出しと音声ミックスの両経路へ供給する接続を実装した。音声合成エンジンそのものは Mac 版に無いため、エンジン生成は対象外（下記「本家との差分」）。
+
+**本家根拠（実コード照合）。** `VoiceItem.cs`（解析側デコンパイル）: `CreateAudioSource(Scene)` は `AudioSource(FilePath, 0)` を返し通常のファイルデコード経路で開く（L1812–1815）。`FilePath` は保存対象外の計算プロパティで `voiceFile?.FullName ?? customVoiceFilePath`（L298）。`voiceFile` はエンジン生成の一時ファイル、または `VoiceCache` から復元した一時ファイルであり、`VoiceCache` は音声ファイル全体を Brotli 圧縮して保持したもの（`CreateVoiceCacheAsync` L1665–1683 が圧縮、`CreateVoiceFileFromCacheAsync` L1644–1663 が解凍して `TemporaryFile` へ書き出す）。`customVoiceFilePath` は発音記号列がカスタム音声の場合にそのパス自体が入る（`IsCustomVoice` L1590–1598: 絶対ファイル URI として解釈でき、拡張子が音声分類に含まれること。`CreateVoiceFileAsync` L1702–1709 が設定）。解決順はカスタム音声 → キャッシュ → エンジン生成。
+
+**どこを変更したか。** 新規: `Sources/YMM4GPU/Export/VoiceAudioProvider.swift`（`VoicePCMProviderResolver` と `BrotliDecompression`）、`Tests/YMM4GPUTests/VoiceAudioProviderTests.swift`。変更: `Sources/YMM4GPU/Export/TimelineExporter.swift` と `Apps/DebugApp/Sources/YMM4MacDebug/AutoTestRunner.swift`（`AudioSourceFactory` 生成時に resolver を接続）、`Package.swift`（テストターゲット `YMM4GPUTests` を新設。GPU 層には従来テストターゲットが無かった）。YMM4Core は無変更（差し替え点 `voiceProviderResolver` は MAC-0013 で用意済み）。
+
+**どう実装したか。** `VoicePCMProviderResolver.provider(for:)` が本家の分岐順で解決する: (1) `hatsuon` がカスタム音声パスなら `PCMProviderFactory.createProvider(filePath: hatsuon, audioTrackIndex: 0)`。(2) `voiceCache` があれば Brotli 解凍し、一時ファイルへ書いて同じ factory で開く。(3) どちらも無ければ nil（`FileAudioStream` が無音へ倒す＝本家で生成前に相当）。カスタム音声の判定は本家 `IsCustomVoice` の再現で、拡張子リストは本家 `FileExtensions.GetDefaultExtentions` の音声分類（動画コンテナ全種＋音声11種。解析側 MEDIA-IO-FACTS §8.2 が根拠）。Brotli 解凍は Compression フレームワークの `COMPRESSION_BROTLI`（raw Brotli、RFC 7932）。
+
+**なぜその実装なのか／本家との差分。** 本家は復元先の一時ファイルに拡張子を付けない（`TemporaryFile` の既定は "tmp"）が、AVFoundation は拡張子から形式を推定するため中身が WAV の .tmp ファイルを開けない（実測で "Cannot Open" を確認）。Mac 版の適応として、解凍データの先頭バイト（RIFF/WAVE、ID3・MPEG 同期、OggS、fLaC、ftyp、FORM）から形式を推定して拡張子を付ける。一時ファイルの所有権も異なる: 本家はアイテムが保持し破棄時に削除するが、Mac 版の素材デコードは全体をメモリへ展開する方式（MAC-0026）のため、resolver がデコード完了直後に削除して完結させる（現行の唯一の factory 実装が全デコード方式であることに依存する）。エンジン生成（`Speaker.CreateVoiceAsync`）は Mac 版に音声合成エンジンが無いため未実装であり、キャッシュもカスタム音声も無い VoiceItem は無音のままになる。本家では編集時に自動生成される点がユーザーから見える差分であり、エンジン供給は将来の差し替え点（この resolver の前段）として残る。
+
+**検証。** Mac 実機（検証コピー ~/ymm4-work/voice51-YMM4Mac）でフルスイート 441 件（既存 432＋新規 9）・失敗 0、ルート＋DebugApp のビルド成功・警告 0（2026-11-18。他担当の検証 2 件と並行実行のため重量級テストに数十分を要した）。Linux でも 432 件・失敗なし。新規テスト `VoiceAudioProviderTests` 9件は Mac 実機で全合格: Brotli 解凍が Google 公式実装で圧縮したフィクスチャ（48kHz/16bit/ステレオ WAV 9644 バイト）とバイト完全一致すること（SHA-256 で照合）、VoiceCache から PCM が供給されサンプル値が元の PCM16 と一致すること、カスタム音声ファイルからの供給、壊れたキャッシュでの無音化、供給なしでの無音、判定・形式推定の単体、ミキサー経由で VoiceItem の音が現れること。**未実施**: .NET の `BrotliStream` が書いた実キャッシュでの検証（本家生成の VoiceCache を持つ実ファイルが手元に無いため。形式は同じ RFC 7932 であり、Google 公式実装の圧縮データで相互運用は実証済み）。実時間再生への供給は Issue #52（再生基盤そのものが未実装）で、同じ `AudioSourceFactory` 経路を使う。
+
+**次の担当へ。** 音声合成エンジンを導入する際は、この resolver の解決順の末尾（エンジン生成）に相当する供給を前段へ追加する形になる。`providerFromTemporaryFile` は factory が全デコード方式である前提で一時ファイルを即削除しているため、ストリーミング方式の factory を導入する場合は所有権の見直しが必要。
 
 ## 以降の記載テンプレート
 
