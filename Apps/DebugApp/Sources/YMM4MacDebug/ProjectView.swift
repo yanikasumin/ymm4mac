@@ -554,7 +554,14 @@ struct ProjectView: View {
                     .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 0)
 
                 // 映像・操作層・診断通知は表示枠の中で重ね、映像が
-                // 枠からはみ出す分は切り抜く。
+                // 枠からはみ出す分は切り抜く。配置の原点は表示枠の
+                // 左上（PreviewLayout の座標系の前提）であり、枠側の
+                // frame で確定させる。frame の配置を .topLeading に
+                // 明示するのは、拡大で映像が枠より大きくなっても
+                // 内容の寸法が原点を動かさないため（既定の中央揃え
+                // だと、枠より大きい内容が中心合わせでずれて画像・
+                // 輪郭・ハンドル・当たり判定が互いにずれる。
+                // FE-R18-001）。
                 ZStack(alignment: .topLeading) {
                     if let previewImage {
                         Image(previewImage, scale: 1, label: Text("合成プレビュー"))
@@ -604,7 +611,10 @@ struct ProjectView: View {
                         .allowsHitTesting(false)
                     }
                 }
-                .frame(width: fittedWidth, height: fittedHeight)
+                .frame(
+                    width: fittedWidth, height: fittedHeight,
+                    alignment: .topLeading
+                )
                 .clipped()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -677,7 +687,17 @@ struct ProjectView: View {
                 )
             }
         }
-        .frame(width: layout.boxSize.width, height: layout.boxSize.height)
+        // この frame の左上が名前付き座標空間 previewArea の原点で、
+        // 輪郭・ハンドルは PreviewLayout の表示枠座標（左上原点）で
+        // 配置される。選択アイテムの描画寸法が表示枠を超える場合
+        // （全画面アイテムの拡大表示など）でも内容の寸法が原点を
+        // 動かさないよう、配置は .topLeading に明示する（既定の
+        // 中央揃えだと輪郭・ハンドルだけがジェスチャ座標から
+        // ずれる。FE-R18-001）。
+        .frame(
+            width: layout.boxSize.width, height: layout.boxSize.height,
+            alignment: .topLeading
+        )
         .coordinateSpace(name: "previewArea")
     }
 
