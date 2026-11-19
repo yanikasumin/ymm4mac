@@ -320,7 +320,11 @@
         Sources/YMM4MacDebug/
           YMM4MacDebugApp.swift アプリ入口
           ContentView.swift    ルート画面（プロジェクト読み込みと検証サンプル）
-          WorkspaceState.swift 新規プロジェクト等の作業状態
+          WorkspaceState.swift 作業状態の所有者（プロジェクト保持・読み込み・
+                               保存。通常保存は読み込み元への上書き、別名保存は
+                               別操作。未保存フラグと破棄確認もここが担い、編集の
+                               通知は ProjectView の合流点から受ける。レイアウト
+                               量の保存・復元（WorkspaceLayoutState）も同居）
           ProjectView.swift    製品 UI の土台（プレビュー・運送系・タイムライン・
                                ステータスバー・メニュー）
           PreviewBox.swift     プレビュー合成の表示
