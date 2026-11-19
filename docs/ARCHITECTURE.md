@@ -332,6 +332,15 @@
         Info.plist             バンドル情報（MAC-0039）
         package-app.sh         .app バンドルの組み立て（MAC-0039）
         Sample/sample.ymmp     検証用サンプルプロジェクト
+        Tools/generate-mdi-icons.py MDI パス辞書の生成（@mdi/svg v7.4.47
+                               から使用分を抽出。ICON-MDI）
+        Resources/License/     同梱ライセンス文（MDI。package-app.sh が
+                               バンドルへ入れる。ICON-MDI）
+        Sources/AppIcons/      MDI アイコンの描画基盤（ICON-MDI）
+          MDIIconPaths.swift   生成したパス辞書（66種。手編集禁止）
+          SVGPathParser.swift  SVG パス解釈（円弧はベジェ近似へ変換）
+          MDIIcon.swift        MDIIcon View / MDIIconShape / 合成アイコンの
+                               レイヤ構成（MDIIconLayers）
         Sources/YMM4MacDebug/
           YMM4MacDebugApp.swift アプリ入口
           ContentView.swift    ルート画面（プロジェクト読み込みと検証サンプル）

@@ -59,6 +59,7 @@
 - NOISEFIX — Noise 既存3種（Fractal / Random / Curl）の本家シェーダとの差分是正
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 - INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
+- ICON-MDI — アイコン実装（SF Symbols から MDI への置き換え。方針 B: パス辞書の Swift 生成＋専用 View）
 
 ## 実装記録（変更IDごとに自然言語で追記）
 
@@ -2124,3 +2125,54 @@ PR #126 の Round 21 新規指摘「失効したセッショントークンが�
 - **残る論点（本処分の範囲外として明記）**: プロジェクト切り替え後の遅延イベントのうち、トークンを提示する経路は本契約で断たれる。トークンを持たない離散編集の遅延イベントはビューの破棄（プロジェクト切り替えで画面が作り直される既存構造）に依存しており、本処分では扱っていない。
 
 検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+#### ICON-MDI — アイコン実装（SF Symbols から MDI への置き換え。IMPLEMENTED、Mac 検証済み。見た目の最終確認は未実施）
+
+**何を実装したか。** デバッグアプリの画面アイコンを SF Symbols の近似から、本家 YMM4 と同じ Material Design Icons（MDI）の図形へ置き換えた。正本は解析側の調査 `analysis-notes/ICON-MDI-MAPPING.md`（本家のアイコン実態・対応表・入手手順・方針案）で、本単位はその**方針 B（パスデータ辞書を Swift コードとして生成し、専用 View で描画）**を実装した。アセットカタログ方式（方針 A）は SwiftPM + `package-app.sh` での同梱が未検証だったため採らず、フォント方式（方針 C）は調査時点で非推奨。方針 B は本家自身の構造（図形辞書＋キー定数＋Viewbox）と同型で、リソース同梱の問題が原理的に起きない。
+
+**バージョン確定（実測）。** `@mdi/svg` を v7.4.47 に固定して `npm pack @mdi/svg@7.4.47` で正規入手した（取得物自体はリポジトリに入れない）。`meta.json` の名前一覧 7,447 件と、本家 `GeometryKeys.cs` のキー一覧 7,447 件を突き合わせた結果、**差分 0 件で完全一致**し、調査時点の推定（収録数からの推定）は確定した。突き合わせの変換規則は「数字の直後の英字も大文字にする」（3d→3D、2g→2G、4k→4K）で、この規則なしでは 21 件が見かけ上ずれる。再検証は生成スクリプトの `--geometry-keys` オプションで再実行できる。
+
+**生成方式。** `Apps/DebugApp/Tools/generate-mdi-icons.py` が、採用アイコンの SVG から `d` 属性を抽出し、`Apps/DebugApp/Sources/AppIcons/MDIIconPaths.swift`（`[String: String]` 辞書、名前順ソート・書式固定）を生成する。再実行で同一結果になることを確認済み（生成前後の diff なし）。採用は 66 種のみ（全 7,447 件は入れない）。内訳はアイテム種別 14・トランスポート 14・ツールバーとその他画面 34・合成アイコンの素材 4（rotate-left / vector-difference-ab / file-outline / filmstrip は単独でも使う分と重なる）。
+
+**描画基盤。** 新規ライブラリターゲット `AppIcons`（`Apps/DebugApp/Package.swift` に追加、テストターゲット `AppIconsTests` も追加）:
+- `SVGPathParser.swift` — SVG パス解釈器。M / L / H / V / C / S / Q / T / A / Z と相対形、暗黙の繰り返し、S / T の反射を仕様どおり解釈し、絶対座標のセグメント列へ変換する。円弧（A）は端点→中心パラメータ変換（SVG 1.1 F.6.5）を行い、90° 以下に分割して 3 次ベジェ近似する（楕円弧も扱える）。円弧のフラグは仕様どおり 1 文字で読む（区切りなしで座標と続く表記が MDI にあるため）。検証用に曲線上の点列を返す `flattenedPoints` も持つ。
+- `MDIIcon.swift` — `MDIIconShape`（24×24 空間を rect へ写して塗る Shape。色は View として置いたときの foregroundStyle）と `MDIIcon` View（名前・サイズ指定）。無効状態の見た目は本家 `ViewboxStyle`（不透明度 0.3 + グレースケール）に合わせ、環境の `isEnabled` が false のときに `MDIIcon` 側で自動適用する。本家もアイコン側のスタイルで無効表示を担うため、呼び出し側は `.disabled()` を付けるだけでよい。
+
+**本家合成アイコンの再構成。** `MDIIconLayers` に合成名として登録し、MDI 単体の重ね描きで再構成した:
+- `repeat`（本家 RepeatCircleArrow）: rotate-left の中央に play を 50% で重ねる（調査メモの構成どおり）。
+- `waveform-off`（本家 WaveformOff）: waveform + 斜線。**斜線は本家独自図形のためデータを写さず**、独自座標の平行四辺形（帯）で描いた。
+- `vector-clipping`（本家 VectorClipping）: vector-difference-ab + 第 2 要素。**第 2 要素は本家独自図形のため写さず**、クリッピング範囲を示す破線枠（塗り矩形のダッシュ列）を独自に描いた。旧 SF Symbol の square.dashed と同じ意味付け。
+- `file-filmstrip-outline`（本家 FileFilmstripOutline）: file-outline の右下に filmstrip を 55% で重ねる（調査メモの構成どおり）。
+- 着色変種（CheckGreen 等）は現行 UI で使用箇所が無いため再構成していない（必要になった時点で MDIIcon の foregroundStyle で足せる）。
+
+**置き換え範囲。** 集約された差し込み口と、対応表に挙がった直接の `Image(systemName:)` を置き換えた。対応表の行番号は調査時点のものだったため、現行コード（main `88b5e14`）で全箇所を再確認してから置き換えた:
+- `AddItemKind.systemImage` → `mdiIcon` に改名し、本家割り当て（全て確定）の MDI 名を返すようにした（`WorkspaceState.swift`）。
+- `ProjectView` の `transportButton` / `transportToggle` / `toolbarButton` は MDI 名を受けて `MDIIcon` を描く形に変更し、全呼び出し箇所のリテラルを対応表どおり差し替えた（再生・停止・リピート・フィット・シーク系・音量・ミュート、元に戻す・やり直し・切り取り・コピー・貼り付け・分割・グループ化/解除・ロック/解除・波形・グリッド・削除・削除して詰める・左右選択・すべて選択、新規・開く・保存・EXO 出力・動画出力・サムネイル保存・全体表示・テンプレート・最近使ったファイル・メーター・フィードバック）。
+- 直接の `Image(systemName:)`: 制御点表示（vector-bezier）、ズーム表示（magnify）、スプリットボタンの chevron-down ×3、デバッグ抽斗の chevron-down / chevron-right、エフェクト追加（plus）・削除（minus-circle）、セリフ行の chevron-down・キャラクター設定（account-edit）、レイヤーの eye / eye-off・操作メニュー（dots-vertical）、アイテムのロック表示（lock）。
+- 「対応候補」は候補の MDI を採用した（推定のままである点はここに記録する）: 最近使ったファイル = history、フィット = fit-to-page（トランスポート）/ fit-to-screen（全体表示）の振り分け、制御点表示 = vector-bezier、分割 = paper-cut-vertical、グループ化 = group / 解除 = ungroup、ロック解除 = lock-open-outline、削除して詰める = delete-sweep、左右選択 = contain-start / contain-end、新規 = file-plus、開く = folder-open、メーター = altimeter、動画出力 = animation-play、EXO 出力 = file-filmstrip-outline 合成、サムネイル = camera、フィードバック = message-alert-outline、エフェクト削除 = minus-circle（minus ではなく SF 側の形状 minus.circle との一致で選択）、レイヤー操作 = dots-vertical（本家が縦 3 点のため、従来の横 3 点から変わる）、キャラクター設定 = account-edit。
+
+**SF Symbols のまま残した箇所（対応なし。理由つき）:**
+- 動画情報（tuningfork）: 対応する本家アイコンの割り当てが未確認（候補の Tune は使用実績のみで割り当て不明）。無理に対応を作らず `toolbarSFButton`（SF 専用ヘルパーを新設）で残置。
+- クリッピング OFF（square.dashed.inset.filled）: 本家での状態描き分けが未確認のため残置（ON 側は vector-clipping 合成に置き換え済み。ON / OFF でアイコン系が混在する見た目になる点は手動チェックリストで確認する）。
+- メニューの選択チェック（checkmark、4 箇所: `AnimationTypeMenu` と `ProjectView` の制御点表示・波形モード・グリッド線）: 本家がメニューのチェックを MDI で描く実績が確認できないため、`Label(systemImage: "checkmark")` のまま残置。
+
+**ライセンス同梱。** 取得物に含まれる LICENSE（Pictogrammers Free License。アイコンは Apache License 2.0）を原文のまま `Apps/DebugApp/Resources/License/Material Design Icons.txt` に配置した（本家が `Resources/License/` に同名の文を置く形に合わせた）。`package-app.sh` を拡張し、組み立て時に `Contents/Resources/License/` へ入ることを Mac で実走確認した。生成した辞書ファイルの冒頭に「パスデータは SVG の d 属性をそのまま文字列化した改変物である」旨を明記し、リポジトリ README に「Material Design Icons by Pictogrammers, Apache License 2.0」の帰属表示と改変の旨を置いた。
+
+**本家との差分。** ユーザーから見える差分として意図したもの: (1) アイコン図形が本家と同じ MDI になった（従来は SF Symbols の近似）。(2) レイヤー操作メニューの点が横 3 点から縦 3 点に変わった（本家に寄せた結果）。(3) クリッピング ON / OFF でアイコン系が混在する（OFF の残置のため）。(4) サイズは SF のフォント連動から固定サイズ（ボタン枠 24 / 22 に対し 20 / 18）に変わったため、グリフの大きさの印象は従来と微妙に異なる。内部差: 本家は全 7,447 件を埋め込むが、こちらは使用分 66 種 + 合成 4 種のみ。
+
+**検証。** Mac（同期先 ~/ymm4-work/icons/YMM4Mac）で実施。DebugApp の `swift build` 成功（警告は既存の PreviewCore の Sendable 関連 2 件のみで本単位と無関係）。`swift test` は全 19 件・失敗 0: 新規 `AppIconsTests` 7 件（必要な名前が辞書に全て存在すること、合成が解決できること、採用全 66 種が解釈でき空でなく 24×24 に収まること、円弧アイコンが 10 種以上含まれ解釈できること、円弧変換の精度（中心 (12,12)・半径 10 の半円と 1/4 円で円周からのずれ 0.2 以内、楕円弧の範囲）、全コマンドセット（相対形・反射・Z の復帰）の解釈、48×48 rect への写像）+ 既存 `PreviewCoreTests` 12 件（PreviewLayoutTests 4 件・PreviewRenderWorkerTests 8 件）。ルートパッケージ側のテストは変更対象外のため回していない。`package-app.sh` は Mac で実走し、.app の `Contents/Resources/License/Material Design Icons.txt` の存在を確認した（確認後に検証用バンドルは削除）。
+
+**手動検証チェックリストへの追加（未実施。本人の目視確認で実施する）:**
+- (ICON-1) ツールバー 5 トレイとトランスポート帯の全ボタンで、MDI のグリフが欠け・崩れなく表示され、SF Symbols のまま残した動画情報・クリッピング OFF と並んでも極端な大きさの不揃いが無いこと。
+- (ICON-2) アイテム追加ボタン 13 種のグリフが本家の種別アイコンと一致して見えること（特にボイス・図形・立ち絵・顔・エフェクト・トランジション）。
+- (ICON-3) 無効状態のボタン（切り取り・コピー・貼り付け、EXO 出力）が不透明度 0.3 + グレー化で表示されること。
+- (ICON-4) リピート ON / OFF、波形表示 / 非表示（斜線つき）、クリッピング ON（破線枠つき）の合成アイコンが意図どおり見えること。
+- (ICON-5) レイヤー行の eye / eye-off と縦 3 点メニュー、タイムラインのロック表示が見えること。
+- (ICON-6) ダークモードとライトモードの双方でグリフの色が前景色に追随すること。
+
+**PR 本文の下書き:**
+- 要件・根拠: 本家 YMM4 のアイコン実態（MDI をパス辞書として埋め込む方式）と対応表は解析側 `analysis-notes/ICON-MDI-MAPPING.md`（オーナー決定 2026-11-18: MDI を正規入手して使う）。実装方針は同メモの方針 B。
+- 変更したシンボル: 新規ターゲット `AppIcons`（`SVGPathParser` / `MDIIconShape` / `MDIIcon` / `MDIIconLayers` / 生成辞書 `MDIIconPaths`）、`AddItemKind.mdiIcon`（旧 `systemImage` から改名）、`ProjectView.transportButton` / `transportToggle` / `toolbarButton`（MDI 名を受ける形へ）、`toolbarSFButton`（残置箇所専用として新設）。
+- 主要な設計判断: バージョンは @mdi/svg v7.4.47 で名前一覧 7,447 件が本家 GeometryKeys.cs と差分 0 件で一致し確定。採用は使用分 66 種のみ。本家合成アイコンは重ね描きで再構成し、独自図形（WaveformOff の斜線、VectorClipping の第 2 要素）はデータを写さず独自に描画。対応なし 3 件（動画情報、クリッピング OFF、メニューのチェック）は SF Symbols に残置し理由を台帳に記録。
+- 実行したテスト: Mac で DebugApp `swift build` 成功、`swift test` 全 19 件・失敗 0（AppIconsTests 7 件新規 + PreviewCoreTests 12 件既存）。生成スクリプトの再実行で同一結果を確認。package-app.sh 実走でライセンス文のバンドル同梱を確認。
+- 対応する実装記録: 本節（ICON-MDI）。見た目の最終確認は手動チェックリスト ICON-1〜6（未実施）。
