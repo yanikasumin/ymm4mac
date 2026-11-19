@@ -31,7 +31,9 @@ func msBetween(_ a: UInt64, _ b: UInt64) -> Double {
     Double(b - a) / 1_000_000.0
 }
 
-let iso8601 = ISO8601DateFormatter()
+func iso8601String(_ date: Date) -> String {
+    ISO8601DateFormatter().string(from: date)
+}
 
 final class JSONLWriter {
     private let handle: FileHandle
@@ -46,7 +48,7 @@ final class JSONLWriter {
 
     func write(_ record: [String: Any]) {
         var rec = record
-        rec["ts"] = iso8601.string(from: Date())
+        rec["ts"] = iso8601String(Date())
         rec["pid"] = ProcessInfo.processInfo.processIdentifier
         let data = try! JSONSerialization.data(
             withJSONObject: rec, options: [.sortedKeys])
