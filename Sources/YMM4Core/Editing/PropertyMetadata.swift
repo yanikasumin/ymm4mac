@@ -451,7 +451,11 @@ extension PropertyDescriptor {
                 },
                 setType: { type in
                     var animation = get()
-                    animation.animationType = type
+                    // 種別変更は値列の正規化と一体の Core 操作を通す
+                    // （FE-R14-001。本家 EndEditAsync の種別変更分岐）。
+                    // 素の代入で迂回すると未実体化の値が既定値で評価される
+                    // 不整合が残るため、ここ以外から種別を書き換えない。
+                    animation.changeAnimationType(to: type)
                     set(animation)
                 },
                 setValueAtSegment: { segment, value in

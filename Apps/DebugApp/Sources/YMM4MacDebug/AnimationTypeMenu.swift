@@ -11,7 +11,8 @@ import YMM4Core
 /// mode 5–8 = 補間キーフレーム。モード切替はこの選択が兼ねる）。
 /// 本家は右クリックメニューだが、こちらは行内のメニューボタンから
 /// 開く形にする（表示名は現在の種別名）。
-/// 種別の書き換えは記述子の `setAnimationType` 経由（値列は保たれる）。
+/// 種別の書き換えは記述子の `setAnimationType` 経由で、Core の
+/// 種別変更操作（値列の正規化込み、本家 EndEditAsync 相当）を通る。
 struct AnimationTypeMenuButton: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
