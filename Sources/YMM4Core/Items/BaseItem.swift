@@ -27,7 +27,24 @@ public class BaseItem {
         didSet { propagateAnimationParameters() }
     }
     /// 再生速度アニメーション。本家 `PlaybackRate2`。
-    public var playbackRate2: Animation = Animation(defaultValue: 100, minValue: -100_000, maxValue: 100_000)
+    ///
+    /// エコーの尾は先頭値で比例するため、先頭値が変わったら素材長
+    /// （エコー尾込み）を再計算する（FE-R27-129-02）。本家は
+    /// `ContentLength` の取得のたびに現在の速度で計算するため、
+    /// 保持値の追随点をこのプロパティの書き込みへ集約する。
+    /// `Animation` は値型であり、直接の変更・記述子経由・
+    /// Undo/Redo の適用・デコードのいずれの書き込みもこの setter
+    /// を通る。先頭値が変わらない書き込み（キーフレームや文脈の
+    /// 伝播等）では再計算しない。再計算の規則自体は
+    /// `refreshContentLengthForEchoSettings`（FE-R15-006）に一元化
+    /// されている。
+    public var playbackRate2: Animation = Animation(defaultValue: 100, minValue: -100_000, maxValue: 100_000) {
+        didSet {
+            if oldValue.firstValue != playbackRate2.firstValue {
+                refreshContentLengthForEchoSettings()
+            }
+        }
+    }
     /// 素材の開始位置オフセット。
     public var contentOffset: TimeSpanValue = .zero
     /// 備考。

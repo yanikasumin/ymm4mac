@@ -45,23 +45,46 @@ extension BaseItem {
 
     /// 取得済みのメディア情報を記録する（配置の調整層の入口）。
     ///
-    /// `originalContentLength` へ素材そのものの長さを、
-    /// `contentLength` へエコー尾を含む長さを入れる（本家では
-    /// `ContentLength` の取得時に都度計算されるものを、こちらは
-    /// 記録時点のエコー設定で確定させる）。画像アイテムは本家でも
-    /// 長さを持たないため何もしない。
-    ///
-    /// 素材そのものの長さが 0 の場合は、本家が `ContentLength` を
-    /// エコー設定にかかわらず 0 とする規則（VideoItem.cs /
-    /// AudioItem.cs の取得経路）に従い、エコー尾を加えない
-    /// （FE-R15-001）。
+    /// `originalContentLength` へ素材そのものの長さを入れ、
+    /// `contentLength` は `refreshContentLengthForEchoSettings` で
+    /// 現在のエコー設定から計算する。本家では `ContentLength` が
+    /// 取得時に都度計算されるため、こちらも記録の一時点では
+    /// 終わらせず、エコー設定の書き込みに追随させる（FE-R15-006）。
+    /// 画像アイテムは本家でも長さを持たないため何もしない。
     public func recordMediaInfo(_ info: MediaFileInfo) {
         switch self {
         case is VideoItem, is AudioItem:
             originalContentLength = info.duration
-            contentLength = info.duration == .zero
+            refreshContentLengthForEchoSettings()
+        default:
+            break
+        }
+    }
+
+    /// 素材長（エコー尾込み）を現在のエコー設定で計算し直す
+    /// （FE-R15-006）。
+    ///
+    /// 本家は `ContentLength` の取得のたびに、ファイルの再生時間へ
+    /// 現在のエコー設定の尾を加える（VideoItem.cs / AudioItem.cs の
+    /// `ContentLength` 取得経路。エコープロパティの setter は
+    /// `ContentLength` の変更通知を出す）。こちらは保持値のため、
+    /// 動画・音声アイテムのエコープロパティの書き込み（didSet）から
+    /// この再計算を呼んで追随させる。規則は記録時と同一: 素材その
+    /// ものの長さが 0 の場合は、本家が `ContentLength` をエコー設定
+    /// にかかわらず 0 とする規則に従い、エコー尾を加えない
+    /// （FE-R15-001）。
+    ///
+    /// 長さ（`length`）自体はここでは変えない。本家で長さが素材長
+    /// の変化へ追随するのは編集終了時調整の分岐 (2)（長さの終端が
+    /// 区切り上にある場合の `ResetLength`）であり、区切り
+    /// （`ContentSeparations`）の供給が Mac 側 Core に無いため
+    /// 未実装（実装台帳 FE-R15-EDITEND の設計メモ参照）。
+    public func refreshContentLengthForEchoSettings() {
+        switch self {
+        case is VideoItem, is AudioItem:
+            contentLength = originalContentLength == .zero
                 ? .zero
-                : info.duration + echoTailLength
+                : originalContentLength + echoTailLength
         default:
             break
         }
@@ -143,5 +166,160 @@ extension BaseItem {
         }
         resetLength(fps: fps, resetContentOffset: true)
         return true
+    }
+
+    /// 編集終了時の再生速度変更に対する長さ調整（FE-R15-004 の
+    /// 分岐 (3)）。本家アイテムエディタの編集終了処理
+    /// （`ItemEditorViewModel.EditingValue.EndEdit`）のうち、再生
+    /// 速度に対応する分岐。
+    ///
+    /// 編集前後とも再生速度が定数（アニメーション種別「なし」）で
+    /// 先頭値が変わった場合に、素材の消費量を保つよう長さを比率で
+    /// 換算する。消費量は「長さ × |旧速度| / 100」（旧速度が 0 の
+    /// 場合は長さそのもの。本家の特殊分岐）で、新しい長さは
+    /// 「消費量 / |新速度| × 100」の小数部を切り捨てた値。新速度が
+    /// 0 の場合は長さを換算しない。換算結果が 1 未満なら既定の
+    /// 長さ（300 フレーム）へ倒す。速度の符号が反転した場合は、
+    /// 素材の終端側から見た再生位置を保つようオフセットを
+    /// 付け替える: `ContentLength − (ContentOffset + 新しい長さを
+    /// 時間換算した値 × |旧速度| / 100)`（時間換算は
+    /// `VideoInfo.GetTimeFrom` = `FrameTime` のフレーム→時間）。
+    ///
+    /// 本家の分岐は else-if 連鎖で、分岐 (1)（素材そのものの長さが
+    /// 変わった場合の決め直し）が優先する。ファイル変更の経路は
+    /// `adjustLengthAfterFileChange` が分岐 (1) を担うため、こちらは
+    /// 素材そのものの長さが変わっていない編集（速度だけの変更）で
+    /// 呼ぶこと。分岐 (2)（素材長が変わり、かつ長さの終端が区切り
+    /// 上にある場合の決め直し）は、区切り（`ContentSeparations`）
+    /// の供給が Mac 側 Core に無いため未実装（実装台帳
+    /// FE-R15-EDITEND の設計メモ参照）。
+    ///
+    /// - Parameter previousFirstValue: 編集開始時点の再生速度の
+    ///   先頭値（%）。
+    /// - Parameter previousIsConstant: 編集開始時点で再生速度が
+    ///   定数だったか。
+    /// - Parameter fps: オフセット付け替えの時間換算に使う FPS
+    ///   （所属タイムラインの値。本家は `timeline.VideoInfo`）。
+    /// - Returns: 長さまたはオフセットを変えたら true（呼び出し側
+    ///   はタイムライン長のキャッシュ再計算の判断に使う。
+    ///   FE-R16-001）。
+    @discardableResult
+    public func adjustLengthAfterPlaybackRateChange(
+        previousFirstValue: Double, previousIsConstant: Bool, fps: Int
+    ) -> Bool {
+        guard previousIsConstant,
+              playbackRate2.animationType == .none else { return false }
+        let newFirstValue = playbackRate2.firstValue
+        guard newFirstValue != previousFirstValue else { return false }
+        let oldLength = length
+        let oldContentOffset = contentOffset
+        if newFirstValue != 0 {
+            let consumed = previousFirstValue == 0
+                ? Double(length)
+                : Double(length) * abs(previousFirstValue) / 100
+            // 本家は double から int へのキャスト（0 方向への
+            // 切り捨て）。消費量・長さは負にならないため床と一致する。
+            let scaled = consumed / abs(newFirstValue) * 100
+            // 極小の新速度では換算結果が整数の表現範囲を超え、
+            // Swift の Int 変換が実行時トラップになる。有限で
+            // 範囲内に収まる場合だけ変換し、範囲外は 1 未満の
+            // 場合と同じ既定の長さへ倒す（Mac 側の安全策。
+            // FE-R27-129-05。本家の範囲外キャストの結果とは
+            // 照合していない）。
+            length = scaled.isFinite && scaled < Double(Int.max)
+                ? Int(scaled)
+                : Self.defaultItemLength
+        }
+        if length < 1 {
+            length = Self.defaultItemLength
+        }
+        if (previousFirstValue < 0) != (newFirstValue < 0) {
+            let lengthTime = TimeSpanValue(
+                seconds: FrameTime.time(fromFrame: length, fps: fps)
+            )
+            let scaled = TimeSpanValue(
+                ticks: Int64(
+                    Double(lengthTime.ticks) * abs(previousFirstValue) / 100
+                )
+            )
+            contentOffset = contentLength - (contentOffset + scaled)
+        }
+        return length != oldLength || contentOffset != oldContentOffset
+    }
+
+    /// 編集セッション開始時点の基点を捕捉する（FE-R15-004）。
+    ///
+    /// 基点の所有は呼び出し側（アプリ層の行のセッション状態）へ
+    /// 移り、寿命はセッションと一致させる。捕捉し直しや後続
+    /// セッションへの持ち越しはしない（FE-R27-129-03）。
+    public func capturePlaybackRateEditBaseline() -> PlaybackRateEditBaseline {
+        PlaybackRateEditBaseline(
+            firstValue: playbackRate2.firstValue,
+            isConstant: playbackRate2.animationType == .none,
+            contentLength: contentLength,
+            originalContentLength: originalContentLength)
+    }
+
+    /// 編集終了時の長さ調整の適用（FE-R15-004 の編集終了時調整の
+    /// 適用層）。分岐の優先をここで一元的に決める:
+    ///
+    /// - 分岐 (1): 素材本来の長さが基点から変わっていれば、編集の
+    ///   途中でファイルが差し替わり、ファイル変更の経路
+    ///   （`adjustLengthAfterFileChange`）が既に長さを決め直して
+    ///   いるため、分岐 (3) を重ねて実行しない（FE-R27-129-04。
+    ///   本家は else-if 連鎖で分岐が排他）。
+    /// - 分岐 (2): 素材長が変わり、かつ長さの終端が区切り上に
+    ///   ある場合の決め直しは、区切り（`ContentSeparations`）の
+    ///   供給が Mac 側 Core に無いため未実装（実装台帳
+    ///   FE-R15-EDITEND の設計メモ参照）。基点には分岐 (2) の
+    ///   判定に要る素材長を含めてある。
+    /// - 分岐 (3): `adjustLengthAfterPlaybackRateChange` による
+    ///   比率再計算。
+    ///
+    /// - Parameter baseline: 編集セッション開始時点の基点
+    ///   （`capturePlaybackRateEditBaseline`）。
+    /// - Parameter fps: オフセット付け替えの時間換算に使う FPS。
+    /// - Returns: 長さまたはオフセットを変えたら true。
+    @discardableResult
+    public func finishPlaybackRateEdit(
+        baseline: PlaybackRateEditBaseline, fps: Int
+    ) -> Bool {
+        guard originalContentLength == baseline.originalContentLength
+        else { return false }
+        return adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: baseline.firstValue,
+            previousIsConstant: baseline.isConstant,
+            fps: fps)
+    }
+}
+
+/// 再生速度の編集セッションの基点（FE-R27-129-03 / 04）。
+///
+/// 本家 `EditingValue` が編集開始時（BeginEdit）に捕捉する値の
+/// うち、編集終了時調整の分岐判定に要るもの。旧再生速度の先頭値
+/// と定数かどうかは分岐 (3) の入力であり、素材本来の長さは
+/// 分岐 (1) の成立判定（編集の途中でのファイル差し替えの検出）
+/// に、素材長は分岐 (2)（未実装）の判定に使う（本家も
+/// `OldContentLength` / `OldOriginalContentLength` を保持する。
+/// 監査 Round 27 の補足）。
+public struct PlaybackRateEditBaseline: Equatable, Sendable {
+    /// 編集開始時点の再生速度の先頭値（%）。
+    public var firstValue: Double
+    /// 編集開始時点で再生速度が定数（アニメーション種別
+    /// 「なし」）だったか。
+    public var isConstant: Bool
+    /// 編集開始時点の素材長（エコー尾込み）。
+    public var contentLength: TimeSpanValue
+    /// 編集開始時点の素材本来の長さ（エコー尾なし）。
+    public var originalContentLength: TimeSpanValue
+
+    public init(
+        firstValue: Double, isConstant: Bool,
+        contentLength: TimeSpanValue, originalContentLength: TimeSpanValue
+    ) {
+        self.firstValue = firstValue
+        self.isConstant = isConstant
+        self.contentLength = contentLength
+        self.originalContentLength = originalContentLength
     }
 }
