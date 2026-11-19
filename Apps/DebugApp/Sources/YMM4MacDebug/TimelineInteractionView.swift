@@ -98,6 +98,14 @@ final class TimelineInteractionView: NSView {
     /// MouseUp 時（移動が無かったとき）の単独選択への確定先（FE-R9-005。
     /// 本家の SelectCommand2 相当）。
     private var clickCollapseItem: BaseItem?
+    /// このセッションで編集コマンド（移動・トリム・キーフレーム移動）が
+    /// 実際に発行されたか。本家は MoveCommand の実行時点で
+    /// isSelectedCommandExecuted を立て、終了時の単独選択化
+    /// （SelectCommand2）を抑制する。最終モデルが開始時と等しいことと
+    /// ドラッグ操作が行われなかったことは同義ではない（往復ドラッグで
+    /// 差分はゼロになる）ため、単独選択への確定はこのフラグで判断する
+    /// （FE-R10-002）。
+    private var didExecuteEditCommand = false
     private var marqueeRect: CGRect = .zero
     private var keyMonitor: Any?
     private var resignObserver: NSObjectProtocol?
@@ -371,6 +379,13 @@ final class TimelineInteractionView: NSView {
                 frameDelta: dframe, frameDistance: snapFrameDistance,
                 layerDistance: snapLayerDistance, ignoreItems: targets)
         }
+        // 非ゼロのデルタで移動コマンドを発行したら「ドラッグ操作が
+        // 実行された」ことにする（FE-R10-002。結果として値が変わら
+        // なくても、本家の isSelectedCommandExecuted と同じく実行
+        // 自体を数える）。
+        if dframe != 0 || dlayer != 0 || extraDeltaFrame != 0 {
+            didExecuteEditCommand = true
+        }
         let before = (item.frame, item.layer)
         timeline.moveSelectedAndGroupedItems(
             deltaFrame: dframe, deltaLayer: dlayer,
@@ -406,6 +421,9 @@ final class TimelineInteractionView: NSView {
         // 設定画面が無いため既定は None 固定とし、Ctrl 中は Stretch。
         let neighborAffect: NeighborAffectMode =
             modifierFlags.contains(.control) ? .stretch : .none
+        if delta != 0 {
+            didExecuteEditCommand = true
+        }
         let before = (item.frame, item.length)
         timeline.changeSelectedAndGroupedItemsLength(
             deltaX: delta, head: head, neighborAffect: neighborAffect)
@@ -430,6 +448,9 @@ final class TimelineInteractionView: NSView {
                 frameDistance: snapFrameDistance,
                 layerDistance: snapLayerDistance,
                 ignoreItems: timeline.selectedAndGroupedItems)
+        }
+        if delta != 0 {
+            didExecuteEditCommand = true
         }
         if item.moveKeyFrame(from: current, to: current + delta) {
             configuration.onModelChanged()
@@ -463,10 +484,12 @@ final class TimelineInteractionView: NSView {
                 configuration.onModelChanged()
             }
             let changed = modelDiffersFromSnapshot(timeline: timeline)
-            // 移動の無かったクリックでは、MouseDown で保留した単独選択
-            // への確定を行う（FE-R9-005）。実際にドラッグが成立した
-            // 場合は複数選択を維持する。
-            if !changed, let target = clickCollapseItem,
+            // 編集コマンドの実行されなかったクリックでは、MouseDown で
+            // 保留した単独選択への確定を行う（FE-R9-005）。判定は最終
+            // 差分ではなくコマンド実行の有無で行う（FE-R10-002:
+            // 往復ドラッグでは最終差分がゼロでもドラッグは成立して
+            // おり、本家はその場合に単独選択化を抑制する）。
+            if !changed, !didExecuteEditCommand, let target = clickCollapseItem,
                timeline.items.contains(where: { $0 === target }) {
                 timeline.selectItem(target)
                 configuration.onSelectionChanged()
@@ -527,6 +550,13 @@ final class TimelineInteractionView: NSView {
         if hasSnapshot {
             restoreSnapshot(timeline: timeline)
             configuration.onModelChanged()
+            // 復元には選択の復元も含まれる。onSelectionChanged を
+            // 呼ばないとインスペクタ側の選択写し（selectedItemIndex）が
+            // MouseDown でクリックしたアイテムのまま残り、Core 選択と
+            // 乖離する（FE-R10-001。その後の編集操作で UI 側の選択が
+            // Core へ再同期され、復元したはずと違うアイテムが編集・
+            // 削除対象になり得る）。
+            configuration.onSelectionChanged()
         } else {
             // 範囲選択の途中なら選択だけを戻す。
             timeline.selectItems(snapshotSelection)
@@ -613,6 +643,7 @@ final class TimelineInteractionView: NSView {
         grabbedItem = nil
         keyframeIndex = -1
         clickCollapseItem = nil
+        didExecuteEditCommand = false
         snapshot = []
         snapshotSelection = []
         hasSnapshot = false
