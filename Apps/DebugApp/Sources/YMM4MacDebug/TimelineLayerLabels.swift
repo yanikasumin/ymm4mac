@@ -31,8 +31,11 @@ extension TimelineStripView {
             Spacer(minLength: 0)
             // 表示切替（本家はラベル部のクリック操作。ここでは目アイコンの
             // ボタンで切り替える。LayerSetting への書き込みは実接続）。
+            // 表示状態はプレビュー合成の対象選定に効くため、切替のたびに
+            // 再合成を要求する（FE-R1-014）。
             Button {
                 mutateLayerSetting(layer) { $0.isHidden.toggle() }
+                onEdited()
             } label: {
                 Image(systemName: setting.isHidden ? "eye.slash" : "eye")
                     .font(.system(size: 10))
@@ -63,6 +66,7 @@ extension TimelineStripView {
                 Divider()
                 Button(setting.isHidden ? UIStrings.Timeline.showLayer : UIStrings.Timeline.hideLayer) {
                     mutateLayerSetting(layer) { $0.isHidden.toggle() }
+                    onEdited()
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -102,12 +106,14 @@ extension TimelineStripView {
             Divider()
             Button(setting.isHidden ? UIStrings.Timeline.showLayer : UIStrings.Timeline.hideLayer) {
                 mutateLayerSetting(layer) { $0.isHidden.toggle() }
+                onEdited()
             }
             Button(UIStrings.Timeline.enableAllLayers) {
                 for index in timeline.layerSettings.items.indices {
                     timeline.layerSettings.items[index].isHidden = false
                 }
                 layerRevision += 1
+                onEdited()
             }
             Button(UIStrings.Timeline.disableOtherLayers) {
                 // 対象レイヤー以外を全て非表示にする。設定が無い
@@ -120,11 +126,13 @@ extension TimelineStripView {
                     mutateLayerSetting(other) { $0.isHidden = true }
                 }
                 mutateLayerSetting(layer) { $0.isHidden = false }
+                onEdited()
             }
             Divider()
             Button(UIStrings.Timeline.resetLayerSettings) {
                 timeline.layerSettings.items.removeAll()
                 layerRevision += 1
+                onEdited()
             }
             Divider()
             Button(UIStrings.Timeline.renameLayer) { openLayerPopover(layer: layer) }
