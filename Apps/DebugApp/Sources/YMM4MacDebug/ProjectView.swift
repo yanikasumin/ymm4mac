@@ -659,7 +659,7 @@ struct ProjectView: View {
             // 移動ジェスチャの層より上に置き、ハンドル上では拡大率／
             // 回転角のドラッグが優先される。表示はコントロールポイント
             // 表示モードに従う（FE-R1-015）。
-            if showsControlPoints, let item = selectedItem,
+            if showsControlPoints, let item = selectedItem, !item.isLocked,
                let bounds = previewItemBounds(item: item, timeline: timeline) {
                 selectionHandles(item: item, bounds: bounds, scale: scale, timeline: timeline)
             }
@@ -921,7 +921,11 @@ struct ProjectView: View {
         var bestIndex: Int?
         var bestKey: (Int, Double, Int)?
         for (index, item) in timeline.items.enumerated() {
-            guard let bounds = previewItemBounds(item: item, timeline: timeline),
+            // ロックしたアイテムはプレビューで掴めない（本家の当たり
+            // 判定はコントローラ経路・本体経路とも !IsLocked で除外
+            // する。FE-R1-020）。
+            guard !item.isLocked,
+                  let bounds = previewItemBounds(item: item, timeline: timeline),
                   bounds.contains(videoPoint),
                   let props = item as? VideoItemProperties else { continue }
             let context = animationContext(for: item, timeline: timeline)

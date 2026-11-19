@@ -303,6 +303,9 @@ struct TimelineStripView: View {
                     .gesture(
                         DragGesture(minimumDistance: 2)
                             .onEnded { gesture in
+                                // ロック中は直接操作で動かさない
+                                // （FE-R1-020。プレビュー側と同じ規則）。
+                                guard !item.isLocked else { return }
                                 let delta = Int(
                                     (gesture.translation.width / pxPerFrame).rounded()
                                 )
