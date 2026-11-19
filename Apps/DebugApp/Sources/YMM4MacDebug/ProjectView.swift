@@ -2044,7 +2044,7 @@ struct ProjectView: View {
                 workspace.isImporterPresented = true
             }
             toolbarButton("square.and.arrow.down", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.saveProject, shortcut: UIStrings.Toolbar.shortcutSave)) {
-                workspace.saveCopy()
+                workspace.save()
             }
             toolbarDivider
             toolbarButton("tuningfork", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.videoInfo)) {

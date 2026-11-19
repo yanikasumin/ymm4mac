@@ -12,6 +12,15 @@ final class WorkspaceState: ObservableObject {
     @Published var diagnostics: YmmpLoadDiagnostics
     /// 読み込み元ファイル。未保存の新規プロジェクトでは nil。
     @Published var sourceURL: URL?
+    /// 未保存の変更があるか（FE-R1-001。本家の IsProjectFileSaved の
+    /// 反転に相当）。本家は UndoRedoManager.HistoryChanged で未保存に
+    /// なる（MainModel.InitIsProjectFileSavedProperty）。Mac 側は編集の
+    /// 合流点（ProjectView の requestPreviewRender(modelChanged:) と
+    /// シーン操作等）から markEdited() を呼ぶ単純なフラグで追跡し、
+    /// 保存・読み込み・新規作成の成功時に false へ戻す。判定をこの
+    /// フラグ1つに寄せることで、編集記録の基盤（PR #126 の
+    /// EditRecorder 等）が統合されても破棄確認側は無変更で済む。
+    @Published var hasUnsavedChanges = false
     /// 読み込みのたびに増える通し番号。ProjectView の識別子に使い、
     /// ファイルを開くたびに表示側の状態（プレビュー等）を破棄して
     /// 作り直すために使う（同じファイルの開き直しでも再読込になる）。
@@ -38,6 +47,11 @@ final class WorkspaceState: ObservableObject {
         pendingAction = (action, (pendingAction?.sequence ?? 0) + 1)
     }
 
+    /// 編集が入ったことを記録する（未保存フラグを立てる）。
+    func markEdited() {
+        hasUnsavedChanges = true
+    }
+
     init() {
         project = Self.makeNewProject()
         diagnostics = YmmpLoadDiagnostics()
@@ -57,6 +71,7 @@ final class WorkspaceState: ObservableObject {
         project = Self.makeNewProject()
         diagnostics = YmmpLoadDiagnostics()
         sourceURL = nil
+        hasUnsavedChanges = false
         loadSequence += 1
         loadError = nil
         statusMessage = nil
@@ -72,6 +87,7 @@ final class WorkspaceState: ObservableObject {
             project = loaded
             diagnostics = loadedDiagnostics
             sourceURL = url
+            hasUnsavedChanges = false
             loadSequence += 1
             loadError = nil
             statusMessage = nil
@@ -80,20 +96,49 @@ final class WorkspaceState: ObservableObject {
         }
     }
 
-    /// プロジェクトのコピーを .ymmp として保存する（メニューの保存）。
-    /// 保存先は常にダイアログで聞く（元ファイルへの上書きはしない）。
-    func saveCopy() {
+    /// プロジェクトを保存する（通常保存。FE-R1-028）。
+    /// 読み込み元ファイルがあればそこへ上書きし、無ければ保存先を
+    /// ダイアログで聞く（本家 MainViewModel.SaveProject の分岐と同じ:
+    /// パスが決まっている場合はダイアログを出さない）。
+    /// 保存できたら true（ダイアログのキャンセル・書き込み失敗は false）。
+    @discardableResult
+    func save() -> Bool {
+        if let sourceURL {
+            return writeProject(to: sourceURL)
+        }
+        return saveAs()
+    }
+
+    /// 名前を付けて保存する（通常保存とは別の操作として残す）。
+    /// 保存先は以後このプロジェクトの読み込み元（上書き先）になる
+    /// （本家 MainModel.SaveProject が保存後に ProjectFilePath を
+    /// 保存先へ更新するのと同じ）。
+    @discardableResult
+    func saveAs() -> Bool {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "ymmp") ?? .data]
         panel.nameFieldStringValue =
             (sourceURL?.deletingPathExtension().lastPathComponent ?? "新規プロジェクト") + ".ymmp"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        guard writeProject(to: url) else { return false }
+        sourceURL = url
+        return true
+    }
+
+    /// プロジェクトを .ymmp として書き出す単一の経路。
+    /// 書き出し自体は YmmpCodec.save（一時ファイルへ書き出し →
+    /// 再読込で検証 → 本ファイルへコピー）が担うため、既存ファイルは
+    /// 検証済みの内容でのみ置き換わる。
+    private func writeProject(to url: URL) -> Bool {
         do {
             try YmmpCodec.save(project, toFile: url.path)
+            hasUnsavedChanges = false
             statusMessage = "保存しました: \(url.path)"
             loadError = nil
+            return true
         } catch {
             loadError = "保存に失敗: \(error)"
+            return false
         }
     }
 }

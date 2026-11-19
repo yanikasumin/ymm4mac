@@ -85,8 +85,10 @@ struct YMM4MacDebugApp: App {
                     workspace.request(.saveThumbnail(.png))
                 }
                 Divider()
-                Button(UIStrings.Menu.saveProjectCopy) { workspace.saveCopy() }
+                Button(UIStrings.Menu.saveProject) { workspace.save() }
                     .keyboardShortcut("s", modifiers: .command)
+                Button(UIStrings.Menu.saveProjectAs) { workspace.saveAs() }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
             }
 
             // 編集メニュー（本家のサブメニュー構成 —
