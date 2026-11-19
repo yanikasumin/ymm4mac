@@ -1887,6 +1887,40 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 - 検証方式: アプリ層にはテストターゲットが無いため、確定手順（記録→調整→調整が起きた場合だけ再計算）を Core テストで再現し、キャッシュ整合の契約を固定した。MediaItemLengthTests へ4件追加: 調整だけではキャッシュが追随しないこと（再計算の必要性の根拠）、拡大（10秒→20秒でキャッシュ 300→600）、短縮（20秒→10秒で 600→300）、同長差し替え（調整なし・トリムとキャッシュ整合を保持）。いずれも確定後に `timeline.length == timeline.computeCurrentLength()` が成立することを確認する。残りは手動検証チェックリスト (8) で固定する。
 - 対象外として触っていないもの: FE-R16-002（別プロジェクト切り替え後の非同期継続）。別単位へ移管済み。
 - 検証: Mac（~/ymm4-work/fe-filepath/YMM4Mac）で Apps/DebugApp の `swift build` 成功。Core テストは方式名フィルタで実行し全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: MediaItemLengthTests 24 件（Round 16 の回帰試験で +4）、PropertyMetadataTests 20 件、EffectPropertyMetadataTests 17 件（方式名の部分一致で併せて実行）、TimelineEditingTests 20 件、TimelineEditingLengthTests 29 件。合計 110 件、失敗 0。手動検証チェックリスト (8) の追加分は未実施（目視確認待ち）。
+
+#### FE-PREVIEW — プレビュー連携（フロントエンド監査 FE-R1-014 / 015 / 020 / 022 / 023 / 024 / 031 / 037）
+
+**main 統合時の訂正（2026-11-19、PR #125 の競合解消）**: 本単位は旧タイムライン（SwiftUI ジェスチャ方式）を起点に実装したため、FE-R1-020 の処分としてタイムラインのキーフレームマーカーのドラッグにもロックガードを足していた。しかし main 側のタイムライン再構築（PR #121）との統合時に本家の規則を再確認したところ、本家のタイムライン側にロックによるドラッグ排除は存在しない（`TimelineItemView.cs:866` の DecideMode にロック判定は無く、移動・リサイズ・キーフレームの各コマンドは CanExecute が常時 true）。`!IsLocked` の絞り込みが存在するのはプレビュー側（`TimelineVideoPlayer.cs` の当たり判定・コントロールポイント・ハンドル）だけである。したがって統合では再構築側の構造（マーカーは描画専用、操作は AppKit 層の DecideMode）を正とし、キーフレームマーカー側のロックガードは取り下げた。FE-R1-020 の CLOSED はプレビュー側の処分に基づくもので、この訂正はタイムライン側の外挿の撤回である。
+
+台帳の行番号は Round 1 時点（6861438c）のコードに対するもので、その後バッチ1・スライダ・ファイル参照の変更が入っているため、8件すべてを現行コード（起点 9153e53）で再検証してから処分した。
+
+**再検証結果の一覧。**
+
+- FE-R1-014（レイヤー表示切替がプレビューに反映されない）: **成立**。Core の合成対象選定はレイヤー非表示を正しく参照している（`TimelineSource` の選定条件、`ItemPickers`）が、ラベル列の切替経路（`mutateLayerSetting` と直接書き換え2箇所）は `layerRevision` の更新だけで `onEdited()` を呼んでおらず、プレビュー再合成が要求されなかった。インスペクタ側のアイテム非表示は `onEdited` 経由で再合成されるため対象外。
+- FE-R1-015（コントロールポイント表示3モードが実表示を制御していない）: **成立**。`controlPointVisibility` の状態はトランスポート帯のメニューで変わるだけで、操作層のどこからも参照されていなかった。本家の規則は逆コンパイル成果物で確認した: 設定は4値で Default は OnSelected へ解決され（YMMSettings.GetControlPointVisibility）、コントローラの描画は「選択中アイテム・非ロック・（OnSelected なら常時／OnMouseOverPreviewArea なら領域ホバー中）」の条件（TimelineVideoPlayer.cs:2471）、当たり判定は Never 以外でのみ行われる。
+- FE-R1-020（ロックしたアイテムをプレビュー上で移動・変形できる）: **成立**。プレビューの当たり判定・移動ドラッグ・ハンドルにロック確認が一切無かった。本家はプレビューの当たり判定でコントローラ経路・本体経路とも `!IsLocked` で除外し、描画条件にも非ロックを含む（TimelineVideoPlayer.cs:614-631, 760-769, 2471）。
+- FE-R1-022（プレビュー倍率が縦横比を崩す）: **成立**。表示枠の寸法は本家 PreviewViewModel の式（幅・高さ独立の Min）どおりだったが、合成画像をその枠へ引き伸ばしていたため、拡大時に片辺だけがクランプされると縦横比が崩れた。本家は映像を均一倍率（PreviewAreaZoom × PreviewDisplayZoom）で描き、枠を超える分は中心で切り抜く（TimelineVideoPlayer.GetVisibleVideoSize / CreatePreviewViewTransform）。
+- FE-R1-023（当たり判定と選択枠が実映像の寸法に一致しない）: **成立するが要設計判断**。現行の `previewItemBounds` は種別ごとの比率（テキスト 60%×12%、その他 30%×30%）による近似で、実描画寸法ではない。本家は合成側が公開する実矩形（TimelineItemRects）を使うが、Mac 側 Core は「当たり判定用データの再構築は画像境界の問い合わせ（GPU 実行層）が要るためこの層では行わない」と記録済み（TimelineSource.swift の末尾コメント）で、実矩形の供給経路自体が無い。供給経路の新設は合成パイプラインの設計変更に当たるため、本単位では実装せず切り分ける。近似である旨は既存コードコメントに明記済み。
+- FE-R1-024（プレビュー初期化失敗時に古い画像が残る）: **成立（狭い形）**。セッション切替時（resetPreview）と描画失敗時（onRenderFailed）は画像を消すようになっていたが、モデル初期化失敗時（onModelFailed）は理由文を入れるだけで旧モデルの画像を消しておらず、表示が画像優先のため失敗が見えなかった。
+- FE-R1-031（プレビュー用モデル複製をメインスレッドで同期実行）: **前提変化・要設計判断**。構造自体は残る（`refreshPreviewModel` が `makeExportSnapshot`（JSON 往復）をメインスレッドで同期実行する）。ただしこれは Round 9 の設計相談で確定した「呼び出し側がスナップショットを作り、ワーカーはそれだけを読む」方式そのもので、100ms の間引きと遅延確定、失敗時の理由表示と再試行が入り、実プロジェクト（158 アイテム）での生成コスト約 28ms は実測として記録済み。スナップショット生成をメインスレッド外へ移すと編集モデルとの競合を避ける別の所有設計が要り、確定済み設計の変更に当たるため本単位では実装せず切り分ける。
+- FE-R1-037（プレビュー合成の例外理由が失われる）: **成立**。`PreviewBox.render` が `composer.update` の例外を catch して nil を返すだけで、理由が診断にも表示にも残らなかった（表示側は「例外または出力なし」の一般文のみ）。
+
+**処分（コミットは件ごと）。**
+
+- FE-R1-014（350d96b）: ラベル列の表示切替の全経路（目ボタン、レイヤーメニュー、全レイヤー有効化、他レイヤー無効化、設定リセット、コンテキストメニューの切替）で `onEdited()` を呼ぶよう変更した。再合成要求は単一入口 `requestPreviewRender(modelChanged:)` へ集約される既存の形のまま。
+- FE-R1-015（f87a84d）: 操作ハンドルの表示条件を `showsControlPoints` としてモードへ接続した（選択中のみ=常時／マウスオーバー時=プレビュー領域の `onHover` 状態／常に表示しない=出さない）。ハンドル自体がジェスチャを持つため、非表示は操作不可を兼ねる（本家も Never では当たり判定を行わない）。選択輪郭（破線）はコントロールポイントではなく選択の所在表示と解釈し、対象外とした（解釈をここに明記する）。なおアプリメニュー側のコントロールポイント表示ボタン（YMM4MacDebugApp.swift）は空アクションのまま別件（メニュー重複・未接続系）の範囲であり、本単位では触っていない。
+- FE-R1-020（62c5991）: `hitTestPreviewItem` でロックしたアイテムを除外し（下のアイテムまたは空白として扱う）、選択中でもロックしたアイテムには操作ハンドルを出さず、タイムライン帯のキーフレームマーカードラッグもロック中は動かさないようにした。関連観測: コンテキストメニューの「移動」系操作はロック中でも実行できるが、本家のメニュー操作に対するロック規則を本単位では確認しておらず、監査への申し送りとして記録に留める（プレビューと直接操作は処分済み）。
+- FE-R1-022（ae37801、補正 1 件）: PreviewCore に `PreviewLayout` を新設し、表示枠・描画寸法・均一倍率・座標変換の正本にした。プレビュー画像は均一倍率の実寸で描いて表示枠で切り抜き、選択輪郭・ハンドル・ドラッグ開始点の変換も同じレイアウトを通す（移動量の換算は従来どおり均一倍率で割るため不変）。拡大時のパン（表示中心の移動）は本家にあるが、Mac 側のドラッグはアイテム移動に割り当てられているため本単位では中心切り抜きまでとし、パンは未実装として明記する。
+- FE-R1-024（db5fdc8）: `onModelFailed` で描画失敗時と同じく画像と表示中フレームの記録を消してから理由文を表示するよう変更した。
+- FE-R1-037（16942ec）: `PreviewBox.render` の例外を、セッションの診断収集先へ種別 `previewComposition`（`PreviewBox.compositionFailureKind`）で記録するよう変更した。ワーカーが描画ごとの診断を表示側へ渡す既存経路に乗るため通知の形は変えていない。表示側は、その描画の診断に合成例外があれば理由文を `previewError` へ含める。
+
+**検証。** Mac（~/ymm4-work/fe-preview/YMM4Mac）で Apps/DebugApp の `swift build` 成功（218 ステップ）。PreviewCore テストは方式名フィルタで実行し全合格（XCTest の Executed 件数で判定）: PreviewLayoutTests 4 件（フィット時に切り抜きなし、拡大時に縦横比を保って中心切り抜き、縮小時、座標変換の往復と中心対応）、PreviewRenderWorkerTests 8 件（既存、回帰なし）。Core テストの参考実行: TimelineEditingTests 20 件・TimelineEditingLengthTests 29 件、全合格（本単位でルートパッケージのソースは変更していない）。AudioDrift は対象外。
+
+**監査 Round 18 の処分（FE-R18-001、P1）。** FE-R1-022 の数式（PreviewLayout）は本家と整合していたが、SwiftUI への適用側に欠陥が残っていた。`previewView` の内側 ZStack は拡大画像（表示枠より大きい）を直接の子に持ち、その報告寸法が後段の `.frame(表示枠寸法)`（既定は中央揃え）の中で中心合わせされ、内容全体が (枠−画像)/2 だけずれる。画像は `imageOrigin` の offset でさらに同量ずれるため、画像と操作層（輪郭・ハンドル・当たり判定）が互いにずれた。処分は PreviewLayout の数式を変えず、配置だけを直した: 表示枠を座標の正本とし、内側 ZStack の frame と `previewInteractionLayer` の frame の双方に `alignment: .topLeading` を明示した。これにより内容の寸法がどれだけ大きくても、両 frame の左上＝PreviewLayout の座標原点に内容の原点が一致し、内容の寸法は親のレイアウト寸法にも原点にも影響しない。操作層側の frame も同じ処分が必要なのは、その左上が名前付き座標空間 `previewArea` の原点であり、選択アイテムの描画寸法が表示枠を超えると（全画面アイテムの拡大表示など）輪郭・ハンドルだけがジェスチャ座標からずれていたため。ドラッグ変換（移動はヒットレイヤーのローカル座標、ハンドルは `previewArea`）と当たり判定（`videoPoint` 変換）の入力前提は、どちらも表示枠左上原点であり、描画側と一致することをコード上で確認した。検証: Mac（~/ymm4-work/fe-preview/YMM4Mac）で Apps/DebugApp の `swift build` 成功。PreviewCoreTests は PreviewLayoutTests 4 件・PreviewRenderWorkerTests 8 件、全合格（回帰なし）。配置そのものはアプリ層のため自動テストでは固定できず、手動検証チェックリスト (6)(7) で固定する。
+
+**手動検証チェックリスト（未実施）。** (1) レイヤーの目ボタンで非表示にすると、プレビューからそのレイヤーのアイテムが消え、再表示で戻ること。再生中も停止への遷移で反映されること。(2) コントロールポイント表示を「常に表示しない」にすると選択中でもハンドルが出ず、「マウスオーバー時」ではプレビューへカーソルを入れたときだけハンドルが出ること。(3) ロックしたアイテムはプレビューでクリックしても選択・移動できず、下に別のアイテムがあればそちらが掴めること。タイムライン上でキーフレームマーカーをドラッグしても動かないこと。(4) プレビュー倍率 200%・400% で映像の縦横比が崩れず、中央が拡大表示されること。選択輪郭とハンドルが見えている映像の位置と一致すること。(5) 合成で例外が起きる条件では、プレビューに理由を含む失敗文が出て、診断タブの履歴にも previewComposition の記録が残ること。(6) 倍率 200% で全画面のアイテムを選択したとき、映像の中心が表示枠の中心にあり、選択輪郭が映像の見えている範囲と一致し、アイテムをドラッグすると掴んだ位置からずれずに動き始めること（FE-R18-001）。(7) 倍率 400% でも同様に、映像中心・選択輪郭・ハンドルの表示位置が一致し、ハンドルのドラッグ開始位置と表示位置がずれないこと（FE-R18-001）。
+
+**未解決。** FE-R1-023（実描画矩形の供給経路の新設）と FE-R1-031（スナップショット生成の所有設計）は要設計判断として切り分け。拡大時のプレビューのパン、本家のコントローラ全種（エフェクト操作点・キーフレームマーカーのプレビュー表示）への対応は未実装。コンテキストメニュー操作に対するロック規則は本家確認待ちの申し送り。
 #### FE-UNDO-CORE — フロントエンド基盤（Undo/Redo）の Core 側新設（IMPLEMENTED、Mac 検証済み）
 
 フロントエンド監査 Round 2 の設計判断（FE-R2-DESIGN.md「Undo/Redo 基盤」）に基づき、履歴の土台だけを `Sources/YMM4Core/Editing/` へ新設した。アプリ層への接続と既存編集操作の移行は次単位で行う（本節の時点では参照元なし）。スナップショット方式は設計判断で不採用が確定しているため採っていない。
@@ -1920,3 +1954,97 @@ R5 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinato
 - **FE-R6-119-02（P1）履歴変更通知の発火時点で記録抑制が残っている**: `UndoHistory.undo()` / `redo()` は `isApplying = true` の後 `defer` で関数終了時に復帰させていたため、`onHistoryChanged` の発火時点でも抑制が有効なままだった。通知クロージャから新しい編集を確定させると、`record` の `guard !isApplying` で履歴登録だけが黙って破棄され、モデルへの変更は残るのに Undo できない変更が生まれていた。本家 `UndoRedoManager` は `isUndoRedoing` を false へ戻してから `HistoryChanged` を発火させる（レビュアーが再照合済み）ため、本家とも異なる挙動だった。処分: 記録抑制の範囲をコマンドの適用中だけに限定する。適用部分を `applySuppressingRecording`（適用スコープ内でのみ `isApplying` を立て、`defer` で解除）へ切り出し、スタック更新を終え・抑制を解除してから `onHistoryChanged` を発火させる順序へ変更した（`undo` / `redo` とも）。適用中の記録抑制そのもの（R2-U04）は維持される。回帰テスト `testEditCommittedFromHistoryChangedNotificationIsRecorded`（Undo の通知の中から新しい編集を確定させ、その編集が履歴に登録され Undo 可能であること）を追加。
 
 R6 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinatorTests` 15件（従来13件＋R6 回帰2件、`testCancelReentryDoesNotRecurse` は新契約へ見直し）、`UndoHistoryTests` 10件。関連する既存テストも全合格（PropertyMetadataTests 系34件、TimelineEditingTests 20件、いずれも失敗0）。全スイートは回していない。ARCHITECTURE.md は処理経路・所有権に変更が無いため未更新。
+
+#### FE-R14-001 — アニメーション種別変更時の値列正規化を Core 操作として実装（フロントエンド監査 Round 14、P2）
+
+**症状。** Mac の記述子種別セッターは `animationType` を素の代入で書き換えるだけで値列を正規化しなかった。そのため、既定値 100 の拡大率を定数 50 にした状態で「ランダム移動」へ切り替えると、終端値が未実体化のまま残り、評価側の代用規則（不足分は既定値で補う）で 100 と評価され、表示・評価が 50→100 に化け得た。スライダ単位（FE-R13-002）で表示側の `AnimationSliderScale.activeValues` は本家の `ActiveValues`（既存の値だけを取る）に合わせたが、モデル側の値列そのものの正規化は未実装で残っていた（Round 13 で残存として記録、Round 14 で本件として採番）。
+
+**本家規則（逆コンパイル済みコードで確定。仕様抽出の参照に留め写経はしていない）。** 正規化は `Animation` 自身の編集終了処理にある: `BeginEdit`（`YukkuriMovieMaker.Commons/Animation.cs:600`）が旧種別を記録し、`EndEditAsync`（同 605–686）が編集終了時に値列を組み替える。有効な値の数は `GetActiveValueCount`（同 136–148。キーフレーム対応型 = キーフレーム数 + 2、なし = 1、それ以外 = 2）、`ActiveValues = Values.Take(GetActiveValueCount())`（同 85）。変換に使う長さは `Length`（同 47。`SetAnimationParameters`、同 754 で所有アイテムから注入）。種別変更時の分岐は次のとおり:
+
+- 新種別が「なし」: 先頭の値だけ残す（同 633–637）。
+- 旧種別が「なし」: 先頭だけ残し、移動量指定なら移動量 0 を追加、それ以外は先頭の値の複製を有効な値の数まで補う（同 638–644）。定数 50 → ランダム移動で終端値も 50 になるのはこの規則。
+- 旧種別が「移動量指定」: 開始値と移動量から、非対応の新種別なら終端値 = 開始値 + 移動量 × 長さ、キーフレーム対応なら等分位置へ線形に割り付け（同 645–658）。
+- 旧種別がキーフレーム非対応（ランダム移動・反復移動）: 移動量指定なら移動量 =（終了値 − 開始値）/ 長さ、キーフレーム対応なら開始値→終了値を等分位置へ線形に割り付け、非対応同士（ランダム ⇔ 反復）は値列不変（同 659–673）。
+- 旧種別がキーフレーム対応: 移動量指定なら移動量 =（値列の末尾の値 − 先頭の値）/ 長さ、非対応の新種別なら終端値 = 末尾の値、対応同士は値列不変（同 674–685）。
+
+**設計。** Mac の記述子書き込みは即時反映で編集セッション境界（BeginEdit/EndEdit）が無いため、監査 Round 14 の指定どおり「種別変更＋値列正規化」を1つの Core 操作 `Animation.changeAnimationType(to:)`（`Sources/YMM4Core/Animation/Animation.swift`）として実装し、記述子の種別セッター（`PropertyDescriptorFactory.animation` の `setType`、`Sources/YMM4Core/Editing/PropertyMetadata.swift`）は必ずこの操作を通す形にした。種別を直接書き換える他の経路は編集経路ではないことを確認済み: 形式層のデコード／複写（`AnimationCodecSupport`。読み込みデータは本家でも EndEdit を通らない）、GPU 層のパラメータ解釈（`MetalEffectProcessorsNoise`。描画用の解釈であり編集ではない）。定数値書き込み（`setConstantValue`）は種別「なし」＋単一値という正規化済みの状態を直接構築するため対象外とした。変換に使う長さは `Animation.length`（所有アイテムが `refreshAnimationContext` で伝播する注入値）で、本家の `Length` と同じ供給経路である。表示側の導出状態である `AnimationSliderScale` には触っていない（正規化はモデル側の操作であり、役割が異なる）。
+
+**本家との差異（意図的）。** (1) 本家 `EndEditAsync` の「種別不変」側分岐（有効な値の数への切り詰め・末尾値での補充、Animation.cs:608–632）は実装していない。Mac では値列の個数はキーフレーム追加・削除の連動（`insertKeyFrame` / `removeKeyFrame` / `removeAllKeyFrames`）と値書き込み（`setValue` の実体化）で維持されており、読み込みデータに超過分があっても評価は先頭 `activeValueCount` 個だけを使う。超過分を編集のたびに切り捨てると保存時の往復保全（未知・超過データの保持）を損なうため、種別変更時に限る正規化とした。(2) 値列が空の異常データでは本家は `Values.First()` 等で例外になるが、Mac 側は既定値で代用して処理を続ける（防御的な相違）。
+
+**テスト対応表**（`Tests/YMM4CoreTests/Animation/AnimationTypeChangeTests.swift`、15件）:
+
+| テスト | 本家分岐 |
+|---|---|
+| testNoneToRandomFillsEndValueWithFirstValue | 旧「なし」→ ランダム移動。監査の具体症状（既定値100・定数50 → 終端も50、評価も全区間50） |
+| testNoneToRepetitiveFillsEndValueWithFirstValue | 旧「なし」→ 繰り返し移動（同規則） |
+| testNoneToMovementAmountAppendsZeroAmount | 旧「なし」→ 移動量指定（移動量 0） |
+| testNoneToKeyFrameSupportedFillsAllValuesWithFirstValue | 旧「なし」→ キーフレーム対応（キーフレーム数 + 2 まで複製） |
+| testKeyFrameSupportedToNoneKeepsOnlyFirstValue | 新種別「なし」（先頭だけ残す） |
+| testMovementAmountToRandomConvertsEndValue | 旧・移動量指定 → 非対応（終端 = 開始 + 移動量 × 長さ） |
+| testMovementAmountToKeyFrameSupportedDistributesLinearly | 旧・移動量指定 → 対応（等分位置へ線形割付） |
+| testRandomToMovementAmountConvertsAmount | 旧・非対応 → 移動量指定（（終了 − 開始）/ 長さ） |
+| testRepetitiveToKeyFrameSupportedDistributesLinearly | 旧・繰り返し移動 → 対応（等分位置へ線形割付） |
+| testRandomToRepetitiveKeepsValues | 非対応同士は値列不変 |
+| testKeyFrameSupportedToMovementAmountUsesLastValue | 旧・対応 → 移動量指定（末尾の値を使用） |
+| testKeyFrameSupportedToRandomUsesLastValueAsEndValue | 旧・対応 → 非対応（終端 = 末尾の値） |
+| testKeyFrameSupportedToKeyFrameSupportedKeepsValues | 対応同士は値列不変 |
+| testSameTypeChangeIsNoOp | 同一種別は無操作 |
+| testDescriptorSetTypeNormalizesValues | 記述子セッターが操作を迂回しないことの固定 |
+
+検証: Mac（~/ymm4-work/fe-r14-001/YMM4Mac）で実施。`AnimationTypeChangeTests` 15件全合格。関連する既存スイートもフィルタ実行で全合格（`Animation|PropertyMetadata` フィルタで 131件・失敗0 — AnimationTests / AnimationEvaluationTests / AnimationTypeTests / AnimationSliderScaleTests / AnimationSliderSpecTests / PropertyMetadataTests / EffectPropertyMetadataTests を含む。`ItemKeyFrameEditingTests` 8件も別途全合格）。Apps/DebugApp の swift build 成功（224ステップ）。全スイートは回していない。ARCHITECTURE.md は処理経路・所有権の変更ではなく既存の記述子経路内部の操作差し替えのため未更新。
+
+##### Round 23 処分（FE-R23-127-01 P1 / FE-R23-127-02 P3）
+
+監査 Round 23（PR #127 レビュー）の指摘2件の処分。着手前に現在の main（`9226995`、PR #126 Undo 接続マージ済み）をマージした（競合は本ファイルの追記同士のみで、両側を保持して解消）。統合後に Mac で DebugApp ビルド成功を確認してから処分に入った。
+
+- **FE-R23-127-01（種別変更の Undo で元の値列が失われる）**: 本単位の `setAnimationType` は種別変更と値列の再構成を同時に行うが、PR #126 の Undo 記録（`AnimationTypeMenu`）は変更前後の種別だけを記録していた。再構成は一般に不可逆なため、Undo で種別だけ戻しても値列は戻らない（例: 直線移動 [0, 50, 100] →「なし」[0] → Undo で直線移動 [0, 0, 0] になる）。本単位の着地で、メニュー側コメントの前提（「現行の setter は種別の差し替えのみを行うため往復は対称」）が崩れたことが根本原因であり、当該コメントも実態へ修正した。処分: (1) Core に状態の写し `Animation.RecordedState`（種別＋値列のみ。キーフレーム列・長さ等の評価文脈は所有アイテムから注入されるもので種別変更では変わらないため含めない）と、その捕捉 `Animation.recordedState`・書き戻し `Animation.restoreRecordedState` を新設した。(2) 記述子に復元経路 `PropertyDescriptor.restoreAnimationRecordedState`（`PropertyAccess.animation` の `restoreState`）を追加した。正規化を伴わない書き戻しであり、用途（種別変更の Undo/Redo 専用）は名前とコメントで明示し、通常の編集経路（`setAnimationType`）とは分離した。併せて `setAnimationType` の従来のドキュメント（「種別だけを書き換える」）は FE-R14-001 以前の記述で実態とずれていたため修正した。(3) `AnimationTypeMenu` の記録を変更前後の `RecordedState` の一体記録へ変更した（対象キーは従来どおり `#type`。適用クロージャは復元経路を呼ぶ）。入口確認（`canRecordValueChange`）・記録の単一入口・セッション所有権の契約は変更していない。回帰テストは `Tests/YMM4CoreTests/Animation/AnimationTypeChangeUndoTests.swift`（4件）: キーフレーム対応型 [0, 50, 100] → 定数 → Undo/Redo（Undo の完全一致は、変換の再実行では [0, 0, 0] になるため、記録した状態の書き戻しであることの証明を兼ねる）、定数 50 → ランダム移動 → Undo/Redo、移動量指定（移動量 0.3・長さ 11。再導出すると浮動小数の丸めで 0.3 へ戻らない組合せ）→ キーフレーム対応型 → Undo/Redo、復元経路が記録した状態をそのまま書き込むこと（有効な値の数と異なる本数も正規化しない）。
+- **FE-R23-127-02（空の値リストへの防御の契約整理）**: 「値列自体を既定値で実体化する」側へ倒した。`changeAnimationType` の入口（種別の差し替え直後）で値列が空なら `[defaultValue]` を種として実体化してから再構成に入り、全分岐で結果の値列が空にならないことを保証する。再構成の数式・分岐自体には触っていない。本節の従来の記述（「本家との差異（意図的）」(2) の「既定値で代用して処理を続ける」）は、この保証に合わせて読み替える（コード側のドキュメントも更新済み）。テストは `AnimationTypeChangeTests` へ3件追加: 空 →「なし」で [既定値]、空のランダム移動 → 反復移動（値列を変えない分岐）でも [既定値]、空の「なし」→ 移動量指定で [既定値, 0]。
+
+検証（Round 23）: Mac（~/ymm4-work/fe-r14-001/YMM4Mac）で実施。統合直後と最終形で DebugApp の `swift build` 成功（228ステップ）。対象テストは全合格・失敗0 — `AnimationTypeChange|EditRecorder|PropertyMetadata` フィルタで69件（内訳: `AnimationTypeChangeTests` 18件（従来15件＋FE-R23-127-02 の3件）、`AnimationTypeChangeUndoTests` 4件（新規）、`EditRecorderTests` 8件、`PropertyMetadataTests` 22件、`EffectPropertyMetadataTests` 17件）、`Animation` フィルタで105件、`ItemKeyFrameEditing|EditCoordinator|UndoHistory|TimelineEditSnapshot|ListAddRemove` フィルタで48件。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。ARCHITECTURE.md は Undo のデータフローへ種別変更の記録と復元の1項を追加した（復元経路という処理経路の追加のため）。
+#### FE-UNDO-WIRING — Undo のアプリ層接続（IMPLEMENTED、Mac 検証済み）
+
+FE-UNDO-CORE（PR #119）で新設した履歴基盤をアプリ層へ接続し、主要な編集経路を明示トランザクション方式で移行した単位。設計条件は監査 Round 2 の設計判断（FE-R2-DESIGN.md「Undo/Redo 基盤」）と、Round 5・7・10 で蓄積された接続条件（リスト追加・削除は非 Action、適用クロージャは対象を強参照、ツールバーの可否は操作状態と組み合わせる、プロジェクト切り替え時はトランザクション終了→履歴消去の順序統一、ドラッグは接続側が開始の所有を追跡し開始失敗時はモデル変更へ進まない契約）に従う。既存の Core Undo API の契約変更は行っていない。
+
+- **Core 追加: リスト追加・削除コマンド**（`Sources/YMM4Core/Editing/ListAddRemoveCommand.swift`、新規）。本家 `UndoRedoAddRemoveListItemsCommand` は IsAction=false のため、`isAction = false` として値変更コマンドと同じ実行順グループに入れた（`ActionEditCommand` へ寄せると値変更との混在時に Undo の適用順が本家と逆転する。Round 5 の接続条件）。追加・削除された要素と変更適用時点の位置を保持し、Undo は追加分を同一性で取り除いて削除分を記録位置（範囲内へ丸め）へ戻し、Redo はその逆を行う。統合（canConnect）は常に行わない。リストの読み書きクロージャと保持要素が所有者・要素を強く保持する（接続側契約）。テストは `Tests/YMM4CoreTests/Editing/ListAddRemoveCommandTests.swift`（9件: 追加のみ／記録位置への復元／削除のみの元位置復元／混在／空コマンドの破棄／非統合／値変更との混在順序（登録逆順・正順）／同一要素の値変更＋削除／実 Timeline への適用と長さキャッシュの追随）。
+- **所有と集約点**（アプリ層、新規 `Apps/DebugApp/Sources/YMM4MacDebug/EditRecorder.swift`）: `EditRecorder` が `EditCoordinator` を保持し、記録の投入経路を1か所へ集約する。所有は `WorkspaceState`（プロジェクト＝ウィンドウごとに1つ）。履歴変更通知は `WorkspaceState.editHistoryRevision` へ転送し、ツールバー／メニューの再評価の契機とする。プロジェクト切り替え（`newProject` / `load`）では、プロジェクト差し替えの直前に `EditRecorder.resetForProjectSwitch()`（未確定セッションの破棄＝巻き戻し→ `UndoHistory.clear()`）を呼ぶ順序に統一した。読み込み失敗時はリセットしない（旧プロジェクトと履歴を保つ）。
+- **記録の3形態**（`EditRecorder`）: (1) 離散編集 — `recordValueChange` がセッション外ではその変更だけのトランザクションとして即時確定する。他経路のトランザクションが有効な間は記録しない。(2) 連続編集 — `beginSession` / `commitSession` / `cancelSession` によるセッション。開始の所有は接続側（呼び出し側のフラグと Recorder 内の所有トランザクション）で追跡し、自分が開始していないセッションの終了処理は行わない。(3) タイムライン構造変更 — `recordTimelineChange` と `TimelineEditSnapshot`（同じファイル）による変更前後の差分捕捉。メンバーシップの変化はリスト追加・削除コマンド1件にまとめ、残った要素の配置値（Frame / Layer / Length / ContentOffset / KeyFrames / IsLocked）の変化は値変更コマンドにする。操作層自身の復元用スナップショット（TimelineInteractionView）とは責務が別の、記録専用の写しである。
+- **ツールバー／メニュー**: タイムライン帯の編集ツールバーの Undo/Redo ボタンを実接続し、有効条件は `WorkspaceState.canPerformUndo` / `canPerformRedo`（履歴の有無＋未確定トランザクションが無いこと）とした。復元処理中は同期実行で表示が再評価される機会が無いため、状態判定は未確定トランザクションの有無で足りる（Coordinator 自身も状態に応じて実行を拒否する）。アプリメニューの編集メニューは標準の UndoManager を `CommandGroup(replacing: .undoRedo)` で置き換え、Cmd+Z / Cmd+Shift+Z を `WorkspaceAction.undo` / `.redo` 経由で ProjectView が実行する形にした。Undo/Redo の適用後は `afterHistoryApplied` が選択の写し戻し、インスペクタの作り直し（`historyApplyRevision` を識別子へ含める）、タイムライン帯の再評価（`displayRevision`）、プレビュー再合成を行う。
+- **移行した経路**:
+  - インスペクタ（アイテム）の記述子書き込み: 数値（確定＋スライダ）、整数（確定＋ステッパ＋スライダ）、テキスト（単一行・複数行）、列挙、真偽トグル、アニメーション値（定数／先頭値／区間の3経路をキーと適用クロージャで区別）、アニメーション種別（値列の正規化は FE-R14-001 の別単位であり、現行 setter は種別の差し替えのみで往復は対称）。スライダはドラッグ開始・終了（onEditingChanged）でセッションを開閉し、ドラッグ全体を1エントリにまとめる。複合オブジェクト／コレクションの子行も対象とし、対象キーは所有者（アイテム）＋記述子 ID の経路（親 ID とコレクション位置を含む）で区別する。
+  - プレビュー操作: 移動ドラッグとハンドル（拡大率／回転角）の書き込み（`ProjectView.writeAnimationValue` の集約点で捕捉）。ドラッグ開始でセッションを開き、終了で確定する。
+  - アイテムの追加・削除: ツールバー／メニュー／セリフ行からの追加（`addItem` / `addVoiceItem`）、メディア追加（ダイアログ・ドロップ共通の `addMediaFiles`。写しは確定直前に取る）、選択削除（`deleteSelection`）、削除して全て詰める（`deleteAndMoveAll`。後続アイテムのフレーム移動も差分に含まれる）、コンテキストメニューの追加（`addItemAtPlayhead`）・単体削除・レイヤー削除・右クリック移動（`moveMenuItem`）。
+  - タイムラインドラッグ: TimelineStripView の `onDragBegan` / `onDragCommitted` / `onDragCancelled` へ接続。開始でトランザクションと写しを取り、確定で差分を記録する。キャンセル時はモデルを操作層が復元済みのため、トランザクションの破棄のみ（こちらに蓄積されるコマンドは通常は無く、巻き戻しは空振りになる）。
+- **制約・意図的な差異**:
+  - ドラッグフックの形状（戻り値なし）上、`beginTransaction()` の拒否を操作層へ veto として返せない。開始が拒否されたセッションではドラッグ自体は通常どおり進み、その変更は無記録になる（接続側の所有追跡により、終了通知で他セッションを誤って確定・破棄することはない）。→ **Round 20（FE-R20-126-02）で解消**: フックは戻り値つきになり、拒否時は操作層がセッション自体を開始しない。
+  - レイヤー削除はアイテム列とレイヤー詰めを記録するが、`layerSettings` の付け替えは差分捕捉の対象外であり、Undo でレイヤー設定側は戻らない。→ **Round 20（FE-R20-126-04）で解消**: 差分捕捉に `layerSettings` を含め、完全復元に変更した。
+  - ファイル参照（FilePathRowView）は記録対象外。パスの書き換えに伴う素材情報の取得と長さ調整が非同期で対にならず、パスだけを戻すと長さと不整合になるため。
+  - 色（ColorPicker）は記録対象外。連続変化の開始・終了の信号が部品に無く、確定単位を切れないため。
+- **未移行の経路（Undo 対応と見せない）**: エフェクトのプロパティ編集と追加・削除（書き戻しが EffectInspectorRow のローカル状態に閉じており、Undo 適用時の書き戻しを保証できないため）、複合コレクションの要素追加・削除、分割（ツールバー／コンテキストメニュー）、グループ化／解除、ロック／クリッピングのトグル（ツールバー・メニュー・コンテキストメニュー経由。ドラッグ中のロックボタンの切替はタイムラインドラッグの差分に含まれる）、キーフレームの追加・削除・均等配置、空間の削除（deleteTimelineSpace 系）、シーンの追加・削除・名前変更、「動画の設定」ダイアログ（VideoInfo の変更）、レイヤーラベルの表示切替・音量、書き出し設定。これらは従来どおり動作するが履歴には残らない。
+- **手動検証チェックリスト（未実施）**: (1) 数値・アニメーション・テキストの各行で編集→ツールバー Undo で値と表示が戻り、Redo で再適用される。(2) スライダのドラッグが履歴1エントリで往復する。(3) アイテム追加・削除（ツールバー／コンテキストメニュー／レイヤー削除）が往復し、選択とプレビューが追随する。(4) タイムラインの移動・トリム・キーフレームドラッグが往復し、Escape のキャンセルでは履歴が増えない。(5) 背景クリック・範囲選択の Escape で履歴が誤作動しない。(6) プレビューの移動・拡大率・回転角ドラッグが往復する。(7) プロジェクトを開き直すと履歴が消え、旧プロジェクトのアイテムへ Undo が及ばない。(8) Cmd+Z / Cmd+Shift+Z と編集メニューの有効/無効が履歴と一致する。
+
+検証: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功（226ステップ）。対象を絞った `swift test` を2回に分けて実行し全合格 — `ListAddRemoveCommandTests` 9件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件（計34件）、および Editing 関連の既存スイート `TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件（計154件）、いずれも失敗0。全スイートは回していない。AudioDriftTests は実行していない（本単位は音声クロック・リサンプリング中核の変更を含まない）。アプリ層にはテスト対象が無いため、接続の振る舞いは上記の手動チェックリストで確認する（未実施）。
+
+##### Round 20 処分（FE-R20-126-01〜04、全て P1）
+
+PR #126 の Round 20 指摘4件の処分。着手前に現在の main（`5f9cd5d`、PR #125 プレビュー統合済み）をマージし、競合なし・DebugApp ビルド成功を確認してから処分に入った。Core の `EditCoordinator` / `UndoHistory` の既存契約は変更していない。
+
+- **配置の変更（処分の前提）**: `EditRecorder` と `TimelineEditSnapshot` をアプリ層（`Apps/DebugApp/Sources/YMM4MacDebug/EditRecorder.swift`）から Core（`Sources/YMM4Core/Editing/EditRecorder.swift` / `TimelineEditSnapshot.swift`）へ移設した。理由は、アプリ層にはテスト対象が無く、01〜03 のいずれも「記録の振る舞いを回帰テストで固定する」ことが修正条件に含まれていたためであり、監査の修正条件が例示した「形状差分の記録そのものを Core の型へ移す」形に合わせた。所有（`WorkspaceState` がプロジェクトごとに1つ保持）と接続の形は変えていない。ARCHITECTURE.md の構成・データフローも追随させた。
+- **FE-R20-126-01（Undo/Redo でタイムライン長キャッシュが壊れる）**: `TimelineEditSnapshot.recordDiff` の配置値コマンドの適用クロージャが、値を書き戻した直後に `timeline.refreshTimelineLengthAndMaxLayer()` を呼ぶ形にし、「差分コマンドの適用後はどの経路（Undo / Redo / キャンセルの巻き戻し）でも `length == computeCurrentLength()` と maxLayer の整合が保たれる」ことを型の契約とした。メンバーシップの書き戻しは従来から再計算していたため、欠けていたのは配置値側だった。回帰テストは `Tests/YMM4CoreTests/Editing/TimelineEditSnapshotTests.swift`（6件。監査の再現＝Frame=60・Length=30 の移動往復で長さ 90 が戻ること、レイヤー移動の maxLayer、先頭・末尾リサイズ、削除＋後続移動、レイヤー削除の完全復元）。
+- **FE-R20-126-04（レイヤー削除の Undo が操作全体を復元しない）**: 完全復元を選択した。`TimelineEditSnapshot` が `layerSettings.items` の変更前後を保持し、差分があれば列全体を1件の値変更コマンド（対象は Timeline、キー `LayerSettings`）として同じトランザクションへ登録する。根拠: `LayerSetting` は値型で `Equatable` であり、列全体の保持・比較・書き戻しが素直に成立する。型の都合で不合理という事情は無かったため、「記録対象から外す」代替は採らなかった。従来の制約（上記「制約・意図的な差異」の該当項）は解消として注記した。レイヤー挿入・入れ替え（`insertLayer` / `swapLayers`）は従来どおり未移行（記録対象外）のままであり、本処分の対象は記録済みのレイヤー削除のみ。
+- **FE-R20-126-02（トランザクション開始拒否後も編集が実行される）**: (1) `EditRecorder.recordTimelineChange` は開始拒否時に変更本体を実行せず false を返す形に変更し、全呼び出し箇所を追随させた — ProjectView の選択削除・削除して詰める（拒否時は後続処理も行わない）、追加系3経路（`addItem` / `addMediaFiles` / `addVoiceItem` は既存の `added` フラグで拒否時も実行されないことが保証される）、`TimelineContextMenus.recordTimelineEdit`（戻り値つきに変更。単体削除・右クリック移動・レイヤー削除は拒否時に選択復元・再描画を行わない）。(2) ドラッグ開始フックを戻り値つきへ変更した（`TimelineStripView.onDragBegan: () -> Bool` → `TimelineInteractionConfiguration.onDragBegan` → ProjectView `beginTimelineDragUndo` が記録開始の可否を返す）。拒否された場合、`TimelineInteractionView.mouseDown` はセッション自体を開始しない（複製・衝突解決・移動のいずれも起こらず、終了通知も送らない）。クリック選択だけは残す — 根拠: 選択は本家でも Undo の対象外の状態であり、監査の修正条件も「モデルを変更しない扱いは従来どおりでよい」としている。ロックボタンのセッションも同じ経路で開始されるため、拒否時は MouseUp のロック切替も行われない（モデル変更を伴うため一貫する）。(3) テストの分担: Core で固定できる部分（拒否時に本体が実行されず、モデル・履歴とも不変）は `EditRecorderTests` に追加した。ドラッグの veto はアプリ層（AppKit のマウス処理）にテスト対象が無いため、コード形状（フックの戻り値を mouseDown の分岐で消費し、開始処理より前に畳む）で固定し、下記の手動チェックリストへ追加した。
+- **FE-R20-126-03（別の編集が進行中のセッションへ混入する）**: セッションに所有権トークン（`EditSessionToken`、`beginSession` が発行）を結び付けた。確定・破棄・差分投入（`sessionTransaction(for:)`）はトークン一致の場合だけ作用する。`recordValueChange` はセッション有効中は所有者のトークンを提示した記録だけを受け付ける（入口をすり抜けた投入への二重の防壁）。モデル変更の防止は入口確認 `canRecordValueChange(sessionToken:)` が担い、全書き込み経路を追随させた: インスペクタ各行（数値・整数・テキスト・複数行・列挙は離散として入口確認、スライダ3種は自セッションのトークンを各書き込みで提示）、真偽トグル、アニメーション種別メニュー、プレビュー操作（`ProjectView.writeAnimationValue` の集約点で入口確認し、移動・拡大率・回転角の各ドラッグが自セッションのトークンを渡す）、タイムラインドラッグ（所有フラグをトークン保持へ置換）。影響する呼び出し箇所は `recordValueChange` / `recordDescriptorValueChange` / セッション開閉の全箇所を grep で洗い出して追随させた（残存する旧 API 呼び出しは無い）。記録先（EditRecorder）が無い構成では従来どおり無記録で書き込む（入口確認は記録先が在る場合にだけ効く）。回帰テストは `EditRecorderTests`（所有者の蓄積と1エントリ化、非所有者の投入が履歴へ混入しないこと、失効トークンの無効、確定・破棄のトークン照合、離散編集の即時記録）。
+- **残る制約**: ドラッグ veto とアプリ層の入口確認の配線は、アプリ層にテスト対象が無いため自動テストでは固定できていない（Core 側の契約はテスト済み）。実機での確認項目として手動チェックリストへ追加する: (9) レイヤー削除を Undo すると、レイヤー名・色・表示状態とアイテムが一体で戻り、Redo で再び削除状態になる。(10) スライダのドラッグ中に他の編集部品（数値確定・トグル・種別変更）が値を変えない（実操作ではドラッグ中の同時操作はほぼ発生しないため、コード形状での固定が主で、再現できた場合のみ確認する）。(11) タイムラインドラッグの開始拒否時にアイテムが複製・移動しない（同上、競合状態の再現が前提）。
+
+検証（Round 20）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。統合直後・各処分の節目・最終形で DebugApp の `swift build` 成功。最終形の対象テストは Editing 関連12スイート計199件・失敗0（内訳: `EditRecorderTests` 5件・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+##### Round 21 処分（FE-R21-126-01、P1）
+
+PR #126 の Round 21 新規指摘「失効したセッショントークンが再び編集を許可する」の処分。Round 20 の FE-R20-126-03 は有効セッション中の所有権照合までは処分できていたが、入口確認 `canRecordValueChange` のセッション不存在分岐が、提示されたトークンの有効性も Coordinator の操作状態も見ていなかった（`coordinator.activeTransaction == nil` のみで判定）。`EditCoordinator` / `UndoHistory` の既存の操作契約（開始・確定・キャンセル・Undo/Redo の可否と意味）は変更していない。追加したのは読み取り専用の照会1件のみである。
+
+- **契約（監査の指定どおり）**: (a) Core が idle かつセッションなしのときは、トークンなしの離散編集のみ許可する。(b) セッション有効時は現在の所有者トークンを持つ編集のみ許可する（Round 20 から不変）。(c) セッション終了・取消・プロジェクト切り替え後は、失効トークンによる編集を拒否する（セッション不存在時に非 nil トークンを提示されたら拒否）。(d) Coordinator が復元処理中（キャンセルの巻き戻し中）・編集中のときは、すべての新規編集を拒否する。(e) UI のドラッグ開始拒否後は、そのドラッグが終了するまで書き込み禁止のままにする。
+- **Core 側の処分**: 受け付け可否の判定を `EditRecorder.acceptsValueChange(sessionToken:)` の1か所へ寄せ、入口確認（`canRecordValueChange`）と記録側（`recordValueChange`）が同じ判定を共有する形にした（両者で結論がずれない）。セッション不存在分岐は「非 nil トークンは失効として拒否」＋「`EditCoordinator.isIdle`（新規の読み取り専用照会。操作状態が `.idle` の場合だけ真）で本当に idle かを確認する」に変更した。従来判定（`activeTransaction == nil`）は復元処理中も真になるため、巻き戻しの適用クロージャから再入した編集が入口を通り、記録だけが開始拒否で破棄される不整合があった。`isIdle` の追加は読み取り専用の照会であり、Coordinator の既存契約は変えていない。なお Undo/Redo の適用中は Coordinator の操作状態は idle のままで、記録の抑制は従来どおり `UndoHistory.isApplying` が担う（PR #119 の契約、本処分では不変）。
+- **UI 側の処分**: ドラッグ／スライダの状態を表す `EditDragSession`（開始前 `idle`・所有中 `owning(token)`・開始拒否 `refused`）をアプリ層の共通部品として新設した（`PropertyEditorRows.swift`、記録ヘルパー `editWriteAllowed` の隣）。開始拒否になったドラッグは `refused` を保持し、`writeAllowed` が常に false を返すため、他のセッションが終了してもそのドラッグの継続書き込みがトークンなしの離散編集として受理されることはない。付け替えた経路: スライダ3種（数値・整数・アニメーションの各行。状態変数を `sliderSessionToken` から `sliderSession` へ置換）、プレビューの移動ドラッグとハンドルドラッグ（拡大率・回転角。`previewDragSession` / `handleDragSession` へ置換し、集約点 `writeAnimationValue` は生トークンではなく `EditDragSession` を受けて入口確認と記録トークンの提示を行う）。タイムラインドラッグは Round 20 の veto 形状（開始フックが可否を返し、拒否時は操作層がセッション自体を開始しない）により、拒否されたドラッグの継続書き込みという形自体が存在しないため付け替え対象外（差分記録は確定時にトークン照合つきで行われる）。記録先（EditRecorder）が無い構成では従来どおり無記録で書き込む（`begin(using: nil)` は開始前のまま）。
+- **テストの分担**: Core で固定できる部分は `EditRecorderTests` に3件追加した — 失効トークンの拒否（確定で閉じた場合。入口・記録の双方と、トークンなし離散編集が過剰に拒否されないこと）、失効トークンの拒否（破棄で閉じた場合とプロジェクト切り替えで破棄された場合。切り替え時の巻き戻しと履歴消去を含む）、復元処理中の編集拒否（キャンセルの巻き戻しの適用クロージャから再入し、入口確認が false を返し記録も受理されないこと。再入を再現するコマンドで検証）。「拒否されたドラッグの継続書き込み」については、Core 側で固定できるのは提示トークンの扱い（失効トークンの拒否・復元中の拒否）までであり、ドラッグ側が `refused` 状態を保持して書き込み自体を行わない部分はアプリ層のコード形状で固定する（アプリ層にテスト対象が無いため）。手動チェックリストへの追加: (12) スライダのドラッグが開始拒否された状態（他のセッション有効中にドラッグを開始）を再現できた場合、そのドラッグを継続しても値が変わらず、他のセッション終了後も変わらないこと（競合状態の再現が前提で、コード形状での固定が主）。
+- **残る論点（本処分の範囲外として明記）**: プロジェクト切り替え後の遅延イベントのうち、トークンを提示する経路は本契約で断たれる。トークンを持たない離散編集の遅延イベントはビューの破棄（プロジェクト切り替えで画面が作り直される既存構造）に依存しており、本処分では扱っていない。
+
+検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。

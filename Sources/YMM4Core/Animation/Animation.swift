@@ -483,6 +483,145 @@ public struct Animation: Equatable, Sendable {
         return true
     }
 
+    // MARK: - 種別変更と値列の正規化（本家 EndEditAsync の種別変更分岐）
+
+    /// アニメーション種別を変更し、値列を新しい種別の有効な値の数・
+    /// 意味へ組み替える単一操作（FE-R14-001）。
+    ///
+    /// 本家では編集開始時に `BeginEdit` が旧種別を記録し（Animation.cs:600）、
+    /// 編集終了時の `EndEditAsync`（同 605–686）が旧種別→新種別の組合せで
+    /// 値列を正規化する。Mac の記述子書き込みには編集セッション境界が
+    /// 無いため、監査 Round 14 の指定により「種別変更＋値列正規化」を
+    /// この1操作にまとめ、記述子の種別セッターは必ずここを通る。
+    /// 変換に使う長さは注入済みの `length`（本家 `Length`、
+    /// SetAnimationParameters 由来）である。
+    ///
+    /// 分岐は本家 EndEditAsync の種別変更側そのまま:
+    /// - 新種別が「なし」: 先頭の値だけ残す。
+    /// - 旧種別が「なし」: 先頭だけ残し、移動量指定なら移動量 0 を、
+    ///   それ以外は先頭の値の複製を有効な値の数まで補う（定数 50 から
+    ///   ランダム移動へ切り替えると終端値も 50 になるのはこの規則）。
+    /// - 旧種別が「移動量指定」: 終端値 = 開始値 + 移動量 × 長さ。
+    ///   新種別がキーフレーム対応なら、その区間を等分した位置の値を
+    ///   線形に割り付ける。
+    /// - 旧種別がキーフレーム非対応（ランダム移動・反復移動）:
+    ///   移動量指定なら移動量 =（終了値 − 開始値）/ 長さ。
+    ///   キーフレーム対応なら開始値→終了値を等分位置へ線形に割り付ける。
+    ///   非対応同士（ランダム ⇔ 反復）は値列を変えない。
+    /// - 旧種別がキーフレーム対応: 移動量指定なら
+    ///   移動量 =（末尾の値 − 先頭の値）/ 長さ。非対応の新種別なら
+    ///   終端値 = 末尾の値。対応同士は値列を変えない。
+    ///
+    /// 本家 EndEditAsync の「種別不変」側分岐（有効な値の数への
+    /// 切り詰め・末尾値での補充）は対象外。Mac では値列の個数は
+    /// キーフレーム追加・削除の連動と値書き込み側で維持されており、
+    /// 読み込みデータの超過分は評価側が先頭 `activeValueCount` 個だけを
+    /// 使うことで吸収する（保存時の往復保全を優先する判断）。
+    /// 値列が空の異常データでは本家は例外になるが、ここでは入口で
+    /// 既定値を種として実体化し、全分岐で結果の値列が空にならない
+    /// ことを保証する（FE-R23-127-02。防御的な相違）。
+    public mutating func changeAnimationType(to newType: AnimationType) {
+        let oldType = animationType
+        guard newType != oldType else { return }
+        animationType = newType
+
+        // 値列が空の異常データでは、既定値を種として実体化してから
+        // 組み替える（FE-R23-127-02）。これにより、値列を変えない
+        // 分岐（ランダム ⇔ 反復）や先頭だけ残す分岐（「なし」への
+        // 遷移）でも結果が空にならない。
+        if values.isEmpty {
+            values = [AnimationValue(defaultValue)]
+        }
+
+        if newType == .none {
+            values = Array(values.prefix(1))
+            return
+        }
+        // 以降の分岐では先頭の値が必ず要る。入口の種付けで空でない
+        // ことが保証される（フォールバックは念のための防御）。
+        let first = values.first ?? AnimationValue(defaultValue)
+        if oldType == .none {
+            if newType == .movementAmount {
+                values = [first, AnimationValue(0)]
+            } else {
+                values = [first] + Array(
+                    repeating: first, count: activeValueCount - 1
+                )
+            }
+            return
+        }
+        if oldType == .movementAmount {
+            let from = first.value
+            let delta = values.dropFirst().first?.value ?? 0
+            if !newType.isKeyFrameSupported {
+                values = [first, AnimationValue(from + delta * Double(length))]
+            } else {
+                let count = activeValueCount - 1
+                values = [first] + (1...count).map { x in
+                    AnimationValue(
+                        from + delta * Double(length) * Double(x) / Double(count)
+                    )
+                }
+            }
+            return
+        }
+        if !oldType.isKeyFrameSupported {
+            let from = first.value
+            let to = values.dropFirst().first?.value ?? from
+            if newType == .movementAmount {
+                values = [first, AnimationValue((to - from) / Double(length))]
+            } else if newType.isKeyFrameSupported {
+                let count = activeValueCount - 1
+                values = [first] + (1...count).map { x in
+                    AnimationValue(from + (to - from) * Double(x) / Double(count))
+                }
+            }
+            return
+        }
+        if newType == .movementAmount {
+            let last = values.dropFirst().last?.value ?? first.value
+            values = [first, AnimationValue((last - first.value) / Double(length))]
+        } else if !newType.isKeyFrameSupported {
+            let end = values.dropFirst().last?.value ?? first.value
+            values = [first, AnimationValue(end)]
+        }
+    }
+
+    // MARK: - 種別変更の Undo 記録用の状態写し
+
+    /// 種別変更の前後状態の写し（種別と値列のみ）。
+    ///
+    /// 種別変更（`changeAnimationType`）は値列を組み替える不可逆な
+    /// 操作であるため、Undo で種別だけを戻しても変更前の値列は
+    /// 復元できない。記録側はこの写しを変更前後の組として保持し、
+    /// Undo/Redo では `restoreRecordedState` でそのまま書き戻す
+    /// （FE-R23-127-01）。キーフレーム列・長さ等の評価文脈は所有
+    /// アイテムから注入されるもので種別変更では変わらないため、
+    /// 写しには含めない。
+    public struct RecordedState: Equatable, Sendable {
+        public var animationType: AnimationType
+        public var values: [AnimationValue]
+
+        public init(animationType: AnimationType, values: [AnimationValue]) {
+            self.animationType = animationType
+            self.values = values
+        }
+    }
+
+    /// 現在の種別と値列の写し（Undo 記録用）。
+    public var recordedState: RecordedState {
+        RecordedState(animationType: animationType, values: values)
+    }
+
+    /// 記録済みの状態をそのまま書き戻す。種別変更の Undo/Redo
+    /// 専用の復元経路であり、正規化（`changeAnimationType`）は
+    /// 再実行しない。通常の編集経路では使わない（種別変更は
+    /// `changeAnimationType`、値の書き込みは `setValue` 等を通す）。
+    public mutating func restoreRecordedState(_ state: RecordedState) {
+        animationType = state.animationType
+        values = state.values
+    }
+
     /// 再生ヘッド位置が属する区間のインデックス。区間は
     /// [0, キーフレーム..., 長さ] の境界で区切られ、`values` の
     /// インデックスと一致する（区間 i の開始値が values[i]）。
