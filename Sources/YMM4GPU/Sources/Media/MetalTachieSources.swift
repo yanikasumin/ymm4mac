@@ -1,6 +1,7 @@
 #if os(macOS)
 import AVFoundation
 import CoreGraphics
+import Darwin
 import Foundation
 import Metal
 import YMM4Core
@@ -275,9 +276,15 @@ public final class MetalTachieSource: TachieSource {
     /// 2次フラグを文字列化して含める（ベジェだけの変更でもレート
     /// 曲線が変わるため）。処理モードは SOLA かリサンプリングかで
     /// エフェクトチェーンの出力が変わるため含める。
+    ///
+    /// カスタム音声（発音が実ファイルのパス）の場合は、ファイル
+    /// 自体の同一性（サイズと更新時刻）も末尾に含める。アイテム側
+    /// の項目だけでは、同じパスのファイルを別内容へ差し替えても
+    /// 署名が変わらず、包絡キャッシュが古いまま残るため
+    /// （Issue #134）。
     static func envelopeSignature(of voice: VoiceItem) -> String {
         let rate = voice.playbackRate2
-        return [
+        var components = [
             voice.hatsuon,
             String(voice.voiceCacheGeneration),
             String(describing: rate.animationType),
@@ -289,7 +296,45 @@ public final class MetalTachieSource: TachieSource {
             String(voice.contentOffset.ticks),
             String(voice.contentLength.ticks),
             String(voice.isLooped),
-        ].joined(separator: "|")
+        ]
+        if let fileIdentity = fileIdentityComponent(ofHatsuon: voice.hatsuon) {
+            components.append(fileIdentity)
+        }
+        return components.joined(separator: "|")
+    }
+
+    /// カスタム音声ファイルの同一性を署名の部品として返す
+    /// （Issue #134）。
+    ///
+    /// 「発音がファイルパスか」の判定は音声供給側
+    /// （VoicePCMProviderResolver.isCustomVoicePath）と同一の基準を
+    /// 使う。パスでない発音（音声エンジンの声名など、実ファイルが
+    /// 存在しないケース）では nil を返し、署名は従来どおりアイテム
+    /// 側の入力だけで決まる（stat も行わない）。
+    ///
+    /// 同一性はサイズと更新時刻（stat の st_size と st_mtimespec。
+    /// 秒＋ナノ秒の整数）で表す。全ファイル読みのハッシュは採らない
+    /// （署名は包絡を使うフレーム描画のたびに計算されるため、コスト
+    /// は stat 1回に抑える。実測は台帳 ISSUE134 参照）。ファイルが
+    /// 存在しない場合は固定の不在標識を返し、ファイルの消滅・出現
+    /// の遷移も署名の変化として検出できるようにする。
+    static func fileIdentityComponent(ofHatsuon hatsuon: String) -> String? {
+        guard VoicePCMProviderResolver.isCustomVoicePath(hatsuon) else {
+            return nil
+        }
+        // パスの解決は供給側（resolveMediaURL）の絶対パス経路と揃える:
+        // file URL ならそのパス、それ以外は文字列自体をパスとして扱う
+        // （Windows ドライブパスは Mac では stat が失敗し不在標識になる）。
+        let path: String
+        if let url = URL(string: hatsuon), url.isFileURL {
+            path = url.path
+        } else {
+            path = hatsuon
+        }
+        var fileStat = stat()
+        guard stat(path, &fileStat) == 0 else { return "file:missing" }
+        let modified = fileStat.st_mtimespec
+        return "file:\(fileStat.st_size):\(modified.tv_sec).\(modified.tv_nsec)"
     }
 
     /// ベジェ定義の文字列化。アンカー点と制御点（相対オフセット）の
