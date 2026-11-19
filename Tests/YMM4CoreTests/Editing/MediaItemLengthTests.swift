@@ -359,6 +359,35 @@ final class MediaItemLengthTests: XCTestCase {
         XCTAssertEqual(item.contentLength, seconds(10.6))
     }
 
+    /// エコー有効後に再生速度だけを変えても、素材長がその場で
+    /// 再計算される（FE-R27-129-02）。再計算の発火は従来エコー
+    /// プロパティの書き込みに限られ、速度変更では古い尾のままに
+    /// なっていた（上記のテストは速度を先に設定してからエコーを
+    /// 有効化しており、この経路を検査できていなかった）。追随点
+    /// は `BaseItem.playbackRate2` の書き込み（値型プロパティの
+    /// setter）へ集約され、書き込み経路を問わない。
+    func testEchoContentLengthRefreshesOnPlaybackRateOnlyChange() {
+        let item = AudioItem()
+        item.echoIsEnabled = true
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        XCTAssertEqual(item.contentLength, seconds(10.6))
+        item.playbackRate = 200
+        // 尾 = 0.6 秒 × (200 / 100) = 1.2 秒。
+        XCTAssertEqual(item.contentLength, seconds(11.2))
+        item.playbackRate = 100
+        XCTAssertEqual(item.contentLength, seconds(10.6))
+    }
+
+    /// 動画アイテムでも同じ追随が働く（再計算の対象は動画・音声）。
+    func testEchoContentLengthRefreshesOnPlaybackRateChangeForVideo() {
+        let item = VideoItem()
+        item.echoIsEnabled = true
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        XCTAssertEqual(item.contentLength, seconds(10.6))
+        item.playbackRate = 200
+        XCTAssertEqual(item.contentLength, seconds(11.2))
+    }
+
     // MARK: - FE-R15-004 分岐 (3): 再生速度変更時の比率再計算
 
     /// 定数速度を半分にすると、消費量を保つため長さは 2 倍になる。
@@ -521,6 +550,93 @@ final class MediaItemLengthTests: XCTestCase {
         )
         XCTAssertFalse(adjusted)
         XCTAssertEqual(item.length, 300)
+    }
+
+    // MARK: - FE-R27-129-05: 換算の整数範囲ガード
+
+    /// 極小の新速度では換算結果（有限だが整数の表現範囲外）が
+    /// Int 変換でトラップする。範囲外は 1 未満の場合と同じ既定
+    /// の長さへ倒す（Mac 側の安全策）。
+    func testPlaybackRateChangeWithHugeQuotientFallsBackToDefault() {
+        let item = AudioItem()
+        item.length = 100
+        item.playbackRate = 1e-17
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertEqual(item.length, BaseItem.defaultItemLength)
+    }
+
+    /// 換算結果が非有限（商の溢れ）でもトラップしない。
+    func testPlaybackRateChangeWithInfiniteQuotientFallsBackToDefault() {
+        let item = AudioItem()
+        item.length = 100
+        item.playbackRate = 1e-320
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertEqual(item.length, BaseItem.defaultItemLength)
+    }
+
+    /// 範囲内に収まる大きな換算結果はそのまま変換する。
+    func testPlaybackRateChangeWithLargeValidQuotientConverts() {
+        let item = AudioItem()
+        item.length = 100
+        item.playbackRate = 0.25
+        XCTAssertTrue(item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        ))
+        XCTAssertEqual(item.length, 40_000)
+    }
+
+    // MARK: - FE-R27-129-04: 編集終了時調整の適用層（基点と分岐優先）
+
+    /// 基点は編集開始時点の速度・定数判定・素材長・素材本来の
+    /// 長さを保持する（本家の OldContentLength /
+    /// OldOriginalContentLength を含む捕捉。監査 Round 27 の補足）。
+    func testBaselineCapturesEditStartValues() {
+        let item = AudioItem()
+        item.echoIsEnabled = true
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        let baseline = item.capturePlaybackRateEditBaseline()
+        XCTAssertEqual(baseline.firstValue, 100)
+        XCTAssertTrue(baseline.isConstant)
+        XCTAssertEqual(baseline.contentLength, seconds(10.6))
+        XCTAssertEqual(baseline.originalContentLength, seconds(10))
+    }
+
+    /// 素材本来の長さが変わっていなければ、分岐 (3) が基点の
+    /// 旧速度で比率換算する。
+    func testFinishAppliesRatioWhenOriginalLengthUnchanged() {
+        let item = AudioItem()
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        item.resetLength(fps: 30)
+        let baseline = item.capturePlaybackRateEditBaseline()
+        item.playbackRate = 50
+        XCTAssertTrue(item.finishPlaybackRateEdit(baseline: baseline, fps: 30))
+        XCTAssertEqual(item.length, 600)
+    }
+
+    /// 編集の途中でファイルが差し替わった（素材本来の長さが
+    /// 変わった）場合は分岐 (1) が優先し、分岐 (3) を重ねない
+    /// （二重換算の防止。本家は else-if 連鎖で排他）。
+    func testFinishSkipsRatioWhenFileChangedDuringEdit() {
+        let item = AudioItem()
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        item.resetLength(fps: 30)
+        let baseline = item.capturePlaybackRateEditBaseline()
+        // ファイル変更の経路: 新しい素材情報を記録し、分岐 (1)
+        // で長さを決め直す（10 秒 → 20 秒で 600 フレーム）。
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(20)))
+        XCTAssertTrue(item.adjustLengthAfterFileChange(
+            previousOriginalContentLength: seconds(10), fps: 30))
+        XCTAssertEqual(item.length, 600)
+        // 速度も変えたうえで編集を終えても、比率換算は重ならない。
+        item.playbackRate = 50
+        XCTAssertFalse(item.finishPlaybackRateEdit(baseline: baseline, fps: 30))
+        XCTAssertEqual(item.length, 600)
     }
 
     // MARK: - PlaybackRateMap.findContentExhaustedTime
