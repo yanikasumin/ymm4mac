@@ -53,6 +53,21 @@
           TimelineEditingSplit.swift 分割・ChangeFrameRate
           TimelineEditingDeleteAndMove.swift DeleteAndMove・長さ変更
           TimelineEditingSpace.swift 空間を詰める削除の一族
+          EditCommand.swift    編集コマンドの契約（EditTargetKey、値変更
+                               コマンド、手続き型コマンド）
+          EditCommandCollector.swift コマンドの収集（統合・相殺・実行順）
+          EditTransaction.swift 明示的な編集トランザクション
+          UndoHistory.swift    Undo/Redo 履歴（容量・記録抑制）
+          EditCoordinator.swift トランザクションと履歴の確定入口（薄い統括）
+          ListAddRemoveCommand.swift リスト追加・削除コマンド（非 Action。
+                               本家 UndoRedoAddRemoveListItemsCommand 相当）
+          EditRecorder.swift   Undo 記録の集約点（EditCoordinator への投入
+                               経路。セッション所有権トークン・離散変更・
+                               タイムライン差分捕捉。FE-R20-126-01 で
+                               アプリ層から移設）
+          TimelineEditSnapshot.swift タイムライン構造変更の前後差分捕捉
+                               （配置値・メンバーシップ・レイヤー設定。
+                               適用時の長さキャッシュ再計算を含む）
         Items/
           BaseItem.swift       BaseItem / VisualItem / VideoItemProperties
                                （アニメーション文脈の伝播、分割。本家 IVideoItem の
@@ -320,7 +335,8 @@
         Sources/YMM4MacDebug/
           YMM4MacDebugApp.swift アプリ入口
           ContentView.swift    ルート画面（プロジェクト読み込みと検証サンプル）
-          WorkspaceState.swift 新規プロジェクト等の作業状態
+          WorkspaceState.swift 新規プロジェクト等の作業状態（Undo 履歴の
+                               所有も担う。プロジェクトごとに1つ）
           ProjectView.swift    製品 UI の土台（プレビュー・運送系・タイムライン・
                                ステータスバー・メニュー）
           PreviewBox.swift     プレビュー合成の表示
@@ -362,6 +378,11 @@
 
 - 読み込み: .ymmp テキスト → `JSONParser`（順序・数値リテラル保持）→ `YmmpCodec.decode` が $type を解決して `Project` / `Timeline` / アイテム13クラスを構築。未知の $type のアイテムは読み飛ばして診断情報へ記録し、未知のプロパティは各モデルの `additionalFields` に保持する。プラグイン型の値（エフェクト等）は `PreservedObject` として生 JSON のまま保持する。デコードの最後に、VoiceItem / TachieItem / TachieFaceItem の実行時参照 `character` を `Project.Characters` から `characterName` で引いて解決する（本家の `Character` は [JsonIgnore] で、保存されるのは名前だけであるため）。
 - 編集: `Timeline` の編集操作（TimelineEditing.swift）がアイテム（参照型）を直接書き換える。本家の意味論どおり、前処理は入力を書き換え、原子的保証はコミット段階のみ。`Timeline.Length` / `MaxLayer` はキャッシュとして保守される。
+- 編集の Undo（FE-UNDO-WIRING）: 履歴の所有は `WorkspaceState`（プロジェクト＝ウィンドウごとに1つ）が `EditRecorder`（Core の記録集約。FE-R20-126-01 でアプリ層から Core の `Editing/` へ移設。アプリ層にはテスト対象が無いため、記録の振る舞いを Core のテストで固定する）経由で `EditCoordinator`（Core）を保持する。変更の捕捉は本家の自動監視ではなく明示トランザクション方式で、投入経路は `EditRecorder` の3形態（離散変更の即時確定／スライダ・ドラッグのセッション／タイムライン構造変更の前後差分捕捉）に限る。ここを通らない編集経路は履歴に残らない（未移行経路は実装ログ FE-UNDO-WIRING に列挙）。プロジェクトの差し替え時は、未確定セッションの破棄（巻き戻し）を先に行ってから履歴を消す順序に統一されている。Undo/Redo の実行後は ProjectView が選択・インスペクタ・タイムライン・プレビューを表示側でモデルへ追随させる。
+- Undo の開始拒否と所有権（FE-R20-126-02 / 03、FE-R21-126-01）: トランザクションを開始できない場合、編集は実行されない。`recordTimelineChange` は本体を実行せず false を返し、タイムラインドラッグの開始フック（`TimelineStripView.onDragBegan` → `TimelineInteractionView`）も可否を戻り値で受け、拒否時は操作層がモデル変更セッション自体を開始しない（クリック選択だけはモデル変更ではないため残る）。連続編集のセッションには所有権トークン（`EditSessionToken`）が結び付いており、値変更の記録・確定・破棄はトークン一致の場合だけ作用する。所有者でない経路の離散編集は、書き込みの入口（`EditRecorder.canRecordValueChange`）で確認してモデル変更自体を行わない。値変更の受け付け可否は `EditRecorder.acceptsValueChange` の1か所で判定し、入口確認と記録側が共有する: セッションが無い間に非 nil のトークンを提示された場合は失効として拒否し、離散編集は `EditCoordinator.isIdle`（読み取り専用照会）が真の場合だけ許可する（復元処理中は `activeTransaction` が nil でも拒否される）。スライダとプレビュードラッグは状態 `EditDragSession`（開始前・所有中・開始拒否）を保持し、開始拒否になったドラッグは終了まで書き込み禁止のままになる。
+- タイムライン差分の適用とキャッシュ（FE-R20-126-01 / 04）: `TimelineEditSnapshot` の差分は配置値（Frame / Layer / Length / ContentOffset / KeyFrames / IsLocked）、メンバーシップ、レイヤー設定（`layerSettings.items` の列全体）を含む。配置値とメンバーシップの適用クロージャは書き戻しの直後に `refreshTimelineLengthAndMaxLayer()` を呼び、Undo / Redo / キャンセルの巻き戻しのどの経路でも適用後に長さ・最大レイヤーのキャッシュが実状態と一致する。レイヤー削除はアイテム列・レイヤー詰め・レイヤー設定が一体で往復する。
+- アニメーション種別変更の記録と復元（FE-R23-127-01）: 種別変更は値列の再構成と一体の不可逆な操作であるため、記録は種別だけではなく変更前後の状態（種別＋値列、`Animation.RecordedState`）を一体として保持する。Undo/Redo の適用は変換（`Animation.changeAnimationType`）を再実行せず、記述子の復元経路（`PropertyDescriptor.restoreAnimationRecordedState` → `Animation.restoreRecordedState`）で記録した状態をそのまま書き戻す。復元経路は Undo/Redo 専用であり、通常の編集は `setAnimationType` を通る。
+- 移動量指定の第2値の記録（FE-R25-128-01）: 第2値の書き込み（記述子の `setAnimationValue(_:atValueIndex:clampRange:)`）は短い値列の実体化（値列の個数の変化）を伴いうるため、記録は第1値と同じ値1つの記録ではなく、種別変更と同じく変更前後の `Animation.RecordedState` を一体として保持し、適用は同じ復元経路で書き戻す。履歴キーは第1値（#const / #first / #seg<n>）と種別変更（#type）から区別する（#movement）。書き込み経路も第1値と同じ契約に従う: 入口確認（`EditRecorder.canRecordValueChange`）を通らない場合はモデルを変更せず、スライダのドラッグは第1値とは独立した `EditDragSession` で1ドラッグを1エントリへまとめる。
 - メディアアイテムの追加・差し替え（FE-R1-043）: ファイル選択／ドロップ（アプリ層）→ `MediaFileInfoFetcher`（I/O 供給層。音声は PCM 供給工場の duration、動画は映像トラックの提示区間、画像は寸法のみ）→ `BaseItem.recordMediaInfo` / `resetLength` / `adjustLengthAfterFileChange`（編集操作層。Core の `Editing/MediaItemLength.swift` が本家 `ResetLength` と編集終了時の調整を担う）→ `Timeline.tryAddItems`（確定操作）の順に流れ、情報取得が成功するまでモデルへ確定しない。再生速度の編集終了時調整（定数速度変更時の比率再計算、FE-R15-004 分岐 (3)）も同層の `adjustLengthAfterPlaybackRateChange` が担い、アプリ層は行の書き込み直前通知で編集開始時点の値を捕捉してセッション終了時に渡す。エコー設定が変わると素材長（エコー尾込み）は同層の `refreshContentLengthForEchoSettings` で再計算される（動画・音声アイテムのエコープロパティの didSet から。FE-R15-006）。パスの読み書きは `PropertyKind.filePath` の記述子経由で、setter はファイルを開かない。
 - 保存: `YmmpCodec.encode` がモデルを追加フィールドごと JSON 化（1行）→ 一時ファイルへ書き出し → 再読込で検証 → 本ファイルへコピー。
 - アイテムの複製は JSON 往復（本家 GetClone と同じ経路）で、`BaseItem.cloned()` が担う。分割はこの複製を左右に作ってから行う。

@@ -302,4 +302,76 @@ final class AnimationSliderScaleTests: XCTestCase {
         XCTAssertEqual(plain.min, -100)
         XCTAssertEqual(plain.max, 800)
     }
+
+    // MARK: - 確定時の値の確定処理（FE-R13-004、本家 TextBoxSlider.FixValue）
+
+    func testFixedValueDigitsDerivedFromDeltaF1() {
+        // F1 → Delta 0.1 → 桁数 (int)(1/0.1/10 + 1) = 2（表示桁 1 ではない）。
+        let delta = spec(0, 100, format: "F1").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                1.234, delta: delta, minimum: -10000, maximum: 10000),
+            1.23, accuracy: 1e-9)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                1.236, delta: delta, minimum: -10000, maximum: 10000),
+            1.24, accuracy: 1e-9)
+        // 0 から離れる方向へ丸める（AwayFromZero）。
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -1.236, delta: delta, minimum: -10000, maximum: 10000),
+            -1.24, accuracy: 1e-9)
+    }
+
+    func testFixedValueDigitsDerivedFromDeltaF0() {
+        // F0 → Delta 1 → 桁数 (int)(1/1/10 + 1) = 1。
+        let delta = spec(0, 100, format: "F0").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                1.25, delta: delta, minimum: -10000, maximum: 10000),
+            1.3, accuracy: 1e-9)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                1.24, delta: delta, minimum: -10000, maximum: 10000),
+            1.2, accuracy: 1e-9)
+    }
+
+    func testFixedValueDigitsDerivedFromDeltaF2() {
+        // F2 → Delta = Pow(0.1, 2) = 0.010000000000000002（0.1 の
+        // 二乗に最も近い double）→ 式 (int)(1/Delta/10 + 1) は
+        // 10.999… の切り捨てで 10 桁になる。式をそのまま再現した
+        // 帰結であり、11 桁へ寄せない（本家も同じ Pow 経路）。
+        let delta = spec(0, 100, format: "F2").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                1.234567890123, delta: delta, minimum: -10000, maximum: 10000),
+            1.2345678901, accuracy: 1e-12)
+    }
+
+    func testFixedValueDigitsClampedAtFifteen() {
+        // F3 → Delta 0.001 → 式の値は 101 だが上限 15 桁で頭打ち。
+        let delta = spec(0, 100, format: "F3").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                0.1234567890123456, delta: delta, minimum: -10000, maximum: 10000),
+            0.123456789012346, accuracy: 1e-15)
+    }
+
+    func testFixedValueClampsAfterRounding() {
+        // 丸め → クランプの順序: 100.06 は桁数 1 で 100.1 へ丸まって
+        // から上限 100 へクランプされる。
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                100.06, delta: 1, minimum: 0, maximum: 100),
+            100, accuracy: 1e-9)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -0.06, delta: 1, minimum: 0, maximum: 100),
+            0, accuracy: 1e-9)
+        // 範囲内の値は丸めだけが効く。
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                50.06, delta: 1, minimum: 0, maximum: 100),
+            50.1, accuracy: 1e-9)
+    }
 }
