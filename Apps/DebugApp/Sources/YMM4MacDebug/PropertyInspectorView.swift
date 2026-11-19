@@ -23,6 +23,12 @@ struct PropertyInspectorView: View {
     /// ファイル参照の値が確定したときの通知（記述子と新しいパス）。
     /// 情報取得と長さ調整は呼び出し側（編集操作層への橋渡し）が行う。
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    /// アニメーション値の書き込み直前の通知（記述子）。
+    /// 呼び出し側が変更前の値を捕捉するために使う（FE-R15-004）。
+    var onAnimationWillChange: ((PropertyDescriptor) -> Void)?
+    /// アニメーション行の編集セッション終了の通知（記述子）。
+    /// 本家の編集終了時調整の接続点（FE-R15-004）。
+    var onEditSessionEnded: ((PropertyDescriptor) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -37,7 +43,9 @@ struct PropertyInspectorView: View {
                             descriptor: descriptor,
                             animationContext: animationContext,
                             onEdited: onEdited,
-                            onFilePathChanged: onFilePathChanged
+                            onFilePathChanged: onFilePathChanged,
+                            onAnimationWillChange: onAnimationWillChange,
+                            onEditSessionEnded: onEditSessionEnded
                         )
                     }
                 }
@@ -54,6 +62,8 @@ private struct PropertyRowView: View {
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    var onAnimationWillChange: ((PropertyDescriptor) -> Void)?
+    var onEditSessionEnded: ((PropertyDescriptor) -> Void)?
 
     @ViewBuilder
     var body: some View {
@@ -63,14 +73,18 @@ private struct PropertyRowView: View {
                 descriptor: descriptor,
                 animationContext: animationContext,
                 onEdited: onEdited,
-                onFilePathChanged: onFilePathChanged
+                onFilePathChanged: onFilePathChanged,
+                onAnimationWillChange: onAnimationWillChange,
+                onEditSessionEnded: onEditSessionEnded
             )
         case .collection:
             CollectionRowView(
                 descriptor: descriptor,
                 animationContext: animationContext,
                 onEdited: onEdited,
-                onFilePathChanged: onFilePathChanged
+                onFilePathChanged: onFilePathChanged,
+                onAnimationWillChange: onAnimationWillChange,
+                onEditSessionEnded: onEditSessionEnded
             )
         default:
             HStack(alignment: .center, spacing: 8) {
@@ -118,7 +132,10 @@ private struct PropertyRowView: View {
             .labelsHidden()
         case .animation:
             AnimationRowView(
-                descriptor: descriptor, animationContext: animationContext, onEdited: onEdited
+                descriptor: descriptor, animationContext: animationContext,
+                onEdited: onEdited,
+                onAnimationWillChange: onAnimationWillChange,
+                onEditSessionEnded: onEditSessionEnded
             )
         case .object, .collection:
             // body 側で専用レイアウトへ振り分けるため、ここには来ない。
@@ -133,6 +150,8 @@ private struct ObjectRowView: View {
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    var onAnimationWillChange: ((PropertyDescriptor) -> Void)?
+    var onEditSessionEnded: ((PropertyDescriptor) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -145,7 +164,9 @@ private struct ObjectRowView: View {
                         descriptor: child,
                         animationContext: animationContext,
                         onEdited: onEdited,
-                        onFilePathChanged: onFilePathChanged
+                        onFilePathChanged: onFilePathChanged,
+                        onAnimationWillChange: onAnimationWillChange,
+                        onEditSessionEnded: onEditSessionEnded
                     )
                 }
             }
@@ -164,6 +185,8 @@ private struct CollectionRowView: View {
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    var onAnimationWillChange: ((PropertyDescriptor) -> Void)?
+    var onEditSessionEnded: ((PropertyDescriptor) -> Void)?
     @State private var revision = 0
 
     var body: some View {
@@ -200,7 +223,9 @@ private struct CollectionRowView: View {
                                 descriptor: child,
                                 animationContext: animationContext,
                                 onEdited: onEdited,
-                                onFilePathChanged: onFilePathChanged
+                                onFilePathChanged: onFilePathChanged,
+                                onAnimationWillChange: onAnimationWillChange,
+                                onEditSessionEnded: onEditSessionEnded
                             )
                         }
                     }

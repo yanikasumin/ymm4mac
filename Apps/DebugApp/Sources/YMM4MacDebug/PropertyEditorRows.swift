@@ -252,6 +252,13 @@ struct AnimationRowView: View {
     let descriptor: PropertyDescriptor
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
+    /// 値の書き込み直前の通知（ファイル参照行の事前通知と同じ趣旨）。
+    /// 呼び出し側が変更前の値を捕捉するために使う（FE-R15-004）。
+    var onAnimationWillChange: ((PropertyDescriptor) -> Void)?
+    /// 編集セッション終了の通知（テキスト入力のフォーカス喪失、
+    /// スライダのドラッグ終了）。本家の編集終了時調整の接続点
+    /// （FE-R15-004）。
+    var onEditSessionEnded: ((PropertyDescriptor) -> Void)?
     @State private var text: String
     @FocusState private var isFocused: Bool
     /// 入力セッションが所有する編集対象区間。フォーカスを得た時点で
@@ -263,11 +270,15 @@ struct AnimationRowView: View {
 
     init(
         descriptor: PropertyDescriptor, animationContext: AnimationEvaluationContext,
-        onEdited: @escaping () -> Void
+        onEdited: @escaping () -> Void,
+        onAnimationWillChange: ((PropertyDescriptor) -> Void)? = nil,
+        onEditSessionEnded: ((PropertyDescriptor) -> Void)? = nil
     ) {
         self.descriptor = descriptor
         self.animationContext = animationContext
         self.onEdited = onEdited
+        self.onAnimationWillChange = onAnimationWillChange
+        self.onEditSessionEnded = onEditSessionEnded
         let animation = descriptor.animationValue
         let value: Double
         if let animation {
@@ -338,6 +349,9 @@ struct AnimationRowView: View {
                     } else {
                         commit()
                         focusedSegment = nil
+                        // テキスト編集のセッションはフォーカス喪失で
+                        // 終わる（本家の EndEdit 相当。FE-R15-004）。
+                        onEditSessionEnded?(descriptor)
                     }
                 }
             if let animation = descriptor.animationValue {
@@ -363,7 +377,13 @@ struct AnimationRowView: View {
                     if range.max > range.min {
                         Slider(
                             value: sliderBinding,
-                            in: range.min...range.max
+                            in: range.min...range.max,
+                            onEditingChanged: { editing in
+                                // スライダのセッションはドラッグ終了で
+                                // 終わる（本家の EndEdit 相当。
+                                // FE-R15-004）。
+                                if !editing { onEditSessionEnded?(descriptor) }
+                            }
                         )
                         .frame(minWidth: 60)
                     }
@@ -416,6 +436,9 @@ struct AnimationRowView: View {
     }
 
     private func writeValue(_ value: Double, segment: Int?) {
+        // 書き込みより前に通知し、呼び出し側が変更前の値を捕捉
+        // できるようにする（ファイル参照行と同じ趣旨。FE-R15-004）。
+        onAnimationWillChange?(descriptor)
         guard let animation = descriptor.animationValue else { return }
         if animation.animationType == .none {
             descriptor.setAnimationConstantValue(value)

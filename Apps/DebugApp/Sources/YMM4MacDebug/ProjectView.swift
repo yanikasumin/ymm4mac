@@ -26,6 +26,13 @@ struct ProjectView: View {
     /// ファイル差し替えの非同期適用の世代（アイテムごと）。
     /// 古い取得結果が新しい変更を上書きしないための照合用（FE-R1-043）。
     @State private var fileChangeGenerations: [ObjectIdentifier: Int] = [:]
+    /// 再生速度の編集セッションの基準値（FE-R15-004）。行からの
+    /// 書き込み直前通知でセッション最初の書き込み時に捕捉し、
+    /// セッション終了時の編集終了時調整（分岐 (3)）へ渡す。
+    /// 本家の `EditingValue` が BeginEdit 時点の値を保持するのと
+    /// 同じ役割。
+    @State private var playbackRateEditBaselines:
+        [ObjectIdentifier: (firstValue: Double, isConstant: Bool)] = [:]
     @State private var roundTripResult: String?
     @State private var saveResult: String?
     @State private var previewFrame: Double = 0
@@ -1484,6 +1491,46 @@ struct ProjectView: View {
         }
     }
 
+    /// 再生速度の編集開始時点の値を捕捉する（FE-R15-004）。
+    ///
+    /// 通知は記述子が新しい値を書き込むより前に届くため、ここで
+    /// 変更前の先頭値と定数かどうかを捕捉できる。セッション内で
+    /// 最初の書き込みのときだけ捕捉し、以降の書き込みでは上書き
+    /// しない（本家の `EditingValue` は BeginEdit 時点の値を保持
+    /// し続ける）。対象は再生速度の記述子だけ。
+    private func capturePlaybackRateEditBaseline(
+        descriptor: PropertyDescriptor, item: BaseItem
+    ) {
+        guard descriptor.id == "PlaybackRate2" else { return }
+        let key = ObjectIdentifier(item)
+        guard playbackRateEditBaselines[key] == nil else { return }
+        playbackRateEditBaselines[key] = (
+            firstValue: item.playbackRate2.firstValue,
+            isConstant: item.playbackRate2.animationType == .none
+        )
+    }
+
+    /// 再生速度の編集終了時調整（FE-R15-004、本家 `EndEdit` の
+    /// 分岐 (3)）。セッション終了の通知で、捕捉した基準値と現在値
+    /// から Core の調整系で長さを比率換算する。長さが変わったら
+    /// タイムライン長のキャッシュも追随させる（FE-R16-001）。
+    private func finishPlaybackRateEdit(
+        descriptor: PropertyDescriptor, item: BaseItem, timeline: Timeline
+    ) {
+        guard descriptor.id == "PlaybackRate2" else { return }
+        let key = ObjectIdentifier(item)
+        guard let baseline = playbackRateEditBaselines.removeValue(forKey: key)
+        else { return }
+        if item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: baseline.firstValue,
+            previousIsConstant: baseline.isConstant,
+            fps: timeline.videoInfo.fps
+        ) {
+            timeline.refreshTimelineLengthAndMaxLayer()
+            requestPreviewRender(modelChanged: true)
+        }
+    }
+
     /// インスペクタでのファイル差し替え（FE-R1-043）。
     ///
     /// 通知は記述子が新しいパスを書き込むより前に届くため、ここで
@@ -2685,6 +2732,14 @@ struct ProjectView: View {
                     onEdited: { requestPreviewRender(modelChanged: true) },
                     onFilePathChanged: { _, newPath in
                         applyFileChange(item: item, newPath: newPath, timeline: timeline)
+                    },
+                    onAnimationWillChange: { descriptor in
+                        capturePlaybackRateEditBaseline(descriptor: descriptor, item: item)
+                    },
+                    onEditSessionEnded: { descriptor in
+                        finishPlaybackRateEdit(
+                            descriptor: descriptor, item: item, timeline: timeline
+                        )
                     }
                 )
                 EffectInspectorView(
