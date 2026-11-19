@@ -745,11 +745,11 @@ struct ProjectView: View {
     }
 
     @State private var handleDrag: HandleDragState?
-    /// プレビュー上の移動ドラッグ／ハンドルドラッグについて、この
-    /// 接続側が所有する Undo セッションのトークン（所有の追跡。
-    /// FE-R20-126-03）。
-    @State private var previewDragSessionToken: EditSessionToken?
-    @State private var handleDragSessionToken: EditSessionToken?
+    /// プレビュー上の移動ドラッグ／ハンドルドラッグについての
+    /// Undo セッションの状態（開始前・所有中・開始拒否。
+    /// FE-R20-126-03、FE-R21-126-01）。
+    @State private var previewDragSession: EditDragSession = .idle
+    @State private var handleDragSession: EditDragSession = .idle
 
     /// 選択アイテムの操作ハンドル群（表示は 9px、当たり判定は 18px）。
     private func selectionHandles(
@@ -831,10 +831,11 @@ struct ProjectView: View {
                           let props = item as? VideoItemProperties else { return }
                     // ドラッグの書き込みを1履歴エントリへまとめる
                     // セッションを開く（FE-UNDO-WIRING）。開始でき
-                    // なかった場合、書き込みは writeAnimationValue の
-                    // 入口確認で拒否され、モデルは変更されない
-                    // （FE-R20-126-03）。
-                    handleDragSessionToken = workspace.editRecorder.beginSession()
+                    // なかった場合、そのドラッグは終了まで書き込み
+                    // 禁止のままになり、書き込みは writeAnimationValue
+                    // の入口確認で拒否され、モデルは変更されない
+                    // （FE-R20-126-03、FE-R21-126-01）。
+                    handleDragSession.begin(using: workspace.editRecorder)
                     let context = animationContext(for: item, timeline: timeline)
                     let center = layout.viewPoint(
                         fromVideoPoint: CGPoint(x: bounds.midX, y: bounds.midY)
@@ -865,7 +866,7 @@ struct ProjectView: View {
                     let factor = Double(hypot(dx, dy) / drag.startDistance)
                     let newZoom = drag.startZoom * factor
                     guard abs(newZoom - drag.lastWritten) >= 0.5 else { return }
-                    writeAnimationProperty(item: target, displayName: "拡大率", value: newZoom, timeline: timeline, sessionToken: handleDragSessionToken)
+                    writeAnimationProperty(item: target, displayName: "拡大率", value: newZoom, timeline: timeline, session: handleDragSession)
                     updated.lastWritten = newZoom
                 case .rotation:
                     let angle = atan2(Double(dy), Double(dx)) * 180 / .pi
@@ -874,7 +875,7 @@ struct ProjectView: View {
                     while delta < -180 { delta += 360 }
                     let newRotation = drag.startRotation + delta
                     guard abs(newRotation - drag.lastWritten) >= 0.5 else { return }
-                    writeAnimationProperty(item: target, displayName: "回転角", value: newRotation, timeline: timeline, sessionToken: handleDragSessionToken)
+                    writeAnimationProperty(item: target, displayName: "回転角", value: newRotation, timeline: timeline, session: handleDragSession)
                     updated.lastWritten = newRotation
                 }
                 handleDrag = updated
@@ -882,10 +883,7 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 handleDrag = nil
-                if let token = handleDragSessionToken {
-                    workspace.editRecorder.commitSession(token: token)
-                    handleDragSessionToken = nil
-                }
+                handleDragSession.endCommitting(to: workspace.editRecorder)
                 // ドラッグ中の間引きで残った未反映分を確定させる
                 // （再生中なら単一入口の規則で dirty に保留される）。
                 requestPreviewRender(modelChanged: true, forceModelRefresh: true)
@@ -896,14 +894,14 @@ struct ProjectView: View {
     /// ドラッグ移動と同じ規則（writeAnimationValue に集約）。
     private func writeAnimationProperty(
         item: BaseItem, displayName: String, value: Double, timeline: Timeline,
-        sessionToken: EditSessionToken?
+        session: EditDragSession
     ) {
         for descriptor in ItemPropertyMetadata.descriptors(for: item)
         where descriptor.displayName == displayName {
             guard case .animation = descriptor.kind else { continue }
             writeAnimationValue(
                 descriptor: descriptor, item: item, timeline: timeline,
-                value: value, sessionToken: sessionToken)
+                value: value, session: session)
         }
     }
 
@@ -915,14 +913,17 @@ struct ProjectView: View {
     /// 書き込みは Undo 記録の対象とし、ドラッグ中は呼び出し側が
     /// 開いたセッションへ蓄積される（FE-UNDO-WIRING）。書き込みの
     /// 入口で記録可否を確認し、セッションの所有者でない場合は
-    /// モデルを変更しない（FE-R20-126-03）。
+    /// モデルを変更しない（FE-R20-126-03）。開始を拒否された
+    /// ドラッグ（`EditDragSession.refused`）は、他のセッションが
+    /// 終了してもそのドラッグの間は書き込みできない
+    /// （FE-R21-126-01）。
     private func writeAnimationValue(
         descriptor: PropertyDescriptor, item: BaseItem, timeline: Timeline,
-        value: Double, sessionToken: EditSessionToken?
+        value: Double, session: EditDragSession
     ) {
         guard let animation = descriptor.animationValue else { return }
         let recorder = workspace.editRecorder
-        guard recorder.canRecordValueChange(sessionToken: sessionToken)
+        guard session.writeAllowed(recorder: recorder)
         else { return }
         if animation.animationType == .none {
             let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
@@ -934,7 +935,7 @@ struct ProjectView: View {
                 target: EditTargetKey(item, key: "\(descriptor.id)#const"),
                 oldValue: old, newValue: new,
                 apply: { descriptor.setAnimationConstantValue($0) },
-                sessionToken: sessionToken)
+                sessionToken: session.token)
         } else if animation.animationType.isKeyFrameSupported,
                   !animation.keyFrames.frames.isEmpty {
             let context = animationContext(for: item, timeline: timeline)
@@ -949,7 +950,7 @@ struct ProjectView: View {
                 target: EditTargetKey(item, key: "\(descriptor.id)#seg\(segment)"),
                 oldValue: old, newValue: new,
                 apply: { descriptor.setAnimationValue($0, atSegment: segment) },
-                sessionToken: sessionToken)
+                sessionToken: session.token)
         } else {
             let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationFirstValue(value)
@@ -960,7 +961,7 @@ struct ProjectView: View {
                 target: EditTargetKey(item, key: "\(descriptor.id)#first"),
                 oldValue: old, newValue: new,
                 apply: { descriptor.setAnimationFirstValue($0) },
-                sessionToken: sessionToken)
+                sessionToken: session.token)
         }
     }
 
@@ -982,7 +983,7 @@ struct ProjectView: View {
                     // 0.5px 以上動いたときだけ行う。
                     guard abs(newX - drag.lastWrittenX) >= 0.5
                         || abs(newY - drag.lastWrittenY) >= 0.5 else { return }
-                    writeItemPosition(item: item, x: newX, y: newY, timeline: timeline, sessionToken: previewDragSessionToken)
+                    writeItemPosition(item: item, x: newX, y: newY, timeline: timeline, session: previewDragSession)
                     drag.lastWrittenX = newX
                     drag.lastWrittenY = newY
                     previewDrag = drag
@@ -1001,10 +1002,11 @@ struct ProjectView: View {
                 ), let props = timeline.items[index] as? VideoItemProperties {
                     // 移動ドラッグの書き込みを1履歴エントリへまとめる
                     // セッションを開く（FE-UNDO-WIRING）。開始でき
-                    // なかった場合、書き込みは writeAnimationValue の
-                    // 入口確認で拒否され、モデルは変更されない
-                    // （FE-R20-126-03）。
-                    previewDragSessionToken = workspace.editRecorder.beginSession()
+                    // なかった場合、そのドラッグは終了まで書き込み
+                    // 禁止のままになり、書き込みは writeAnimationValue
+                    // の入口確認で拒否され、モデルは変更されない
+                    // （FE-R20-126-03、FE-R21-126-01）。
+                    previewDragSession.begin(using: workspace.editRecorder)
                     selectedItemIndex = index
                     let item = timeline.items[index]
                     let context = animationContext(for: item, timeline: timeline)
@@ -1028,10 +1030,7 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 previewDrag = nil
-                if let token = previewDragSessionToken {
-                    workspace.editRecorder.commitSession(token: token)
-                    previewDragSessionToken = nil
-                }
+                previewDragSession.endCommitting(to: workspace.editRecorder)
                 // ドラッグ中の間引きで残った未反映分を確定させる
                 // （再生中なら単一入口の規則で dirty に保留される）。
                 requestPreviewRender(modelChanged: true, forceModelRefresh: true)
@@ -1115,7 +1114,7 @@ struct ProjectView: View {
     /// 通して X/Y へ書き込む。
     private func writeItemPosition(
         item: BaseItem, x: Double, y: Double, timeline: Timeline,
-        sessionToken: EditSessionToken?
+        session: EditDragSession
     ) {
         for descriptor in ItemPropertyMetadata.descriptors(for: item) {
             guard case .animation = descriptor.kind else { continue }
@@ -1127,7 +1126,7 @@ struct ProjectView: View {
             }
             writeAnimationValue(
                 descriptor: descriptor, item: item, timeline: timeline,
-                value: value, sessionToken: sessionToken)
+                value: value, session: session)
         }
     }
 

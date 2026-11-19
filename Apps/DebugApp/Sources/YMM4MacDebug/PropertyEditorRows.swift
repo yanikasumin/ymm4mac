@@ -35,6 +35,69 @@ func editWriteAllowed(
     return recorder.canRecordValueChange(sessionToken: sessionToken)
 }
 
+/// 連続編集（スライダ・ドラッグ）の Undo セッションの状態
+/// （FE-R21-126-01）。
+///
+/// 開始前・所有中・開始拒否を区別する。開始拒否になったドラッグは、
+/// そのドラッグが終了するまで書き込み可能に変化しない。トークンの
+/// 有無（nil か否か）だけで表すと「開始前」と「開始拒否」が区別
+/// できず、他のセッションの終了後に、拒否されたドラッグの継続
+/// 書き込みがトークンなしの離散編集として受理されてしまうため、
+/// 状態として明示する。
+enum EditDragSession {
+    /// ドラッグ中でない（記録先が無い構成では無記録で書き込む状態も
+    /// この形になる）。
+    case idle
+    /// 自分が所有するセッションが有効。
+    case owning(EditSessionToken)
+    /// 開始を拒否された。このドラッグが終わるまで書き込み禁止。
+    case refused
+
+    /// ドラッグ開始時にセッションを開き、結果を状態へ反映する。
+    /// 記録先が無い構成では従来どおり無記録で書き込むため、開始前
+    /// のままにする。
+    mutating func begin(using recorder: EditRecorder?) {
+        guard let recorder else {
+            self = .idle
+            return
+        }
+        if let token = recorder.beginSession() {
+            self = .owning(token)
+        } else {
+            self = .refused
+        }
+    }
+
+    /// 書き込みに提示するトークン（所有中の場合だけ持つ）。
+    var token: EditSessionToken? {
+        if case .owning(let token) = self { return token }
+        return nil
+    }
+
+    /// このドラッグの書き込みが記録可能か。開始拒否の間は、他の
+    /// セッションが終了しても常に false のままである。
+    func writeAllowed(recorder: EditRecorder?) -> Bool {
+        if case .refused = self { return false }
+        return editWriteAllowed(recorder: recorder, sessionToken: token)
+    }
+
+    /// ドラッグ終了時にセッションを確定し、状態を開始前へ戻す。
+    mutating func endCommitting(to recorder: EditRecorder?) {
+        if case .owning(let token) = self {
+            recorder?.commitSession(token: token)
+        }
+        self = .idle
+    }
+
+    /// ドラッグ取消時にセッションを破棄し、状態を開始前へ戻す。
+    mutating func endCancelling(to recorder: EditRecorder?) {
+        if case .owning(let token) = self {
+            recorder?.cancelSession(token: token)
+        }
+        self = .idle
+    }
+}
+
 // MARK: - 数値
 
 struct NumberRowView: View {
@@ -43,9 +106,9 @@ struct NumberRowView: View {
     var editRecorder: EditRecorder?
     var editTarget: EditTargetKey?
     @State private var text: String
-    /// スライダのドラッグについて、この行が所有する Undo セッション
-    /// のトークン（所有の追跡。FE-R20-126-03）。
-    @State private var sliderSessionToken: EditSessionToken?
+    /// スライダのドラッグについての Undo セッションの状態（開始前・
+    /// 所有中・開始拒否。FE-R20-126-03、FE-R21-126-01）。
+    @State private var sliderSession: EditDragSession = .idle
     /// 未編集とみなすテキスト（初期表示・フォーカス取得時点・
     /// プログラム側の同期直後の文字列）。確定時に text がこれと
     /// 一致すれば書き戻さない（FE-R1-019。表示は %.4g へ丸まるため、
@@ -94,14 +157,14 @@ struct NumberRowView: View {
     }
 
     /// スライダのドラッグ開始・終了で Undo セッションを開閉し、
-    /// ドラッグ全体を履歴1エントリへまとめる。
+    /// ドラッグ全体を履歴1エントリへまとめる。開始を拒否された
+    /// ドラッグは、終了まで書き込み禁止のままになる
+    /// （FE-R21-126-01）。
     private func sliderEditingChanged(_ editing: Bool) {
-        guard let editRecorder else { return }
         if editing {
-            sliderSessionToken = editRecorder.beginSession()
-        } else if let token = sliderSessionToken {
-            editRecorder.commitSession(token: token)
-            sliderSessionToken = nil
+            sliderSession.begin(using: editRecorder)
+        } else {
+            sliderSession.endCommitting(to: editRecorder)
         }
     }
 
@@ -120,9 +183,9 @@ struct NumberRowView: View {
             get: { descriptor.numberValue ?? 0 },
             set: { newValue in
                 // 自分のセッションの所有者でない書き込みは入口で
-                // 拒否する（FE-R20-126-03）。
-                guard editWriteAllowed(
-                    recorder: editRecorder, sessionToken: sliderSessionToken)
+                // 拒否する（FE-R20-126-03）。開始拒否されたドラッグ
+                // の継続書き込みも拒否される（FE-R21-126-01）。
+                guard sliderSession.writeAllowed(recorder: editRecorder)
                 else { return }
                 let old = descriptor.numberValue
                 descriptor.setNumberValue(newValue)
@@ -132,7 +195,7 @@ struct NumberRowView: View {
                     recorder: editRecorder, target: editTarget,
                     oldValue: old, newValue: descriptor.numberValue,
                     apply: { descriptor.setNumberValue($0) },
-                    sessionToken: sliderSessionToken)
+                    sessionToken: sliderSession.token)
                 onEdited()
             }
         )
@@ -173,9 +236,9 @@ struct IntegerRowView: View {
     var editTarget: EditTargetKey?
     @State private var text: String
     @FocusState private var isFocused: Bool
-    /// スライダのドラッグについて、この行が所有する Undo セッション
-    /// のトークン（所有の追跡。FE-R20-126-03）。
-    @State private var sliderSessionToken: EditSessionToken?
+    /// スライダのドラッグについての Undo セッションの状態（開始前・
+    /// 所有中・開始拒否。FE-R20-126-03、FE-R21-126-01）。
+    @State private var sliderSession: EditDragSession = .idle
 
     init(
         descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
@@ -227,13 +290,13 @@ struct IntegerRowView: View {
     }
 
     /// スライダのドラッグ開始・終了で Undo セッションを開閉する。
+    /// 開始を拒否されたドラッグは、終了まで書き込み禁止のままに
+    /// なる（FE-R21-126-01）。
     private func sliderEditingChanged(_ editing: Bool) {
-        guard let editRecorder else { return }
         if editing {
-            sliderSessionToken = editRecorder.beginSession()
-        } else if let token = sliderSessionToken {
-            editRecorder.commitSession(token: token)
-            sliderSessionToken = nil
+            sliderSession.begin(using: editRecorder)
+        } else {
+            sliderSession.endCommitting(to: editRecorder)
         }
     }
 
@@ -249,8 +312,7 @@ struct IntegerRowView: View {
         Binding(
             get: { Double(descriptor.integerValue ?? 0) },
             set: { newValue in
-                guard editWriteAllowed(
-                    recorder: editRecorder, sessionToken: sliderSessionToken)
+                guard sliderSession.writeAllowed(recorder: editRecorder)
                 else { return }
                 let old = descriptor.integerValue
                 descriptor.setIntegerValue(Int(newValue.rounded()))
@@ -259,7 +321,7 @@ struct IntegerRowView: View {
                     recorder: editRecorder, target: editTarget,
                     oldValue: old, newValue: descriptor.integerValue,
                     apply: { descriptor.setIntegerValue($0) },
-                    sessionToken: sliderSessionToken)
+                    sessionToken: sliderSession.token)
                 onEdited()
             }
         )
@@ -430,9 +492,9 @@ struct AnimationRowView: View {
     var editTarget: EditTargetKey?
     @State private var text: String
     @FocusState private var isFocused: Bool
-    /// スライダのドラッグについて、この行が所有する Undo セッション
-    /// のトークン（所有の追跡。FE-R20-126-03）。
-    @State private var sliderSessionToken: EditSessionToken?
+    /// スライダのドラッグについての Undo セッションの状態（開始前・
+    /// 所有中・開始拒否。FE-R20-126-03、FE-R21-126-01）。
+    @State private var sliderSession: EditDragSession = .idle
     /// 入力セッションが所有する編集対象区間。フォーカスを得た時点で
     /// 固定し、確定まで保持する。再生ヘッドが別区間へ移っても、
     /// 未確定の入力が別区間へ書き込まれることはない（R20-114-01）。
@@ -573,7 +635,12 @@ struct AnimationRowView: View {
             get: { editTargetValue },
             set: { newValue in
                 guard descriptor.animationValue != nil else { return }
-                writeValue(newValue, sessionToken: sliderSessionToken)
+                // 開始拒否されたドラッグの継続書き込みは、他の
+                // セッションが終わっても許可されない
+                // （FE-R21-126-01）。
+                guard sliderSession.writeAllowed(recorder: editRecorder)
+                else { return }
+                writeValue(newValue, sessionToken: sliderSession.token)
                 text = formatValue(editTargetValue)
                 uneditedText = text
                 onEdited()
@@ -595,14 +662,14 @@ struct AnimationRowView: View {
     }
 
     /// スライダのドラッグ開始・終了で Undo セッションを開閉し、
-    /// ドラッグ全体を履歴1エントリへまとめる。
+    /// ドラッグ全体を履歴1エントリへまとめる。開始を拒否された
+    /// ドラッグは、終了まで書き込み禁止のままになる
+    /// （FE-R21-126-01）。
     private func sliderEditingChanged(_ editing: Bool) {
-        guard let editRecorder else { return }
         if editing {
-            sliderSessionToken = editRecorder.beginSession()
-        } else if let token = sliderSessionToken {
-            editRecorder.commitSession(token: token)
-            sliderSessionToken = nil
+            sliderSession.begin(using: editRecorder)
+        } else {
+            sliderSession.endCommitting(to: editRecorder)
         }
     }
 
