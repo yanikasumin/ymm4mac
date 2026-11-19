@@ -324,9 +324,16 @@
           ProjectView.swift    製品 UI の土台（プレビュー・運送系・タイムライン・
                                ステータスバー・メニュー）
           PreviewBox.swift     プレビュー合成の表示
-          TimelineStripView.swift タイムライン本体
+          TimelineStripView.swift タイムライン本体（描画とコンテキストメニュー）
+          TimelineScrollView.swift スクロール基盤（NSScrollView がスクロール
+                               位置の唯一の所有者。目盛りは同じクリップビュー
+                               の原点から描画し、ラベル列は縦方向を同期）
+          TimelineInteractionView.swift ドラッグ操作層（AppKit のマウス
+                               イベントで移動・トリム・キーフレーム・範囲選択
+                               のセッションを本家の確定規則で実行。確定は
+                               セッションにつき最大1回の接続点を通る）
           TimelineLayerLabels.swift レイヤーラベル列
-          TimelineScale.swift  目盛り
+          TimelineScale.swift  目盛り計算（純粋関数。SwiftUI／AppKit 共用）
           SerifInputView.swift セリフ入力行
           PropertyInspectorView.swift アイテムのプロパティ編集
           PropertyEditorRows.swift 編集行の部品

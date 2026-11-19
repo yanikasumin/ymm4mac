@@ -1,12 +1,14 @@
 import SwiftUI
 import YMM4Core
 
-extension TimelineStripView {
-    // MARK: - 目盛り計算（本家 TimelineScaleViewModel の規則）
+/// 目盛り計算（本家 TimelineScaleViewModel の規則）の純粋関数置き場。
+/// SwiftUI 側（縦グリッド線）と AppKit 側（目盛りビュー）の双方が
+/// 同じ規則を使うため、状態を持たない関数として切り出す。
+enum TimelineScale {
 
     /// 典型間隔の候補から、目標（約13px分）の0.7倍以上で最も近いものを選ぶ。
-    func tickSpan() -> Int {
-        let fps = max(timeline.videoInfo.fps, 1)
+    static func tickSpan(fps: Int, zoomPercent: Double) -> Int {
+        let fps = max(fps, 1)
         let framesPerPixel = 100.0 / zoomPercent
         let target = max(Int(framesPerPixel * 13), 1)
         var candidates = Set<Int>()
@@ -25,6 +27,27 @@ extension TimelineStripView {
         return eligible.min(by: { abs($0 - target) < abs($1 - target) }) ?? target
     }
 
+    /// `hh:mm:ss.ff` 形式（本家のステータスバー・目盛りラベルと同じ書式）。
+    static func timeText(frame: Int, fps: Int) -> String {
+        let fps = max(fps, 1)
+        let totalSeconds = Double(frame) / Double(fps)
+        let whole = Int(totalSeconds)
+        let hundredths = Int((totalSeconds - floor(totalSeconds)) * 100)
+        return String(
+            format: "%02d:%02d:%02d.%02d",
+            whole / 3600, (whole % 3600) / 60, whole % 60, hundredths
+        )
+    }
+}
+
+extension TimelineStripView {
+    // MARK: - 目盛り計算（TimelineScale への委譲）
+
+    func tickSpan() -> Int {
+        TimelineScale.tickSpan(
+            fps: timeline.videoInfo.fps, zoomPercent: zoomPercent)
+    }
+
     /// 縦グリッド線を引くフレーム（大目盛り = 間隔×10 ごと、可視範囲のみ）。
     func verticalGridFrames(viewportWidth: CGFloat) -> [Int] {
         let largeSpan = tickSpan() * 10
@@ -39,14 +62,7 @@ extension TimelineStripView {
 
     /// `hh:mm:ss.ff` 形式（本家のステータスバー・目盛りラベルと同じ書式）。
     func timeText(frame: Int) -> String {
-        let fps = max(timeline.videoInfo.fps, 1)
-        let totalSeconds = Double(frame) / Double(fps)
-        let whole = Int(totalSeconds)
-        let hundredths = Int((totalSeconds - floor(totalSeconds)) * 100)
-        return String(
-            format: "%02d:%02d:%02d.%02d",
-            whole / 3600, (whole % 3600) / 60, whole % 60, hundredths
-        )
+        TimelineScale.timeText(frame: frame, fps: timeline.videoInfo.fps)
     }
 
 }

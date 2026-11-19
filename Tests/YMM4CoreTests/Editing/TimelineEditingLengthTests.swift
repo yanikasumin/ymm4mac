@@ -484,4 +484,94 @@ final class TimelineEditingLengthTests: XCTestCase {
         XCTAssertEqual(timeline.items.count, 1)
         XCTAssertEqual(item.frame, 100)
     }
+
+    // MARK: - ドラッグ確定時の長さ再計算（FE-R9-001）
+
+    /// 移動は長さキャッシュを Expand（広げるだけ）するため、末尾の
+    /// アイテムを手前へ動かしてもキャッシュは縮まない。アプリ層は
+    /// ドラッグ確定時に refreshTimelineLengthAndMaxLayer を呼び、
+    /// 実際の最終フレーム・最大レイヤーへ一致させる契約。
+    func testRefreshAfterMoveShrinksLengthAndMaxLayerCache() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 80, length: 20, layer: 5)
+        timeline.items = [item]
+        timeline.refreshTimelineLengthAndMaxLayer()
+        XCTAssertEqual(timeline.length, 100)
+        XCTAssertEqual(timeline.maxLayer, 5)
+        timeline.selectItems([item])
+        timeline.moveSelectedAndGroupedItems(deltaFrame: -40, deltaLayer: -3)
+        XCTAssertEqual(item.frame, 40)
+        XCTAssertEqual(item.layer, 2)
+        // 移動だけではキャッシュは縮まない（Expand のみ）。
+        XCTAssertEqual(timeline.length, 100)
+        XCTAssertEqual(timeline.maxLayer, 5)
+        timeline.refreshTimelineLengthAndMaxLayer()
+        XCTAssertEqual(timeline.length, 60)
+        XCTAssertEqual(timeline.maxLayer, 2)
+    }
+
+    /// 終了側トリムで末尾アイテムを短縮した場合も、確定時の再計算で
+    /// キャッシュが実際の終了フレームへ縮む。
+    func testRefreshAfterEndTrimShrinksLengthCache() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 80, length: 20, layer: 0)
+        timeline.items = [item]
+        timeline.refreshTimelineLengthAndMaxLayer()
+        XCTAssertEqual(timeline.length, 100)
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: -10, head: false, neighborAffect: .none
+        )
+        XCTAssertEqual(item.length, 10)
+        XCTAssertEqual(timeline.length, 100)
+        timeline.refreshTimelineLengthAndMaxLayer()
+        XCTAssertEqual(timeline.length, 90)
+    }
+
+    /// 開始側トリムは終了フレームを動かさないため、再計算後も長さは
+    /// 終了フレームどおり（過剰に縮まない）。
+    func testRefreshAfterHeadTrimKeepsLengthAtEndFrame() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 80, length: 20, layer: 0)
+        timeline.items = [item]
+        timeline.refreshTimelineLengthAndMaxLayer()
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: 10, head: true, neighborAffect: .none
+        )
+        XCTAssertEqual(item.frame, 90)
+        XCTAssertEqual(item.length, 10)
+        timeline.refreshTimelineLengthAndMaxLayer()
+        XCTAssertEqual(timeline.length, 100)
+    }
+
+    /// Stretch の終了側短縮では右隣が伸びて接するため、再計算後の
+    /// 長さは両者の終了フレームの最大と一致する。
+    func testRefreshAfterStretchTrimMatchesComputedLength() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 0, length: 20, layer: 0)
+        let neighbor = makeItem(frame: 20, length: 10, layer: 0)
+        timeline.items = [item, neighbor]
+        timeline.refreshTimelineLengthAndMaxLayer()
+        timeline.selectItems([item])
+        timeline.changeSelectedAndGroupedItemsLength(
+            deltaX: -5, head: false, neighborAffect: .stretch
+        )
+        timeline.refreshTimelineLengthAndMaxLayer()
+        XCTAssertEqual(timeline.length, timeline.computeCurrentLength())
+        XCTAssertEqual(timeline.length, 30)
+    }
+
+    /// 後方への移動では再計算しても長さは実際の終了フレームのまま
+    /// （縮む方向にだけ効き、広がった分は保持される）。
+    func testRefreshAfterMoveLaterKeepsExpandedLength() {
+        let timeline = Timeline()
+        let item = makeItem(frame: 0, length: 20, layer: 0)
+        timeline.items = [item]
+        timeline.refreshTimelineLengthAndMaxLayer()
+        timeline.selectItems([item])
+        timeline.moveSelectedAndGroupedItems(deltaFrame: 50, deltaLayer: 0)
+        timeline.refreshTimelineLengthAndMaxLayer()
+        XCTAssertEqual(timeline.length, 70)
+    }
 }
