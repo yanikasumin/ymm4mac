@@ -61,6 +61,13 @@
           EditCoordinator.swift トランザクションと履歴の確定入口（薄い統括）
           ListAddRemoveCommand.swift リスト追加・削除コマンド（非 Action。
                                本家 UndoRedoAddRemoveListItemsCommand 相当）
+          EditRecorder.swift   Undo 記録の集約点（EditCoordinator への投入
+                               経路。セッション所有権トークン・離散変更・
+                               タイムライン差分捕捉。FE-R20-126-01 で
+                               アプリ層から移設）
+          TimelineEditSnapshot.swift タイムライン構造変更の前後差分捕捉
+                               （配置値・メンバーシップ・レイヤー設定。
+                               適用時の長さキャッシュ再計算を含む）
         Items/
           BaseItem.swift       BaseItem / VisualItem / VideoItemProperties
                                （アニメーション文脈の伝播、分割。本家 IVideoItem の
@@ -330,9 +337,6 @@
           ContentView.swift    ルート画面（プロジェクト読み込みと検証サンプル）
           WorkspaceState.swift 新規プロジェクト等の作業状態（Undo 履歴の
                                所有も担う。プロジェクトごとに1つ）
-          EditRecorder.swift   Undo 記録の集約点（EditCoordinator への投入
-                               経路。セッション・離散変更・タイムライン
-                               差分捕捉）
           ProjectView.swift    製品 UI の土台（プレビュー・運送系・タイムライン・
                                ステータスバー・メニュー）
           PreviewBox.swift     プレビュー合成の表示
@@ -374,7 +378,9 @@
 
 - 読み込み: .ymmp テキスト → `JSONParser`（順序・数値リテラル保持）→ `YmmpCodec.decode` が $type を解決して `Project` / `Timeline` / アイテム13クラスを構築。未知の $type のアイテムは読み飛ばして診断情報へ記録し、未知のプロパティは各モデルの `additionalFields` に保持する。プラグイン型の値（エフェクト等）は `PreservedObject` として生 JSON のまま保持する。デコードの最後に、VoiceItem / TachieItem / TachieFaceItem の実行時参照 `character` を `Project.Characters` から `characterName` で引いて解決する（本家の `Character` は [JsonIgnore] で、保存されるのは名前だけであるため）。
 - 編集: `Timeline` の編集操作（TimelineEditing.swift）がアイテム（参照型）を直接書き換える。本家の意味論どおり、前処理は入力を書き換え、原子的保証はコミット段階のみ。`Timeline.Length` / `MaxLayer` はキャッシュとして保守される。
-- 編集の Undo（FE-UNDO-WIRING）: 履歴の所有は `WorkspaceState`（プロジェクト＝ウィンドウごとに1つ）が `EditRecorder`（アプリ層の記録集約）経由で `EditCoordinator`（Core）を保持する。変更の捕捉は本家の自動監視ではなく明示トランザクション方式で、投入経路は `EditRecorder` の3形態（離散変更の即時確定／スライダ・ドラッグのセッション／タイムライン構造変更の前後差分捕捉）に限る。ここを通らない編集経路は履歴に残らない（未移行経路は実装ログ FE-UNDO-WIRING に列挙）。プロジェクトの差し替え時は、未確定セッションの破棄（巻き戻し）を先に行ってから履歴を消す順序に統一されている。Undo/Redo の実行後は ProjectView が選択・インスペクタ・タイムライン・プレビューを表示側でモデルへ追随させる。
+- 編集の Undo（FE-UNDO-WIRING）: 履歴の所有は `WorkspaceState`（プロジェクト＝ウィンドウごとに1つ）が `EditRecorder`（Core の記録集約。FE-R20-126-01 でアプリ層から Core の `Editing/` へ移設。アプリ層にはテスト対象が無いため、記録の振る舞いを Core のテストで固定する）経由で `EditCoordinator`（Core）を保持する。変更の捕捉は本家の自動監視ではなく明示トランザクション方式で、投入経路は `EditRecorder` の3形態（離散変更の即時確定／スライダ・ドラッグのセッション／タイムライン構造変更の前後差分捕捉）に限る。ここを通らない編集経路は履歴に残らない（未移行経路は実装ログ FE-UNDO-WIRING に列挙）。プロジェクトの差し替え時は、未確定セッションの破棄（巻き戻し）を先に行ってから履歴を消す順序に統一されている。Undo/Redo の実行後は ProjectView が選択・インスペクタ・タイムライン・プレビューを表示側でモデルへ追随させる。
+- Undo の開始拒否と所有権（FE-R20-126-02 / 03）: トランザクションを開始できない場合、編集は実行されない。`recordTimelineChange` は本体を実行せず false を返し、タイムラインドラッグの開始フック（`TimelineStripView.onDragBegan` → `TimelineInteractionView`）も可否を戻り値で受け、拒否時は操作層がモデル変更セッション自体を開始しない（クリック選択だけはモデル変更ではないため残る）。連続編集のセッションには所有権トークン（`EditSessionToken`）が結び付いており、値変更の記録・確定・破棄はトークン一致の場合だけ作用する。所有者でない経路の離散編集は、書き込みの入口（`EditRecorder.canRecordValueChange`）で確認してモデル変更自体を行わない。
+- タイムライン差分の適用とキャッシュ（FE-R20-126-01 / 04）: `TimelineEditSnapshot` の差分は配置値（Frame / Layer / Length / ContentOffset / KeyFrames / IsLocked）、メンバーシップ、レイヤー設定（`layerSettings.items` の列全体）を含む。配置値とメンバーシップの適用クロージャは書き戻しの直後に `refreshTimelineLengthAndMaxLayer()` を呼び、Undo / Redo / キャンセルの巻き戻しのどの経路でも適用後に長さ・最大レイヤーのキャッシュが実状態と一致する。レイヤー削除はアイテム列・レイヤー詰め・レイヤー設定が一体で往復する。
 - メディアアイテムの追加・差し替え（FE-R1-043）: ファイル選択／ドロップ（アプリ層）→ `MediaFileInfoFetcher`（I/O 供給層。音声は PCM 供給工場の duration、動画は映像トラックの提示区間、画像は寸法のみ）→ `BaseItem.recordMediaInfo` / `resetLength` / `adjustLengthAfterFileChange`（編集操作層。Core の `Editing/MediaItemLength.swift` が本家 `ResetLength` と編集終了時の調整を担う）→ `Timeline.tryAddItems`（確定操作）の順に流れ、情報取得が成功するまでモデルへ確定しない。パスの読み書きは `PropertyKind.filePath` の記述子経由で、setter はファイルを開かない。
 - 保存: `YmmpCodec.encode` がモデルを追加フィールドごと JSON 化（1行）→ 一時ファイルへ書き出し → 再読込で検証 → 本ファイルへコピー。
 - アイテムの複製は JSON 往復（本家 GetClone と同じ経路）で、`BaseItem.cloned()` が担う。分割はこの複製を左右に作ってから行う。
