@@ -2183,3 +2183,22 @@ PR #126 の Round 21 新規指摘「失効したセッショントークンが�
 - **残る論点（本処分の範囲外として明記）**: プロジェクト切り替え後の遅延イベントのうち、トークンを提示する経路は本契約で断たれる。トークンを持たない離散編集の遅延イベントはビューの破棄（プロジェクト切り替えで画面が作り直される既存構造）に依存しており、本処分では扱っていない。
 
 検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+### FE-R1-031 設計判断（計測後、フロントエンド監査 恒二・2026-11-20）
+
+判定: 計測単位完了、最適化課題継続。所有方式は現行維持。
+
+release ビルドの Mac 実機計測において、Project.makeExportSnapshot の生成合計は、温間 p50 で小規模9アイテム 1.88ms、中規模158アイテム 29.84ms、大規模474アイテム（合成）103.52ms であった。記録の正本は Harnesses/snapshot031-harness/results/snapshot031.jsonl（320行）。
+
+中規模以上ではメインスレッドの連続占有が画面更新周期を超えるため、性能改善の対象とする。ただし、本計測はアプリ実機での入力応答・表示遅延を直接測定していないため、実利用上の重大性は未確定とする。
+
+採用方針:
+- 現行のスナップショット隔離と専用描画ワーカーの所有設計を維持する。
+- 最初に既存の YmmpCodec.encode/decode の詳細計測と高速化を検討する（第一段階）。生成の背景化は、コーデック高速化だけでは同期占有が十分に減らない場合に検討する（第二段階）。可変の編集モデルを背景キューから直接読み取る方式は採用しない。
+- 100ms 間引きは現状維持とし、実アプリの操作遅延を測定してから変更の要否を判断する。
+- 互換性、参照整合、描画結果の世代管理を性能改善に優先する。
+
+未解決事項: 実アプリの入力・表示遅延、素材実ファイルを使用した描画コスト、背景化が必要となる場合の所有権設計。
+
+完了条件: 現行方式との同条件比較、関連 Core テストの合格、実アプリ操作遅延の改善確認、既存の世代管理・スナップショット整合の維持。
+
