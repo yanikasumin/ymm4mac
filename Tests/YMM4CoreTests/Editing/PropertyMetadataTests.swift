@@ -14,6 +14,28 @@ final class PropertyMetadataTests: XCTestCase {
         try XCTUnwrap(descriptors.first { $0.id == id }, "記述子 \(id) が無い")
     }
 
+    /// 音量・パンのスライダ仕様が期待値どおり解決されていること。
+    /// 期待値は抽出データ `slider-attributes.json` の実測値（両型とも
+    /// Volume は F1・単位 %・0〜100、Pan は F1・単位なし・-100〜100）。
+    private func assertAudioSliderSpecs(
+        _ descriptors: [PropertyDescriptor], file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        let volume = try descriptor(descriptors, "Volume")
+        let volumeSpec = try XCTUnwrap(volume.sliderSpec, "Volume の仕様が解決されていない", file: file, line: line)
+        XCTAssertEqual(volumeSpec.defaultMin, 0, file: file, line: line)
+        XCTAssertEqual(volumeSpec.defaultMax, 100, file: file, line: line)
+        XCTAssertEqual(volumeSpec.stringFormat, "F1", file: file, line: line)
+        XCTAssertEqual(volumeSpec.unit, "%", file: file, line: line)
+        XCTAssertEqual(volumeSpec.delta, 0.1, accuracy: 1e-12, file: file, line: line)
+
+        let pan = try descriptor(descriptors, "Pan")
+        let panSpec = try XCTUnwrap(pan.sliderSpec, "Pan の仕様が解決されていない", file: file, line: line)
+        XCTAssertEqual(panSpec.defaultMin, -100, file: file, line: line)
+        XCTAssertEqual(panSpec.defaultMax, 100, file: file, line: line)
+        XCTAssertEqual(panSpec.stringFormat, "F1", file: file, line: line)
+        XCTAssertEqual(panSpec.unit, "", file: file, line: line)
+    }
+
     // MARK: - 基本プロパティ（全アイテム共通）
 
     func testBaseItemDescriptorsRoundTrip() throws {
@@ -41,7 +63,7 @@ final class PropertyMetadataTests: XCTestCase {
     }
 
     func testDescriptorIDsAreUniquePerItem() {
-        for item: BaseItem in [TextItem(), VoiceItem(), ImageItem(), AudioItem()] {
+        for item: BaseItem in [TextItem(), VoiceItem(), ImageItem(), AudioItem(), VideoItem()] {
             let ids = ItemPropertyMetadata.descriptors(for: item).map(\.id)
             XCTAssertEqual(ids.count, Set(ids).count, "\(type(of: item)) で ID が重複している")
         }
@@ -226,6 +248,54 @@ final class PropertyMetadataTests: XCTestCase {
         let visibility = try descriptor(descriptors, "JimakuVisibility")
         XCTAssertTrue(visibility.setStringValue("Custom"))
         XCTAssertEqual(item.jimakuVisibility, .custom)
+    }
+
+    // MARK: - VideoItem / AudioItem の音声プロパティ（FE-R8-001）
+
+    /// VideoItem に音量・パンの記述子があり、モデルの保持値と往復し、
+    /// スライダ仕様が具象型（VideoItem）の宣言で解決されること。
+    func testVideoItemVolumePanDescriptors() throws {
+        let item = VideoItem()
+        let descriptors = ItemPropertyMetadata.descriptors(for: item)
+
+        let volume = try descriptor(descriptors, "Volume")
+        XCTAssertEqual(volume.displayName, "音量")
+        XCTAssertEqual(volume.group, "音声")
+        XCTAssertTrue(volume.setAnimationConstantValue(80))
+        XCTAssertEqual(item.volume.firstValue, 80)
+        XCTAssertEqual(volume.animationValue?.firstValue, 80)
+
+        let pan = try descriptor(descriptors, "Pan")
+        XCTAssertEqual(pan.displayName, "パン")
+        XCTAssertEqual(pan.group, "音声")
+        XCTAssertTrue(pan.setAnimationConstantValue(-30))
+        XCTAssertEqual(item.pan.firstValue, -30)
+        XCTAssertEqual(pan.animationValue?.firstValue, -30)
+
+        try assertAudioSliderSpecs(descriptors)
+    }
+
+    /// AudioItem も同様に音量・パンが編集でき、スライダ仕様が
+    /// 具象型（AudioItem）の宣言で解決されること。
+    func testAudioItemVolumePanDescriptors() throws {
+        let item = AudioItem()
+        let descriptors = ItemPropertyMetadata.descriptors(for: item)
+
+        let volume = try descriptor(descriptors, "Volume")
+        XCTAssertEqual(volume.displayName, "音量")
+        XCTAssertEqual(volume.group, "音声")
+        XCTAssertTrue(volume.setAnimationConstantValue(65))
+        XCTAssertEqual(item.volume.firstValue, 65)
+        XCTAssertEqual(volume.animationValue?.firstValue, 65)
+
+        let pan = try descriptor(descriptors, "Pan")
+        XCTAssertEqual(pan.displayName, "パン")
+        XCTAssertEqual(pan.group, "音声")
+        XCTAssertTrue(pan.setAnimationConstantValue(45))
+        XCTAssertEqual(item.pan.firstValue, 45)
+        XCTAssertEqual(pan.animationValue?.firstValue, 45)
+
+        try assertAudioSliderSpecs(descriptors)
     }
 
     // MARK: - グループ化

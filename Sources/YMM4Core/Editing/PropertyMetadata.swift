@@ -38,9 +38,14 @@ public enum PropertyKind: Equatable, Sendable {
     case enumeration(options: [PropertyEnumOption])
     /// 色（ARGB）。
     case color
-    /// アニメーション付き数値。範囲は `Animation` 自身の定義値
+    /// アニメーション付き数値。絶対制限は `Animation` 自身の定義値
     /// （minValue / maxValue）が持つため、ここでは持たない。
-    case animation
+    /// `spec` はスライダの基準範囲等の表示仕様（本家
+    /// `AnimationSliderAttribute` 由来、FE-R1-042）で、記述子構築時に
+    /// `AnimationSliderTable` から解決して渡す。未登録のプロパティは
+    /// nil のままにし、絶対制限全域のスライダへフォールバックしない
+    /// （UI 側は数値入力のみ＋診断表示とする）。
+    case animation(spec: AnimationSliderSpec?)
     /// 複合オブジェクト（ブラシ等の入れ子）。子記述子の列は
     /// `PropertyAccess.object` 側が持つ（種別自体は関連値を持たない）。
     case object
@@ -187,6 +192,13 @@ public struct PropertyDescriptor {
     public var animationValue: Animation? {
         guard case .animation(let get, _, _, _, _) = access else { return nil }
         return get()
+    }
+
+    /// スライダ表示仕様（アニメーション種別でなければ nil。
+    /// アニメーション種別でも未登録なら nil）。
+    public var sliderSpec: AnimationSliderSpec? {
+        guard case .animation(let spec) = kind else { return nil }
+        return spec
     }
 
     /// 定数値として書き込む（補間種別を「なし」へ畳む）。
@@ -374,13 +386,16 @@ extension PropertyDescriptor {
 
     /// アニメーション付き数値。書き込みは対象の `Animation` を読み、
     /// 定義値（minValue / maxValue）を保ったまま値だけを差し替える。
+    /// `spec` は通常、構築側が直接渡さず、入口での一括解決
+    /// （`AnimationSliderTable.resolving`）で付ける。
     public static func animation(
         id: String, displayName: String, group: String,
+        spec: AnimationSliderSpec? = nil,
         get: @escaping () -> Animation, set: @escaping (Animation) -> Void
     ) -> PropertyDescriptor {
         PropertyDescriptor(
             id: id, displayName: displayName, group: group,
-            kind: .animation,
+            kind: .animation(spec: spec),
             access: .animation(
                 get: get,
                 setConstantValue: { value in

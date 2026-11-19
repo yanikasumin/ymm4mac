@@ -10,10 +10,21 @@ import Foundation
 /// ものはその文言を使い、根拠が取れないものはプロパティ名そのままにする。
 public enum ItemPropertyMetadata {
     /// アイテムの編集可能プロパティを宣言順に返す。
+    /// アニメーション種別にはスライダ表示仕様（FE-R1-042）を解決して
+    /// 付ける。所有型の候補は「具象アイテム型 → `VisualItem` →
+    /// `BaseItem`」の順: 本家ではプロパティごとに宣言クラスが異なり
+    /// （Volume は具象型、X 等は `VisualItem`、`PlaybackRate2` は
+    /// 具象型ごとに範囲が異なる再宣言）、最初に一致した宣言を使う。
     public static func descriptors(for item: BaseItem) -> [PropertyDescriptor] {
         var result = baseDescriptors(for: item)
         if let visual = item as? VisualItem {
             result += videoDescriptors(group: "描画", idPrefix: "", accesses: videoAccesses(of: visual))
+        }
+        if let video = item as? VideoItem {
+            result += audioDescriptors(volume: access(video, \.volume), pan: access(video, \.pan))
+        }
+        if let audio = item as? AudioItem {
+            result += audioDescriptors(volume: access(audio, \.volume), pan: access(audio, \.pan))
         }
         if let voice = item as? VoiceItem {
             result += voiceDescriptors(for: voice)
@@ -21,7 +32,21 @@ public enum ItemPropertyMetadata {
         if let text = item as? TextItem {
             result += textItemDescriptors(for: text)
         }
-        return result
+        return AnimationSliderTable.resolving(
+            result, ownerCandidates: sliderOwnerCandidates(for: item)
+        )
+    }
+
+    /// スライダ仕様の所有型候補（具象型の $type 名＋宣言基底の
+    /// 完全修飾名）。基底側はポートの型階層ではなく本家の宣言場所を
+    /// 表すため、完全修飾名を直接書く。
+    private static func sliderOwnerCandidates(for item: BaseItem) -> [String] {
+        var candidates: [String] = [type(of: item).typeName]
+        if item is VisualItem {
+            candidates.append("YukkuriMovieMaker.Project.Items.VisualItem")
+        }
+        candidates.append("YukkuriMovieMaker.Project.Items.BaseItem")
+        return candidates
     }
 
     // MARK: - 読み書きアクセスの組み立て
@@ -179,6 +204,27 @@ public enum ItemPropertyMetadata {
             .boolean(
                 id: idPrefix + "IsZOrderEnabled", displayName: "Z値順に表示", group: group,
                 get: a.isZOrderEnabled.get, set: a.isZOrderEnabled.set
+            ),
+        ]
+    }
+
+    // MARK: - 音声プロパティ（VideoItem / AudioItem）
+
+    /// 音量・パンの記述子（グループ・表示名は `VoiceItem` の音声系と
+    /// 同一）。本家では両プロパティとも `VideoItem` / `AudioItem` の
+    /// 各具象型に宣言され、`AnimationSliderAttribute` も具象型ごとに
+    /// 付くため、スライダ仕様は具象型の宣言で解決される（FE-R8-001）。
+    private static func audioDescriptors(
+        volume: Access<Animation>, pan: Access<Animation>
+    ) -> [PropertyDescriptor] {
+        [
+            .animation(
+                id: "Volume", displayName: "音量", group: "音声",
+                get: volume.get, set: volume.set
+            ),
+            .animation(
+                id: "Pan", displayName: "パン", group: "音声",
+                get: pan.get, set: pan.set
             ),
         ]
     }

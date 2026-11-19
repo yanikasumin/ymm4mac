@@ -800,7 +800,8 @@ struct ProjectView: View {
         item: BaseItem, displayName: String, value: Double, timeline: Timeline
     ) {
         for descriptor in ItemPropertyMetadata.descriptors(for: item)
-        where descriptor.kind == .animation && descriptor.displayName == displayName {
+        where descriptor.displayName == displayName {
+            guard case .animation = descriptor.kind else { continue }
             writeAnimationValue(
                 descriptor: descriptor, item: item, timeline: timeline, value: value)
         }
@@ -963,8 +964,8 @@ struct ProjectView: View {
     private func writeItemPosition(
         item: BaseItem, x: Double, y: Double, timeline: Timeline
     ) {
-        for descriptor in ItemPropertyMetadata.descriptors(for: item)
-        where descriptor.kind == .animation {
+        for descriptor in ItemPropertyMetadata.descriptors(for: item) {
+            guard case .animation = descriptor.kind else { continue }
             let value: Double
             switch descriptor.displayName {
             case "X": value = x

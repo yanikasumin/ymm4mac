@@ -35,7 +35,72 @@ public extension EffectPropertyMetadata {
     }
 
     /// ブラシパラメータ型ごとの子記述子（保存形式のキー順）。
+    /// アニメーション種別にはスライダ表示仕様（FE-R1-042）を解決して
+    /// 付ける。所有型の候補はパラメータ型ごとに本家の宣言場所どおり
+    /// （具象型 → 宣言基底の順）。`ConditionalUnitAnimationSlider`
+    /// 由来のプロパティ（LinearGradient の Size / Offset、
+    /// GradientMesh の Width / Height）は抽出表の対象外のため、
+    /// 仕様なしのまま残る。
     private static func brushParameterChildren(
+        of brush: Brush, group: String
+    ) -> [PropertyDescriptor] {
+        AnimationSliderTable.resolving(
+            brushParameterChildrenUnresolved(of: brush, group: group),
+            ownerCandidates: brushSliderOwnerCandidates(of: brush)
+        )
+    }
+
+    /// ブラシのスライダ仕様の所有型候補。本家のクラス階層で実測した
+    /// 宣言場所に基づく（Scalable 系では Zoom を基底が宣言する等）。
+    private static func brushSliderOwnerCandidates(of brush: Brush) -> [String] {
+        switch brush.parameter {
+        case .solidColor, .noise, .preserved:
+            // 直接のアニメーション子を持たない。noise の NoiseParameter
+            // は生保持の汎用子で、所有型を特定できないため対象外。
+            return []
+        case .linearGradient:
+            return [LinearGradientBrushParameter.typeName]
+        case .radialGradient:
+            return [RadialGradientBrushParameter.typeName]
+        case .checkered:
+            return [
+                CheckeredBrushParameter.typeName,
+                drawingBrushParameterBaseTypeName,
+            ]
+        case .dot:
+            return [DotBrushParameter.typeName, drawingBrushParameterBaseTypeName]
+        case .stripe:
+            return [StripeBrushParameter.typeName]
+        case .gridLine:
+            return [
+                GridLineBrushParameter.typeName,
+                drawingBrushParameterBaseTypeName,
+            ]
+        case .bitmap:
+            return [
+                BitmapBrushParameter.typeName,
+                scalableDrawingBrushParameterBaseTypeName,
+                drawingBrushParameterBaseTypeName,
+            ]
+        case .gradientMesh:
+            return [
+                GradientMeshBrushParameter.typeName,
+                scalableDrawingBrushParameterBaseTypeName,
+                drawingBrushParameterBaseTypeName,
+            ]
+        }
+    }
+
+    /// 本家ブラシパラメータの宣言基底の完全修飾名（スライダ仕様の
+    /// 所有型候補用。ポートに対応する型が無いため文字列で持つ）。
+    private static let drawingBrushParameterBaseTypeName =
+        "YukkuriMovieMaker.Brush.DrawingBrushParameterBase"
+    private static let scalableDrawingBrushParameterBaseTypeName =
+        "YukkuriMovieMaker.Brush.ScalableDrawingBrushParameterBase"
+
+    /// ブラシパラメータ型ごとの子記述子（保存形式のキー順）。
+    /// スライダ仕様の解決は `brushParameterChildren` 側で行う。
+    private static func brushParameterChildrenUnresolved(
         of brush: Brush, group: String
     ) -> [PropertyDescriptor] {
         switch brush.parameter {
@@ -413,11 +478,18 @@ public extension EffectPropertyMetadata {
         }
     }
 
+    /// グラデーションメッシュの格子点の所有型（本家
+    /// `GradientMeshPoint`。ポートの値型は $type を持たないため
+    /// 完全修飾名を文字列で持つ）。
+    private static let gradientMeshPointTypeName =
+        "YukkuriMovieMaker.Brush.GradientMeshPoint"
+
     /// グラデーションメッシュの格子点1件の子記述子（保存形式のキー順）。
+    /// スライダ仕様は所有型 `GradientMeshPoint` で解決する。
     private static func gradientMeshPointChildren(
         of point: GradientMeshPointValue, group: String
     ) -> [PropertyDescriptor] {
-        [
+        let children: [PropertyDescriptor] = [
             .animation(
                 id: "X", displayName: "X", group: group,
                 get: { point.x }, set: { point.x = $0 }
@@ -483,6 +555,9 @@ public extension EffectPropertyMetadata {
                 get: { point.isSelected }, set: { point.isSelected = $0 }
             ),
         ]
+        return AnimationSliderTable.resolving(
+            children, ownerCandidates: [gradientMeshPointTypeName]
+        )
     }
 
     /// パターン系ブラシ共通の配置変換（保存形式ではパラメータ本体へ
@@ -493,7 +568,10 @@ public extension EffectPropertyMetadata {
         set: @escaping (BrushDrawingTransform) -> Void
     ) -> PropertyDescriptor {
         .object(id: "Drawing", displayName: "Drawing", group: group) {
-            [
+            // 子（X / Y / Angle / Aspect）は本家
+            // `DrawingBrushParameterBase` の宣言。スライダ仕様は
+            // その所有型で解決する（FE-R1-042）。
+            let children: [PropertyDescriptor] = [
                 .animation(
                     id: "X", displayName: "X", group: group,
                     get: { get().x },
@@ -520,6 +598,9 @@ public extension EffectPropertyMetadata {
                     set: { var drawing = get(); drawing.isInverted = $0; set(drawing) }
                 ),
             ]
+            return AnimationSliderTable.resolving(
+                children, ownerCandidates: [drawingBrushParameterBaseTypeName]
+            )
         }
     }
 
@@ -597,12 +678,12 @@ public extension EffectPropertyMetadata {
             guard let parameter = definition.mosaicParameter else { return [] }
             switch parameter {
             case .sized(let sized):
-                return [
+                return AnimationSliderTable.resolving([
                     .animation(
                         id: "Size", displayName: "Size", group: "モザイク",
                         get: { sized.size }, set: { sized.size = $0 }
                     ),
-                ]
+                ], ownerCandidates: mosaicSliderOwnerCandidates(of: sized))
             case .preserved:
                 return rawObjectChildren(
                     group: "モザイク",
@@ -619,7 +700,27 @@ public extension EffectPropertyMetadata {
         }
     }
 
+    /// モザイクのスライダ仕様の所有型候補。`Size` は本家
+    /// `SizeMosaicParameterBase` の宣言（具象型は形状ごとの $type 名）。
+    private static func mosaicSliderOwnerCandidates(
+        of parameter: SizedMosaicParameter
+    ) -> [String] {
+        var candidates: [String] = []
+        if let typeName = SizedMosaicParameter.typeName(for: parameter.shape) {
+            candidates.append(typeName)
+        }
+        candidates.append(
+            "YukkuriMovieMaker.Project.Effects.MosaicParameters.SizeMosaicParameterBase"
+        )
+        return candidates
+    }
+
     // MARK: - メッシュ変形の点列
+
+    /// メッシュ変形の点の所有型（本家 `MeshDeformationPoint`。
+    /// ポートの値型は $type を持たないため完全修飾名を文字列で持つ）。
+    private static let meshDeformationPointTypeName =
+        "YukkuriMovieMaker.Project.Effects.MeshDeformationPoint"
 
     /// `MeshDeformationPointValue` の列の複合記述子。要素は X / Y
     /// （アニメーション付き）と IsSelected。追加はモデルの既定値の
@@ -633,7 +734,7 @@ public extension EffectPropertyMetadata {
             count: { definition.points.count },
             elements: { index in
                 guard definition.points.indices.contains(index) else { return [] }
-                return [
+                let children: [PropertyDescriptor] = [
                     .animation(
                         id: "X", displayName: "X", group: group,
                         get: {
@@ -670,6 +771,9 @@ public extension EffectPropertyMetadata {
                         }
                     ),
                 ]
+                return AnimationSliderTable.resolving(
+                    children, ownerCandidates: [meshDeformationPointTypeName]
+                )
             },
             insert: {
                 definition.points.append(MeshDeformationPointValue())

@@ -1453,6 +1453,40 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **差異。** 両系統は異なるアルゴリズムを使用しており、同一条件での出力波形・音質の等価性は未検証である。アイテム側 Sola が掛かった素材をプレビュー全体速度の TimePitch でさらに伸縮すると、異なる伸縮処理が二重に重なる構造になっており、書き出し（全体速度は効かない）との間にも処理経路の差がある。本家のプレビュー全体速度の音高保持の中身はデコンパイル側で未同定であり、TimePitch の等価性は未検証。是正範囲は本記録の後に判断する。
 
+#### FE-SLIDER-CORE — スライダ表示仕様の Core 基盤（フロントエンド監査 FE-R1-042、単位2前半）
+
+**何を実装したか。** アニメーション付き数値プロパティのスライダ表示仕様（基準範囲・表示形式・単位・刻み）を Core で保持し、記述子構築時に解決する基盤。本家は各 `Animation` プロパティへ `AnimationSliderAttribute`（StringFormat / UnitText / DefaultMin / DefaultMax）を付け、スライダの基準範囲を絶対制限（`Animation` 自身の minValue / maxValue）とは別に決める。従来のポートにはこのデータが無く、アプリ層のスライダは絶対制限全域をそのまま範囲にしていた（FE-R1-042 の欠陥）。本単位は Core の型・参照表・解決までで、スライダ UI は次単位。
+
+**型と表。** `AnimationSliderSpec`（`Sources/YMM4Core/Editing/AnimationSliderSpec.swift`）: defaultMin / defaultMax / stringFormat / unit / unitIsResourceKey / delay と、導出プロパティ `delta`（本家 `Delta` の規則の再実装: 形式が "F<n>" なら 0.1^n、数値化できなければ 1、"D" 始まりなら 1。それ以外は本家属性自体が例外とする形式で表に存在しないため防御として 1）。`delay` は本家属性のコンストラクタが設定しないため属性由来では常に 0。参照表 `AnimationSliderTableData.swift` は抽出データ（本家デコンパイルからの `AnimationSliderAttribute` 全 1,023 件）から機械生成した Swift ソースで、生成スクリプトは解析側ワークスペースの `frontend-audit/generate_slider_table.py`（生成ファイルのヘッダに生成元と再生成方法を記載）。
+
+**キー設計の根拠（衝突検査の実測）。** キーは (所有型の完全修飾名, プロパティ実名) とし、表示名はキーにしない（監査 Round 2 の設計判断）。抽出 1,023 件を (単純クラス名, プロパティ) で数えると一意な組は 1,018 件で、5 件の重複（`DrawingBrushParameterBase` の X / Y / Angle / Aspect と `ScalableDrawingBrushParameterBase` の Zoom）が存在する。この 5 件はいずれも `YukkuriMovieMaker.Brush` と `YukkuriMovieMaker.Plugin.Community.Brush` の同名クラス同士で、仕様値は完全一致する。完全修飾名をキーにすれば 1,023 件全てが一意になるため、完全修飾キーを採用した。所有型の正規化は、ポート側の $type 名（"完全修飾名, アセンブリ名"）から最初のコンマ以降を落とす規則で統一する（`AnimationSliderKey.ownerTypeName(fromTypeName:)`）。
+
+**未解決の単位（38 件）。** 抽出時に単位が本家 `Texts` リソースのキー名だった 38 件は、実文字列がデコンパイル側に含まれないため、キー名のまま表へ保持し `unitIsResourceKey = true` で未解決と判別できるようにした。推測で文字列は埋めていない。実文字列の確定はリソース側の調査が別途必要（次単位以降の残件）。
+
+**対象外（8 件）。** `ConditionalUnitAnimationSlider` の 8 件（LinearGradient の Size / Offset、GradientMesh の Width / Height 等、単位が条件で切り替わるもの）は通常の属性と意味論が異なるため今回の表に含めない。該当プロパティの記述子は仕様なしのまま残る（試験で固定）。
+
+**記述子への解決。** `PropertyKind.animation` に `spec: AnimationSliderSpec?` を保持させ（絶対制限は従来どおり `Animation` 側）、`PropertyDescriptor.sliderSpec` で参照できるようにした。解決は入口の一括処理 `AnimationSliderTable.resolving(_:ownerCandidates:)` で行い、候補は「具象型 → 宣言基底」の順に最初に一致した宣言を使う。仕様が見つからない記述子は nil のままにし、絶対制限全域へのフォールバックはしない。不足は `AnimationSliderTable.unresolvedProperties(in:ownerCandidates:)` で診断として収集できる。
+
+解決を組み込んだ経路: (1) アイテム（`ItemPropertyMetadata.descriptors(for:)`）— 候補は具象アイテム型の $type 名、`VisualItem`、`BaseItem`。本家では宣言場所がプロパティごとに異なる（Volume 等は具象型、X 等は `VisualItem`、`PlaybackRate2` は具象型ごとに範囲が異なる再宣言で `BaseItem` には属性自体が無い）ため、この候補順が要る。VoiceItem の字幕系は id 自体が本家プロパティ名（JimakuX 等）であり具象型で引ける。(2) エフェクト（`EffectPropertyMetadata.descriptors(for:)`）— 候補は具象定義の $type 名（本家ではエフェクトのプロパティは具象クラスが宣言する）。(3) 複合子のうち所有型を特定できるもの（`EffectPropertyMetadataComposite`）— ブラシパラメータ子（パラメータ型ごとに具象型→宣言基底の候補表を実測のクラス階層で固定）、Drawing 変換子（`DrawingBrushParameterBase`）、グラデーションメッシュ格子点（`GradientMeshPoint`）、メッシュ変形の点（`MeshDeformationPoint`）、モザイクの Size（形状ごとの具象型→`SizeMosaicParameterBase`）。
+
+未対応の経路: 生保持オブジェクトの汎用子（rawObjectChildren 等）は所有型をその層で特定できないため解決しない（仕様なしが正で、試験でも固定）。また実装中に判明した既存の欠落として、`ItemPropertyMetadata` は VideoItem / AudioItem に Volume / Pan の記述子自体を出していない（VoiceItem のみ）。表には両型の Volume 仕様があるため、記述子側の欠落は別途処分が要る（本単位の範囲外として記録）。
+
+**スケール計算を含めなかった判断。** 本家 `TextBoxSlider.ChangeMinMax` の2の冪スケール拡張は、監査 Round 2 の設計判断で「UI 側の派生状態」（セグメント間で最大スケールを共有する MinScale 伝播、移動量モードの対称範囲置換、端点補正といった表示モデル側の例外を含む）と位置付けられている。純粋関数として切り出しても、検証は結局コントロールの振る舞いと対で行う必要があり、Core へ先行して置くと未検証の式だけが固定されるため、本単位では含めず UI 単位で扱う。これは省略ではなく設計判断としての記録である。
+
+**本家との差分。** ユーザーから見える差はまだ無い（UI 未接続）。内部差として、本家は属性をプロパティ宣言に直接持つが、こちらは生成表＋構築時解決で等価な情報を再現する。`ConditionalUnitAnimationSlider` と単位リソースキー 38 件は本家でも条件分岐・リソース参照で解決されるもので、こちらでは未解決のまま明示する。
+
+**検証。** Mac（同期先 ~/ymm4-work/fe-slider/YMM4Mac）で方式名フィルタ実行し全合格: 新規 `AnimationSliderSpecTests` 14 件（表の全件性とキー一意性、両名前空間の同名クラスの一致、リソースキーの未解決表示、delta 導出 F0/F1/F2/F4、VideoItem 音量の表レベル裏取り、VoiceItem の記述子解決と単位の全角 ％、`PlaybackRate2` の型別範囲、VisualItem 経由の解決、TextItem の `PlaybackRate2` が仕様なし＋診断に載ること、ZoomEffect の解決、ブラシ子・格子点の解決、ConditionalUnit の対象外固定）、既存 `PropertyMetadataTests` 17 件、`EffectPropertyMetadataTests` 17 件（うち1件は `PropertyKind` のケース変更に伴い等値表明を `.animation(spec: nil)` へ精密化）。合計 48 件・失敗 0。AudioDrift は既定どおり除外。
+
+**次の担当へ（アプリ層の破壊箇所）。** `PropertyKind.animation` への関連値追加により、アプリ層で式位置の `kind == .animation` 比較がコンパイル不能になる。Mac でアプリパッケージをビルドして実測した破壊は `Apps/DebugApp/Sources/YMM4MacDebug/ProjectView.swift` の 800 行目と 944 行目の2箇所のみ（エラー: member 'animation(spec:)' expects argument）。次単位（スライダ UI）で同ファイルに触る際にパターン照合へ直すこと。本単位ではアプリ層に触っていない。
+
+**追随修正（同ブランチで実施）。** 上記2箇所（`ProjectView.swift` の `writeAnimationProperty` / `writeItemPosition`）を `guard case .animation = descriptor.kind` のパターン照合へ置き換えた（意味は従来どおり「animation 種別か」の判定で不変）。Mac（同期先 ~/ymm4-work/fe-slider/YMM4Mac）で `Apps/DebugApp` の `swift build` 成功と `AnimationSliderSpecTests` の合格を確認済み。
+
+#### FE-R8-001 — VideoItem / AudioItem の Volume・Pan 記述子を追加（フロントエンド監査 Round 8、P2）
+
+**何を実装したか。** `ItemPropertyMetadata.descriptors(for:)` は音量・パンの記述子を `VoiceItem` にのみ追加しており、`volume` / `pan` をモデルとして保持する `VideoItem` と `AudioItem` ではインスペクタから編集できなかった（監査 Round 8 で FE-R8-001 として採番）。両型に対して、グループ「音声」・表示名「音量」「パン」（`VoiceItem` の音声系と同一）のアニメーション記述子を追加した。追加は共通ヘルパ `audioDescriptors(volume:pan:)` に寄せ、本家で両プロパティが各具象型に宣言され `AnimationSliderAttribute` も具象型ごとに付く実態に合わせ、スライダ仕様は FE-SLIDER-CORE の解決経路で具象型の宣言から引かれる。
+
+**検証。** Mac（同期先 ~/ymm4-work/fe-r8-001/YMM4Mac）で方式名フィルタ実行し全合格: `PropertyMetadataTests` 19 件（新規に両型の記述子の存在・get/set の結線・スライダ仕様の解決を固定）、`AnimationSliderSpecTests` 14 件、`EffectPropertyMetadataTests` 17 件。合計 50 件・失敗 0。AudioDrift は既定どおり除外。期待値（範囲・形式・単位）は抽出データ `slider-attributes.json` の両型 Volume / Pan で裏取り済み。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
@@ -1754,3 +1788,57 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 **手動検証チェックリストへの追加項目（Round 11 分）。**
 23. ズームを大きくした状態（1フレームが数十pxになる倍率）で、複数選択中のアイテムを1フレーム未満だけドラッグして離しても、複数選択が保たれること。動かさずにクリックして離した場合は、そのアイテムだけの選択になること（FE-R10-002 残差）。
 24. 選択済みアイテムを Option を押しながら MouseDown し、移動せずに離したとき、複製がその場でタイムラインとプレビューに表示されること。通常の（Option なし）MouseDown では余分な再描画やちらつきが無いこと（FE-R11-001）。
+#### FE-SLIDER-UI — スライダ表示モデルと AnimationRowView の接続（フロントエンド監査 FE-R1-042、単位2後半）
+
+**何を実装したか。** FE-SLIDER-CORE で Core に用意した表示仕様（`AnimationSliderSpec`）を実際のスライダへ接続し、FE-R1-042 を閉じる単位。従来の `AnimationRowView` はアニメーションの絶対制限（minValue...maxValue）をそのままスライダ範囲に使っており、基準範囲（例: 音量 0..100）に対して絶対制限（例: 0..10000）が桁違いに広い項目では、ドラッグの分解能が粗くなり値が跳んでいた。本単位で、範囲は「表示仕様の基準範囲を、同一 Animation の全有効値で共有するスケールで広げたもの」になった。土台として feat/fe-batch1（PR #118）を feat/fe-slider-core へマージ済み（競合は `ProjectView.swift` の2箇所のみ。書き込み経路はバッチ1側の `writeAnimationValue` 集約を正とし、種別判定はスライダ基盤側のパターン照合 `guard case .animation` を正として両意図を保存した）。
+
+**スケール計算の置き場所（FE-SLIDER-CORE の判断との関係）。** 本家 `TextBoxSlider.ChangeMinMax` の式は `Sources/YMM4Core/Editing/AnimationSliderScale.swift` に純粋関数の列挙型 `AnimationSliderScale` として置いた。FE-SLIDER-CORE で先行配置を見送った理由は「消費するコントロールが無く、式だけが未検証で固定される」ことであり、本単位でコントロール（AnimationRowView）が消費する。もう1つの理由は検証可能性で、アプリ層にはテストターゲットが無いため、アプリ層に式を置くと端点補正を含む式の独立検証ができない。Core に置くのは「式」だけであり、スケールの状態は保持しない — 現在効いているスケールは表示側がモデル値から毎回導出する派生状態で、モデルへ保存しない点は監査 Round 2 の設計判断どおりである。
+
+**式の内容（本家との対応）。** `scale(value:defaultMin:defaultMax:absoluteMin:absoluteMax:)`: 本家 `ChangeMinMax` の `Scale` の再現。基準端点で割った商の切り捨ての最大値 +1 を 2 の冪へ切り上げる。端点補正も元の式のとおり（スケール > 1 で、値がちょうど基準端点 × (スケール − 1) に一致し、その積が絶対制限の端点そのものなら 1 引く。補正後のスケールは 2 の冪とは限らず、例: 基準 ±100・絶対上限 300・値 300 では 4 → 3 になる）。指数の頭打ちとして 2^30 を置いた（有限なモデル値では到達しない防御）。`sharedScale`: 本家は各値の `TextBoxSlider.Scale` の最大値を全値の `MinScale` へ伝播させ、実効スケール（`AdjustedScale = max(MinScale, Scale)`）を全員一致させる。その固定点を1回で計算する。`currentRange`: `CurrentMin` / `CurrentMax` の再現（基準範囲をスケール倍し、絶対制限で頭打ち。基準端点が正の側では基準範囲より狭くならない）。`ranges(forValueAt:)`: 移動量指定（`AnimationType.movementAmount`）の第2値だけ、基準範囲と絶対制限の双方を ±最大絶対値の対称範囲へ置き換える本家の例外（`AnimationSliderViewModel` の値ビュー構築）。
+
+**ビューの変更（`Apps/DebugApp/Sources/YMM4MacDebug/PropertyEditorRows.swift` の `AnimationRowView` のみ）。** (1) スライダは `descriptor.sliderSpec` がある場合だけ出し、範囲は `AnimationSliderScale.sliderRange(for:valueIndex:spec:)`（valueIndex は編集中の区間、無ければ 0）。仕様が無い項目はスライダを出さず数値入力のみ（絶対制限全域へのフォールバック禁止という設計判断）。(2) 単位は入力欄の横に caption で出す。`unitIsResourceKey`（未解決のリソースキー名）の場合はキー名をユーザーへ見せず単位なしとして扱う。(3) 数値表示は仕様の stringFormat（"F<n>"）の小数桁で整形する `formatAnimationValue(_:spec:)` を新設し、この行の全表示経路（初期表示・区間追随・スライダ同期・確定時の再整形）で使う。仕様が無い場合は従来の `formatNumber` に落とす。FE-R1-019 の未編集判定（uneditedText）は同じ整形を通るため共存する。書き込み経路（`writeValue`、区間対応）は変更していない。
+
+**本家との差分（ユーザーから見えるもの）。** (1) 移動量指定の第2値（移動量そのもの）は、現行の Mac UI では直接編集する欄が無く（開始値のみ編集可能）、対称置換は共有スケールの計算にだけ効く。本家は第2値にも独立したスライダを持つ。Mac UI の行構成そのものの拡張は本単位の範囲外とした。(2) 単位の表示位置は入力欄の横（本家は入力欄の内側）。(3) 本家の `FixValue`（Delta から導く桁数への丸め＋クランプ）は再現していない。Mac 側の確定値は記述子の setter が絶対制限でクランプし、表示は stringFormat の桁で丸まる（モデル値自体は連続値のまま）。ドラッグも本家同様に連続（刻みへの量子化はしない）。
+
+**検証。** Mac（同期先 ~/ymm4-work/fe-slider/YMM4Mac）で Apps/DebugApp の swift build 成功。Core テストを方式名フィルタで実行し全合格（XCTest 側の Executed で判定、AudioDrift 除外）: 新規 `AnimationSliderScaleTests` 13 件（Scale の式: 範囲内は 1、端点一致での 2 倍、端点補正の発動と (スケール−1) 判定による 4→3、2 の冪の増加、DefaultMin >= 0 の分岐。CurrentMin/Max のスケール倍と絶対制限クランプ、基準範囲を下回らないこと。R2-A01: 値が基準範囲内なら表示範囲 = 基準範囲。R2-A02: 範囲外の値で拡張される（正負両側）。R2-A03: キーフレーム区間間でスケール共有 — 末尾の値 500 が全体を 8 倍へ押し上げ全区間に効くこと、有効値列の既定値補完。R2-A04: 対称置換の範囲そのものと、共有スケールへの効果 — 対称置換なしの型との対照で固定）、既存 `AnimationSliderSpecTests` 14 件、`PropertyMetadataTests` 17 件、`EffectPropertyMetadataTests` 18 件。合計 62 件・失敗 0。
+
+**手動検証チェックリスト（未実施。アプリ層のため目視確認が要る）。** (1) R2-A01: 音量（基準 0..100）など基準範囲が絶対制限より狭い項目で、スライダのドラッグが入力欄の値へ線形に追従し、値が跳ばないこと。(2) R2-A02: 数値入力で基準範囲外の値（例: 250）を確定して行を開き直し、スライダ範囲が拡張されて値が範囲内に収まっていること。(3) R2-A03: キーフレーム付き項目で、別区間に大きな値（例: 500）を入れた状態で他区間を表示し、スライダ範囲が全区間で同じ拡張になっていること。(4) R2-A04: 移動量指定の項目で、移動量が大きな負値でも開始値側のスライダ範囲が不必要に広がらないこと。(5) 単位表示: 単位のある項目で単位が見えること、単位がリソースキーの項目（例: 秒系）でキー名がそのまま表示されないこと。(6) 仕様の無い項目（例: TextItem の PlaybackRate2）でスライダが出ず数値入力のみになること。
+
+**Round 13 処分（FE-R13-001 / FE-R13-002）。** (1) FE-R13-001（P1）: `AnimationRowView` の表示値は再生ヘッド位置での評価値（`animationContext.value(of:)`）だった一方、書き込みは先頭値・区間開始値へ向かっており、表示と編集対象がずれていた（移動量指定ではスライダへ渡る現在値が表示範囲の外へ出る、書き込んだ値と表示へ戻る評価値が一致しない）。本家は各スライダが担当する `AnimationValue.Value` を直接編集する（`AnimationValueSliderViewModel`）ため、表示・編集の対象値を編集対象の AnimationValue そのものへ一致させた。対応付けは Core の `AnimationSliderScale.editValue(of:valueIndex:)` へ切り出し（valueIndex はスライダ範囲計算と同一の「編集中の区間、無ければ 0」）、行側は初期表示・スライダ Binding・区間追随・確定時の再整形の全経路でこれを使う。再生ヘッドでの評価値は編集欄へ出さない（プレビュー側の表示に委ねる）。Core テストで「移動量指定の評価値 600 に対して編集対象値は開始値 0」を固定した。(2) FE-R13-002（P2）: `AnimationSliderScale.activeValues(of:)` が不足分を `defaultValue` で補っていたため、値列が短い状態（例: 拡大率を定数 50 へ変更して移動量指定へ切替、値列は [50] のまま）で、存在しない第2値（既定値 100）が対称範囲の端点として共有スケールを 2 倍へ膨らませていた。本家 `ActiveValues` は `Values.Take(GetActiveValueCount())` で存在する値だけを列挙するため、列挙をその意味論へ変更した（不足分は作らない、超過分は切り詰める）。値列の正規化そのもの（本家は編集終了時の `EndEditAsync` が担い、移動量指定の第2値は 0 で補われる）は、Mac 側の記述子書き込みに編集セッションの境界が無く即時確定のため本単位では再現せず、スケール列挙だけを揃える判断とした（正規化タイミングの差は未解決事項として残る）。従来の `testActiveValuesPadsWithDefaultValue` は Mac 側方針を固定した試験だったため本家の意味論に合わせて `testActiveValuesReturnsOnlyExistingValues` へ書き換え、回帰試験 `testSharedScaleIsNotInflatedByMissingMovementAmountValue` を追加した。
+
+**手動検証チェックリストへの追加（未実施）。** (7) FE-R13-001: 移動量指定の項目（例: X、開始値 0・移動量 1）で再生ヘッドを進めた位置でも、入力欄とスライダが開始値 0 を示し、スライダ操作で開始値を変えると入力欄の値がそのまま一致すること。(8) FE-R13-002: 拡大率を定数 50 にしてから移動量指定へ切り替え、開始値側のスライダ範囲が不必要に広がっていない（基準範囲のまま）こと。
+
+**次の担当へ。** 単位リソースキー 38 件の実文字列は未解決のまま（FE-SLIDER-CORE から継続）。`ConditionalUnitAnimationSlider` 8 件も仕様なしのまま。ファイル参照（FE-R1-043、`PropertyKind.filePath`）は次単位。
+#### FE-UNDO-CORE — フロントエンド基盤（Undo/Redo）の Core 側新設（IMPLEMENTED、Mac 検証済み）
+
+フロントエンド監査 Round 2 の設計判断（FE-R2-DESIGN.md「Undo/Redo 基盤」）に基づき、履歴の土台だけを `Sources/YMM4Core/Editing/` へ新設した。アプリ層への接続と既存編集操作の移行は次単位で行う（本節の時点では参照元なし）。スナップショット方式は設計判断で不採用が確定しているため採っていない。
+
+- **新設ファイル・型**: `EditCommand.swift`（`EditTargetKey`、`EditCommand` プロトコル、`ValueChangeCommand<Value: Equatable>`、`ActionEditCommand`）、`EditCommandCollector.swift`（`EditCommandCollector`、モジュール内）、`EditTransaction.swift`（`EditTransaction`）、`UndoHistory.swift`（`UndoHistory`）、`EditCoordinator.swift`（`EditCoordinator`）。
+- **コマンドの表現（設計判断と根拠）**: 本家 `UndoRedoPropertyChangedCommand` は「対象インスタンス＋プロパティ名＋旧値/新値」を保持し、Undo/Redo 時にリフレクションで値を戻す。Mac 版 Core にはリフレクション相当が無く、既存の `PropertyAccess` も get/set クロージャ方式のため、対象の同一性は `EditTargetKey`（`ObjectIdentifier`＋プロパティ識別子）で表し、値の適用はコマンドの `apply` クロージャが担う形にした。対象が参照型（`BaseItem` はクラス）であることとも整合する。クロージャは対象を保持する（本家も対象インスタンスを保持する）。値で表せない変更（追加・削除等）は本家 `UndoRedoActionCommand` に対応する `ActionEditCommand`（Undo/Redo クロージャ対）で表す。
+- **本家意味論の再現範囲**（逆コンパイル結果は仕様抽出の参照に留め、写経はしていない）: (1) コマンド収集時の統合 — 空コマンド（旧値=新値）の破棄、同一対象＋値の連鎖がつながる場合だけ統合（`CanConnect`/`Connect` 相当）、統合結果は収集の末尾へ移動、統合結果が空になれば除去（相殺）。(2) 実行順 — Undo は値変更コマンドを逆順→手続き型コマンドを逆順、Redo はその正順。(3) 履歴 — 確定済みトランザクションを1エントリとして蓄積、容量の既定100（本家 `UndoRedoLimit` 既定値）、超過時は最古を破棄、新規確定で Redo を破棄、実質的変更が無い確定はエントリを作らず Redo も破棄しない（本家の空の `Record()` 相当）、Undo/Redo 適用中の確定は記録しない（`isUndoRedoing` 相当の記録抑制）。
+- **変更の捕捉は明示トランザクション方式**（本家の `UndoRedoable` 自動監視は模倣しない）: 変更の適用は呼び出し側が行い、`EditTransaction` へは適用済みの変更をコマンドとして登録する。確定で履歴1エントリ、キャンセルは登録済みコマンドの Undo で開始状態へ巻き戻す。ドラッグ型の逐次変更は収集時の統合により「開始値→最終値」の1エントリにまとまる。同時に有効なトランザクションは1つだけ（本家のコレクタが全体で1つであることに対応）とし、開始時に前のトランザクションが残っていればキャンセル（巻き戻し）して置き換える — 放棄されたドラッグ等で半端な変更を残さないための仕様。
+- **EditCoordinator の範囲**: トランザクションの開始/確定/キャンセル、履歴への登録、Undo/Redo の実行、履歴変更通知の転送だけを統括する薄い層。編集操作の実体は既存の Core 編集操作の責務のまま。対象の実在検証（例: アイテムがタイムラインに残っているか）はアプリ接続の単位で意味を持つため、本単位では入れていない。
+- **変更通知**: Core には一元的な変更通知の仕組みが無い（モデルの伝播は `Timeline.items` や `BaseItem.keyFrames` 等の `didSet` フックが担う）ため、履歴側の通知は `UserDictionaryStore.onSaveResult` の前例と同じクロージャ方式（`UndoHistory.onHistoryChanged`）とし、既存の仕組みと競合させない。
+- **本家との意図的な差異**: (1) 本家の Undo/Redo は非同期コマンドを含むため非同期だが、Mac 版のコマンドは全て同期のため同期 API とした。(2) 本家は履歴が空の Undo/Redo を想定しないが、こちらは `false` を返して安全に倒す。(3) スレッド保護は行わない（モデル全体が UI スレッド前提の設計であることに合わせる。本家コレクタのロックは自動監視が複数経路から発火し得るためのもの）。
+
+検証: Mac で新規テストを方式名フィルタで実行し全合格 — `EditCoordinatorTests` 10件（R2-U01 の往復、R2-U02 の逐次変更の1エントリ化、連鎖しない変更の非統合、統合コマンドの末尾移動と Undo/Redo 適用順、手続き型コマンドの実行順、相殺・同値変更の破棄、キャンセルの巻き戻し、開始による前トランザクションの置き換え、二重確定の無視）、`UndoHistoryTests` 8件（R2-U03 の容量3での最古破棄と既定容量100、R2-U04 の新規確定による Redo 破棄・適用中の記録抑制、無変更確定での Redo 保持、空履歴での false、全消去、履歴変更通知）。関連する既存テストも方式名フィルタで実行し全合格（PropertyMetadataTests 系34件、TimelineEditingTests 20件、いずれも失敗0）。全スイートは回していない。ARCHITECTURE.md は既存の処理経路・所有権に変更が無いため未更新（接続の単位で更新する）。
+
+##### FE-UNDO-CORE R5 処分 — 監査 Round 5 指摘4件への対応（IMPLEMENTED、Mac 検証済み）
+
+監査 Round 5（PR #119 レビュー）で、基盤の境界条件とライフサイクル管理に4件の指摘を受けた。いずれも本節の新設ファイル内での処分であり、アプリ層・既存編集操作への影響はない。
+
+- **FE-R5-119-01（P1）未確定トランザクション中の Undo で履歴とモデルが乖離する**: `EditCoordinator.undo()` が `activeTransaction` を見ずに履歴の Undo を実行していた（A確定→B開始・未確定→Undo→B確定、の順で値と履歴が食い違う）。処分: (1) アクティブなトランザクションがある間は Coordinator の `undo()` / `redo()` を実行せず `false` を返す（排他）。(2) 履歴操作の入口を Coordinator へ一本化 — `UndoHistory.undo()` / `redo()` を `public` からモジュール内（internal）へ変更し、`record` と合わせてアプリ層からは Coordinator 経由でのみ操作できる形にした（テストは `@testable import` で従来どおり呼び出し可能）。回帰テスト `testUndoRedoAreBlockedDuringActiveTransaction`（A確定→B未確定で Undo/Redo が false・値と履歴が不変、B確定後に初めて Undo が効く）を追加。
+- **FE-R5-119-02（P2）Undo/Redo の再入防止**: `UndoHistory.undo()` / `redo()` は適用中フラグを記録抑制にしか使っておらず、適用クロージャからの再入で別のエントリを取り出せた。処分: 両メソッドの入口で適用中なら `false` を返し、フラグの復帰は `defer` に集約（内側の呼び出しが外側のフラグを解除しない）。`EditCoordinator.cancel` も、巻き戻しの適用クロージャからの再入で再帰的な巻き戻しが起きないよう、コマンド実行前に `finish()` とアクティブ解除で終了状態を確定させてから `rollback()` する順序へ変更した。回帰テスト `testUndoReentryFromApplyClosureIsRejected`（適用クロージャ内からの Undo 試行が拒否され、外側の Undo/Redo が完了して履歴が壊れない）、`testCancelReentryDoesNotRecurse`（巻き戻し中の再キャンセル・新規開始でも巻き戻しは1回だけ）を追加。
+- **FE-R5-119-03（P2）容量の不変条件**: `UndoHistory.capacity` は公開された stored プロパティで、`init` の `max(0, capacity)` 補正が後からの代入に効かず、負値だと切り詰め側（`excess = count - capacity`）で空配列への `removeFirst` が trap し得た。処分: 容量の実値を非公開ストレージ（`capacityStorage`）へ移し、公開アクセサの setter で代入の全経路に `max(0, …)` の検証を通す形にした。回帰テスト `testNegativeCapacityOnEmptyHistoryBehavesAsZero` / `testNegativeCapacityOnNonEmptyHistoryTrimsAll`（空・非空の両方で負の容量を指定しても trap せず容量0として振る舞う）を追加。
+- **FE-R5-119-04（P2・契約変更）開始時の暗黙キャンセルを廃止**: 従来の `beginTransaction()` は既存のアクティブなトランザクションを巻き戻して置き換えていたが、「新しい編集要求が発生した」ことだけでは前の編集を破棄してよい根拠にならない（終了イベント未処理のドラッグ結果が黙って失われる）。処分: `beginTransaction()` の戻り値を `EditTransaction?` とし、アクティブな編集がある場合は新規開始を拒否して nil を返す契約へ変更。中断は `cancel`、確定は `commit` を呼び出し側が明示する。既存テスト `testBeginReplacesActiveTransactionWithRollback` は新契約の `testBeginIsRefusedWhileTransactionIsActive` へ書き換え（拒否・無巻き戻し・明示キャンセル後の再開始を確認）。契約変更の影響範囲は Core 内とテストのみ（アプリ層は未接続のため影響なし）。併せて、適用クロージャが対象を強参照する前提（`EditTargetKey` 自体は対象を保持しない）を `EditCommand.swift` の `EditTargetKey` ドキュメントへ接続側の契約として明記した。
+
+R5 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinatorTests` 13件（従来10件のうち置き換え前提の1件を新契約へ書き換え、R5 回帰3件を追加）、`UndoHistoryTests` 10件（従来8件＋容量の回帰2件）。関連する既存テストも全合格（PropertyMetadataTests 系34件、TimelineEditingTests 20件、いずれも失敗0）。全スイートは回していない。ARCHITECTURE.md は処理経路・所有権に変更が無いため未更新。
+
+##### FE-UNDO-CORE R6 処分 — 監査 Round 6 指摘2件への対応（IMPLEMENTED、Mac 検証済み）
+
+監査 Round 6（PR #119 再レビュー）で、R5 処分の残存として再入・通知まわりの2件（いずれも P1）の指摘を受けた。いずれも本節の新設ファイル内での処分であり、アプリ層・既存編集操作への影響はない。
+
+- **FE-R6-119-01（P1）キャンセル巻き戻し中の操作排他**: R5 処分の `cancel` は巻き戻し開始前に `finish()` とアクティブ解除で終了状態を確定させていたため、巻き戻し中は Undo の排他条件（有効なトランザクションの存在）が消えており、巻き戻し途中の適用クロージャから過去の履歴エントリの Undo が実行できて履歴とモデルが乖離した（レビュアーの再現条件: A確定で Frame 0→10、B開始で Frame 20・Length 2、Bキャンセルの Length 巻き戻し中に A を Undo すると、B の残りの巻き戻しが A の変更後の値へ復元してしまう）。巻き戻し中の `beginTransaction` も成功していた。処分: `EditCoordinator` に操作状態（`OperationState`: idle / editing / restoring）を導入して一元管理し、「編集中」と「復元処理中」を区別する形にした。`activeTransaction` は状態からの算出プロパティへ変更。`cancel` は巻き戻し中、状態を restoring に保持し（`defer` で idle へ復帰）、その間は開始（nil）・確定・キャンセル・Undo/Redo（false）を全て拒否する。場当たり的な個別ガードではなく、操作の可否を操作状態の1か所で判定する。回帰テスト `testCancelRollbackBlocksUndoAndBegin`（レビュアーの再現条件そのもの: 巻き戻し中の Undo・開始が拒否され、完了後は (Frame 10 / Length 1) へ戻り、A が Undo 可能な状態で履歴が整合）を追加。既存の `testCancelReentryDoesNotRecurse` は新契約に合わせて見直し（巻き戻し中の開始が nil を返すこと、完了後は通常どおり開始できることを確認）。
+- **FE-R6-119-02（P1）履歴変更通知の発火時点で記録抑制が残っている**: `UndoHistory.undo()` / `redo()` は `isApplying = true` の後 `defer` で関数終了時に復帰させていたため、`onHistoryChanged` の発火時点でも抑制が有効なままだった。通知クロージャから新しい編集を確定させると、`record` の `guard !isApplying` で履歴登録だけが黙って破棄され、モデルへの変更は残るのに Undo できない変更が生まれていた。本家 `UndoRedoManager` は `isUndoRedoing` を false へ戻してから `HistoryChanged` を発火させる（レビュアーが再照合済み）ため、本家とも異なる挙動だった。処分: 記録抑制の範囲をコマンドの適用中だけに限定する。適用部分を `applySuppressingRecording`（適用スコープ内でのみ `isApplying` を立て、`defer` で解除）へ切り出し、スタック更新を終え・抑制を解除してから `onHistoryChanged` を発火させる順序へ変更した（`undo` / `redo` とも）。適用中の記録抑制そのもの（R2-U04）は維持される。回帰テスト `testEditCommittedFromHistoryChangedNotificationIsRecorded`（Undo の通知の中から新しい編集を確定させ、その編集が履歴に登録され Undo 可能であること）を追加。
+
+R6 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinatorTests` 15件（従来13件＋R6 回帰2件、`testCancelReentryDoesNotRecurse` は新契約へ見直し）、`UndoHistoryTests` 10件。関連する既存テストも全合格（PropertyMetadataTests 系34件、TimelineEditingTests 20件、いずれも失敗0）。全スイートは回していない。ARCHITECTURE.md は処理経路・所有権に変更が無いため未更新。
