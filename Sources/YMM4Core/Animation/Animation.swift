@@ -517,18 +517,28 @@ public struct Animation: Equatable, Sendable {
     /// キーフレーム追加・削除の連動と値書き込み側で維持されており、
     /// 読み込みデータの超過分は評価側が先頭 `activeValueCount` 個だけを
     /// 使うことで吸収する（保存時の往復保全を優先する判断）。
-    /// 値列が空の異常データでは本家は例外になるが、ここでは既定値で
-    /// 代用して処理を続ける（防御的な相違）。
+    /// 値列が空の異常データでは本家は例外になるが、ここでは入口で
+    /// 既定値を種として実体化し、全分岐で結果の値列が空にならない
+    /// ことを保証する（FE-R23-127-02。防御的な相違）。
     public mutating func changeAnimationType(to newType: AnimationType) {
         let oldType = animationType
         guard newType != oldType else { return }
         animationType = newType
 
+        // 値列が空の異常データでは、既定値を種として実体化してから
+        // 組み替える（FE-R23-127-02）。これにより、値列を変えない
+        // 分岐（ランダム ⇔ 反復）や先頭だけ残す分岐（「なし」への
+        // 遷移）でも結果が空にならない。
+        if values.isEmpty {
+            values = [AnimationValue(defaultValue)]
+        }
+
         if newType == .none {
             values = Array(values.prefix(1))
             return
         }
-        // 以降の分岐では先頭の値が必ず要る。空なら既定値で代用する。
+        // 以降の分岐では先頭の値が必ず要る。入口の種付けで空でない
+        // ことが保証される（フォールバックは念のための防御）。
         let first = values.first ?? AnimationValue(defaultValue)
         if oldType == .none {
             if newType == .movementAmount {

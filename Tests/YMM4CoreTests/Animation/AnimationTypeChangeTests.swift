@@ -195,6 +195,41 @@ final class AnimationTypeChangeTests: XCTestCase {
         XCTAssertEqual(values(of: animation), [10, 90])
     }
 
+    // MARK: - 空の値列への種付け（FE-R23-127-02）
+
+    /// 値列が空の異常データでも、「なし」への遷移（先頭だけ残す
+    /// 分岐）で既定値が実体化される。入口の種付けが無いと空の
+    /// まま残った。
+    func testEmptyValuesSeededWithDefaultValueOnChangeToNone() {
+        var animation = Animation(
+            defaultValue: 100, minValue: 0, maxValue: 1000,
+            animationType: .linear, values: []
+        )
+        animation.changeAnimationType(to: .none)
+        XCTAssertEqual(values(of: animation), [100])
+    }
+
+    /// 値列を変えない分岐（ランダム ⇔ 反復）でも、入口の種付けに
+    /// より空のままにはならない。
+    func testEmptyValuesSeededWithDefaultValueOnRandomToRepetitive() {
+        var animation = Animation(
+            defaultValue: 42, minValue: 0, maxValue: 1000,
+            animationType: .random, values: []
+        )
+        animation.changeAnimationType(to: .repetitive)
+        XCTAssertEqual(values(of: animation), [42])
+    }
+
+    /// 旧種別「なし」からの遷移でも種付けが効く（既定値＋移動量 0）。
+    func testEmptyValuesSeededWithDefaultValueOnNoneToMovementAmount() {
+        var animation = Animation(
+            defaultValue: 42, minValue: 0, maxValue: 1000,
+            animationType: .none, values: []
+        )
+        animation.changeAnimationType(to: .movementAmount)
+        XCTAssertEqual(values(of: animation), [42, 0])
+    }
+
     /// 記述子の種別セッターは必ずこの操作を通る（アプリ層の経路が
     /// 迂回しないことの固定）。定数 50 → ランダム移動で終端値も 50。
     func testDescriptorSetTypeNormalizesValues() {
