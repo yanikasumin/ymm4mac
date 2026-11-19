@@ -30,6 +30,10 @@ struct PropertyInspectorView: View {
     /// 複合の子記述子では最上位の所有者を保ち、キー文字列側に
     /// 経路（親記述子 ID とコレクション位置）を積んで区別する。
     var editTargetOwner: AnyObject? = nil
+    /// 編集コールバックのプロジェクト帰属（FE-R30-130-02）。
+    /// 呼び出し側（ProjectView）が現行プロジェクトのスタンプで作り、
+    /// 子行へそのまま転送する。nil の場合は照合しない。
+    var editProjectGuard: ProjectEditGuard? = nil
     /// 再生速度の編集セッション開始時の基点捕捉（FE-R15-004 /
     /// FE-R27-129-03）。行がセッションの開始を受理した直後、最初
     /// の書き込みより前に呼ばれ、呼び出し側が Core の基点を返す。
@@ -58,6 +62,7 @@ struct PropertyInspectorView: View {
                             editRecorder: editRecorder,
                             editTargetOwner: editTargetOwner,
                             editTargetKeyPath: "",
+                            editProjectGuard: editProjectGuard,
                             onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
                             onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
                         )
@@ -80,6 +85,8 @@ private struct PropertyRowView: View {
     var editTargetOwner: AnyObject? = nil
     /// 対象キーの経路部分（複合の親記述子 ID を積んだもの）。
     var editTargetKeyPath: String = ""
+    /// 編集コールバックのプロジェクト帰属（FE-R30-130-02）。
+    var editProjectGuard: ProjectEditGuard? = nil
     var onPlaybackRateSessionBegan: ((PropertyDescriptor) -> PlaybackRateEditBaseline?)?
     var onPlaybackRateSessionEnding: ((PropertyDescriptor, PlaybackRateEditBaseline, EditSessionToken?) -> Void)?
 
@@ -102,6 +109,7 @@ private struct PropertyRowView: View {
                 editRecorder: editRecorder,
                 editTargetOwner: editTargetOwner,
                 editTargetKeyPath: editTargetKeyPath,
+                editProjectGuard: editProjectGuard,
                 onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
                 onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
             )
@@ -114,6 +122,7 @@ private struct PropertyRowView: View {
                 editRecorder: editRecorder,
                 editTargetOwner: editTargetOwner,
                 editTargetKeyPath: editTargetKeyPath,
+                editProjectGuard: editProjectGuard,
                 onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
                 onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
             )
@@ -134,28 +143,31 @@ private struct PropertyRowView: View {
         case .number:
             NumberRowView(
                 descriptor: descriptor, onEdited: onEdited,
-                editRecorder: editRecorder, editTarget: editTarget)
+                editRecorder: editRecorder, editTarget: editTarget,
+                editProjectGuard: editProjectGuard)
         case .integer:
             IntegerRowView(
                 descriptor: descriptor, onEdited: onEdited,
-                editRecorder: editRecorder, editTarget: editTarget)
+                editRecorder: editRecorder, editTarget: editTarget,
+                editProjectGuard: editProjectGuard)
         case .boolean:
             Toggle("", isOn: Binding(
                 get: { descriptor.boolValue ?? false },
                 set: { newValue in
                     // 他人のセッションが有効な間は離散編集を行わない
                     // （FE-R20-126-03。入口で拒否し、モデルを変更しない）。
-                    if let editRecorder, !editRecorder.canRecordValueChange() {
-                        return
-                    }
+                    // プロジェクト帰属も同じ入口で照合する
+                    // （FE-R30-130-02。他行と共通の入口確認へ寄せた）。
+                    guard editWriteAllowed(
+                        recorder: editRecorder, projectGuard: editProjectGuard)
+                    else { return }
                     let old = descriptor.boolValue
                     descriptor.setBoolValue(newValue)
-                    if let old, let editRecorder, let editTarget {
-                        editRecorder.recordValueChange(
-                            target: editTarget,
-                            oldValue: old, newValue: newValue,
-                            apply: { descriptor.setBoolValue($0) })
-                    }
+                    recordDescriptorValueChange(
+                        recorder: editRecorder, target: editTarget,
+                        oldValue: old, newValue: newValue,
+                        apply: { descriptor.setBoolValue($0) },
+                        projectGuard: editProjectGuard)
                     onEdited()
                 }
             ))
@@ -164,11 +176,13 @@ private struct PropertyRowView: View {
             if case .text(let multiline) = descriptor.kind, multiline {
                 MultilineTextRowView(
                     descriptor: descriptor, onEdited: onEdited,
-                    editRecorder: editRecorder, editTarget: editTarget)
+                    editRecorder: editRecorder, editTarget: editTarget,
+                editProjectGuard: editProjectGuard)
             } else {
                 TextRowView(
                     descriptor: descriptor, onEdited: onEdited,
-                    editRecorder: editRecorder, editTarget: editTarget)
+                    editRecorder: editRecorder, editTarget: editTarget,
+                editProjectGuard: editProjectGuard)
             }
         case .filePath:
             // ファイル参照は記録対象外（パスの書き換えに伴う長さ調整
@@ -182,7 +196,8 @@ private struct PropertyRowView: View {
         case .enumeration:
             EnumRowView(
                 descriptor: descriptor, onEdited: onEdited,
-                editRecorder: editRecorder, editTarget: editTarget)
+                editRecorder: editRecorder, editTarget: editTarget,
+                editProjectGuard: editProjectGuard)
         case .color:
             // 色は連続変化の境界信号が無く、確定単位を切れないため
             // 記録対象外（未移行経路として実装ログに明記）。
@@ -196,6 +211,7 @@ private struct PropertyRowView: View {
                 descriptor: descriptor, animationContext: animationContext,
                 onEdited: onEdited,
                 editRecorder: editRecorder, editTarget: editTarget,
+                editProjectGuard: editProjectGuard,
                 onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
                 onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
             )
@@ -215,6 +231,8 @@ private struct ObjectRowView: View {
     var editRecorder: EditRecorder? = nil
     var editTargetOwner: AnyObject? = nil
     var editTargetKeyPath: String = ""
+    /// 編集コールバックのプロジェクト帰属（FE-R30-130-02）。
+    var editProjectGuard: ProjectEditGuard? = nil
     var onPlaybackRateSessionBegan: ((PropertyDescriptor) -> PlaybackRateEditBaseline?)?
     var onPlaybackRateSessionEnding: ((PropertyDescriptor, PlaybackRateEditBaseline, EditSessionToken?) -> Void)?
 
@@ -233,6 +251,7 @@ private struct ObjectRowView: View {
                         editRecorder: editRecorder,
                         editTargetOwner: editTargetOwner,
                         editTargetKeyPath: editTargetKeyPath + descriptor.id + "/",
+                        editProjectGuard: editProjectGuard,
                         onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
                         onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
                     )
@@ -256,6 +275,8 @@ private struct CollectionRowView: View {
     var editRecorder: EditRecorder? = nil
     var editTargetOwner: AnyObject? = nil
     var editTargetKeyPath: String = ""
+    /// 編集コールバックのプロジェクト帰属（FE-R30-130-02）。
+    var editProjectGuard: ProjectEditGuard? = nil
     var onPlaybackRateSessionBegan: ((PropertyDescriptor) -> PlaybackRateEditBaseline?)?
     var onPlaybackRateSessionEnding: ((PropertyDescriptor, PlaybackRateEditBaseline, EditSessionToken?) -> Void)?
     @State private var revision = 0
@@ -299,6 +320,7 @@ private struct CollectionRowView: View {
                                 editTargetOwner: editTargetOwner,
                                 editTargetKeyPath:
                                     editTargetKeyPath + descriptor.id + "[\(index)]/",
+                                editProjectGuard: editProjectGuard,
                                 onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
                                 onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
                             )

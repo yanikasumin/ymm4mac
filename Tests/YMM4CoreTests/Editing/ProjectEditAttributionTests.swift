@@ -126,8 +126,9 @@ final class ProjectEditAttributionTests: XCTestCase {
         let key = EditTargetKey(object: ObjectIdentifier(target), key: "X")
 
         // 旧プロジェクトのセッション。
-        let oldToken = recorder.beginSession()
-        XCTAssertNotNil(oldToken)
+        guard let oldToken = recorder.beginSession() else {
+            return XCTFail("セッションを開始できる")
+        }
         XCTAssertTrue(recorder.canRecordValueChange(sessionToken: oldToken))
 
         // 切り替え: 世代を進めるとセッションは巻き戻されて破棄される。
@@ -136,10 +137,12 @@ final class ProjectEditAttributionTests: XCTestCase {
         XCTAssertFalse(recorder.canRecordValueChange(sessionToken: oldToken))
 
         // 新プロジェクトでは新しいセッションが通常どおり使える。
-        let newToken = recorder.beginSession()
-        XCTAssertNotNil(newToken)
+        guard let newToken = recorder.beginSession() else {
+            return XCTFail("切り替え後もセッションを開始できる")
+        }
         recorder.recordValueChange(
-            target: key, oldValue: 0, newValue: 5, sessionToken: newToken, apply: { value = $0 }
+            target: key, oldValue: 0, newValue: 5,
+            apply: { value = $0 }, sessionToken: newToken
         )
         value = 5
         recorder.commitSession(token: newToken)

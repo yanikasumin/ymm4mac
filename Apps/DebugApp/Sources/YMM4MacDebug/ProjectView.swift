@@ -20,6 +20,11 @@ struct ProjectView: View {
     let diagnostics: YmmpLoadDiagnostics
     /// 読み込み元ファイル。未保存の新規プロジェクトでは nil。
     let sourceURL: URL?
+    /// このビューが属するプロジェクト世代のスタンプ（FE-R30-130-02）。
+    /// ContentView が生成時に現行世代で捕捉して渡す。プロジェクトが
+    /// 差し替わるとこのビューは作り直されるが、破棄は非同期であり、
+    /// 遅れて配送される編集イベントはこのスタンプの照合で棄却する。
+    let editStamp: EditProjectStamp
 
     @State private var timelineIndex: Int
     @State private var selectedItemIndex: Int?
@@ -167,11 +172,27 @@ struct ProjectView: View {
     @State private var renamingTimelineIndex: Int?
     @State private var renameText = ""
 
-    init(project: Project, diagnostics: YmmpLoadDiagnostics, sourceURL: URL?) {
+    init(
+        project: Project, diagnostics: YmmpLoadDiagnostics, sourceURL: URL?,
+        editStamp: EditProjectStamp
+    ) {
         self.project = project
         self.diagnostics = diagnostics
         self.sourceURL = sourceURL
+        self.editStamp = editStamp
         _timelineIndex = State(initialValue: project.selectedTimelineIndex)
+    }
+
+    /// このビューのプロジェクトが現行か（FE-R30-130-02）。
+    /// ワークスペース操作の配送や非同期コミットの直前で照合する。
+    private var isProjectCurrent: Bool {
+        workspace.editAttribution.isCurrent(editStamp)
+    }
+
+    /// インスペクタの行へ渡す編集帰属のガード（FE-R30-130-02）。
+    private var editGuard: ProjectEditGuard {
+        ProjectEditGuard(
+            attribution: workspace.editAttribution, stamp: editStamp)
     }
 
     /// ステータスバー等に出すプロジェクト名。
@@ -1451,6 +1472,11 @@ struct ProjectView: View {
     /// いずれも Core の既存編集操作への接続であり、構造を変える操作の
     /// 後はプレビューを再合成する。
     private func executeWorkspaceAction(_ action: WorkspaceAction, timeline: Timeline) {
+        // ワークスペース操作は pendingAction の観測で配送されるため、
+        // プロジェクト切り替え後に旧ビュー側の配送が遅れて届き得る。
+        // 帰属が現行でなければ、モデル変更・履歴操作のいずれも
+        // 行わずに棄却する（FE-R30-130-02。配送の単一の集約点で照合）。
+        guard isProjectCurrent else { return }
         switch action {
         case .undo:
             performUndo(timeline: timeline)
@@ -1656,7 +1682,11 @@ struct ProjectView: View {
             prepareMediaItem(item, info: info, fps: timeline.videoInfo.fps)
             newItems.append(item)
         }
-        guard !newItems.isEmpty,
+        // コミット直前の帰属再確認（FE-R30-130-02、条件 F）。所属確認は
+        // 捕捉したプロジェクトに対するもので、切り替え後も旧プロジェ
+        // クト側では真のままになるため、現行世代との照合を併せる。
+        // 陳腐化していたら記録もモデル変更も行わない。
+        guard !newItems.isEmpty, isProjectCurrent,
               project.timelines.contains(where: { $0 === timeline })
         else { return }
         // 記録のスナップショットは確定の直前に取る（取得の非同期の
@@ -1818,7 +1848,12 @@ struct ProjectView: View {
                 path: newPath, group: group,
                 audioTrackIndex: audioTrackIndex, baseDirectory: baseDirectory
             )
-            guard fileChangeGenerations[key] == generation,
+            // コミット直前の帰属再確認（FE-R30-130-02、条件 F）。
+            // 世代・所属の確認は捕捉したプロジェクトに対するもので、
+            // 切り替え後の現行世代との照合を併せる。失敗時の状態
+            // メッセージ（共有状態への書き込み）もこの確認の内側に
+            // あるため、陳腐化した適用はそちらも行わない。
+            guard fileChangeGenerations[key] == generation, isProjectCurrent,
                   project.timelines.contains(where: { $0 === timeline }),
                   timeline.items.contains(where: { $0 === item })
             else { return }
@@ -3006,6 +3041,7 @@ struct ProjectView: View {
                     },
                     editRecorder: workspace.editRecorder,
                     editTargetOwner: item,
+                    editProjectGuard: editGuard,
                     onPlaybackRateSessionBegan: { descriptor in
                         capturePlaybackRateEditBaseline(
                             descriptor: descriptor, item: item)

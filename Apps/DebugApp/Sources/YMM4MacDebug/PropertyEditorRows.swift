@@ -2,20 +2,44 @@ import AppKit
 import SwiftUI
 import YMM4Core
 
+/// 編集コールバックのプロジェクト帰属（FE-R30-130-02）。
+///
+/// ビューが生成時に捕捉した世代スタンプと、その所有者を組にした値。
+/// 編集コールバックは効果を及ぼす直前に `isCurrent` で照合し、
+/// プロジェクトが差し替わっていたら（陳腐化）モデル変更も Undo 記録も
+/// 行わない。照合の判定は Core の `ProjectEditAttribution` が担い、
+/// この型はアプリ層でスタンプを配るための受け渡し形である。
+/// ガードを持たない構成（エフェクトインスペクタ等、記録先が無く
+/// 捕捉対象への同期書き込みしか行わない経路）では nil のままにし、
+/// 従来どおり照合なしで書き込む。
+struct ProjectEditGuard {
+    let attribution: ProjectEditAttribution
+    let stamp: EditProjectStamp
+
+    /// 捕捉したスタンプが現行プロジェクトの世代と一致するか。
+    var isCurrent: Bool { attribution.isCurrent(stamp) }
+}
+
 /// 記述子の値変更を Undo へ記録する共通処理（FE-UNDO-WIRING）。
 /// 記録先（recorder）または対象キーが無い場合は何もしない。
 /// 適用クロージャは記述子を保持し、記述子の読み書きクロージャが
 /// 対象オブジェクトを強く保持するため、履歴に残る間は対象も残る
 /// （`EditTargetKey` の接続側契約）。セッション中の書き込みは
 /// 所有者のトークンをそのまま転送する（FE-R20-126-03）。
+/// プロジェクト帰属のガードが渡された場合は、入口確認を通った後に
+/// 記録の直前でもう一度照合する（FE-R30-130-02。入口確認と記録の
+/// 間にプロジェクトが差し替わる経路への二重の防壁で、`EditRecorder`
+/// 自身の入口確認／記録側の二重照合と同じ形）。
 func recordDescriptorValueChange<Value: Equatable>(
     recorder: EditRecorder?, target: EditTargetKey?,
     oldValue: Value?, newValue: Value?,
     apply: @escaping (Value) -> Void,
-    sessionToken: EditSessionToken? = nil
+    sessionToken: EditSessionToken? = nil,
+    projectGuard: ProjectEditGuard? = nil
 ) {
     guard let recorder, let target,
           let oldValue, let newValue else { return }
+    if let projectGuard, !projectGuard.isCurrent { return }
     recorder.recordValueChange(
         target: target, oldValue: oldValue, newValue: newValue, apply: apply,
         sessionToken: sessionToken)
@@ -28,9 +52,14 @@ func recordDescriptorValueChange<Value: Equatable>(
 /// 場合はモデル変更自体を行わない（他人のセッションへ変更が混入
 /// したり、無記録の変更が残ったりすることを書き込みの入口で防ぐ）。
 /// 記録先が無い構成では従来どおり無記録で書き込む。
+/// プロジェクト帰属のガードが渡された場合は、記録先の有無によらず
+/// 先に帰属を照合する（FE-R30-130-02）。陳腐化したコールバックは
+/// モデル変更自体を行わないため、記録先が無い構成でも棄却する。
 func editWriteAllowed(
-    recorder: EditRecorder?, sessionToken: EditSessionToken? = nil
+    recorder: EditRecorder?, sessionToken: EditSessionToken? = nil,
+    projectGuard: ProjectEditGuard? = nil
 ) -> Bool {
+    if let projectGuard, !projectGuard.isCurrent { return false }
     guard let recorder else { return true }
     return recorder.canRecordValueChange(sessionToken: sessionToken)
 }
@@ -116,6 +145,7 @@ struct NumberRowView: View {
     var onEdited: () -> Void
     var editRecorder: EditRecorder?
     var editTarget: EditTargetKey?
+    var editProjectGuard: ProjectEditGuard?
     @State private var text: String
     /// スライダのドラッグについての Undo セッションの状態（開始前・
     /// 所有中・開始拒否。FE-R20-126-03、FE-R21-126-01）。
@@ -129,12 +159,14 @@ struct NumberRowView: View {
 
     init(
         descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
-        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil,
+        editProjectGuard: ProjectEditGuard? = nil
     ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
         self.editRecorder = editRecorder
         self.editTarget = editTarget
+        self.editProjectGuard = editProjectGuard
         let initial = formatNumber(descriptor.numberValue ?? 0)
         _text = State(initialValue: initial)
         _uneditedText = State(initialValue: initial)
@@ -206,7 +238,8 @@ struct NumberRowView: View {
                     recorder: editRecorder, target: editTarget,
                     oldValue: old, newValue: descriptor.numberValue,
                     apply: { descriptor.setNumberValue($0) },
-                    sessionToken: sliderSession.token)
+                    sessionToken: sliderSession.token,
+                    projectGuard: editProjectGuard)
                 onEdited()
             }
         )
@@ -227,7 +260,7 @@ struct NumberRowView: View {
         }
         // 他のセッションが有効な間は離散編集を行わない
         // （FE-R20-126-03。入口で拒否し、モデルを変更しない）。
-        guard editWriteAllowed(recorder: editRecorder) else { return }
+        guard editWriteAllowed(recorder: editRecorder, projectGuard: editProjectGuard) else { return }
         let old = descriptor.numberValue
         descriptor.setNumberValue(value)
         text = formatNumber(descriptor.numberValue ?? value)
@@ -235,7 +268,8 @@ struct NumberRowView: View {
         recordDescriptorValueChange(
             recorder: editRecorder, target: editTarget,
             oldValue: old, newValue: descriptor.numberValue,
-            apply: { descriptor.setNumberValue($0) })
+            apply: { descriptor.setNumberValue($0) },
+            projectGuard: editProjectGuard)
         onEdited()
     }
 }
@@ -245,6 +279,7 @@ struct IntegerRowView: View {
     var onEdited: () -> Void
     var editRecorder: EditRecorder?
     var editTarget: EditTargetKey?
+    var editProjectGuard: ProjectEditGuard?
     @State private var text: String
     @FocusState private var isFocused: Bool
     /// スライダのドラッグについての Undo セッションの状態（開始前・
@@ -253,12 +288,14 @@ struct IntegerRowView: View {
 
     init(
         descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
-        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil,
+        editProjectGuard: ProjectEditGuard? = nil
     ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
         self.editRecorder = editRecorder
         self.editTarget = editTarget
+        self.editProjectGuard = editProjectGuard
         _text = State(initialValue: String(descriptor.integerValue ?? 0))
     }
 
@@ -275,7 +312,7 @@ struct IntegerRowView: View {
             Stepper("", value: Binding(
                 get: { descriptor.integerValue ?? 0 },
                 set: { newValue in
-                    guard editWriteAllowed(recorder: editRecorder)
+                    guard editWriteAllowed(recorder: editRecorder, projectGuard: editProjectGuard)
                     else { return }
                     let old = descriptor.integerValue
                     descriptor.setIntegerValue(newValue)
@@ -283,7 +320,8 @@ struct IntegerRowView: View {
                     recordDescriptorValueChange(
                         recorder: editRecorder, target: editTarget,
                         oldValue: old, newValue: descriptor.integerValue,
-                        apply: { descriptor.setIntegerValue($0) })
+                        apply: { descriptor.setIntegerValue($0) },
+                        projectGuard: editProjectGuard)
                     onEdited()
                 }
             ))
@@ -332,7 +370,8 @@ struct IntegerRowView: View {
                     recorder: editRecorder, target: editTarget,
                     oldValue: old, newValue: descriptor.integerValue,
                     apply: { descriptor.setIntegerValue($0) },
-                    sessionToken: sliderSession.token)
+                    sessionToken: sliderSession.token,
+                    projectGuard: editProjectGuard)
                 onEdited()
             }
         )
@@ -343,14 +382,15 @@ struct IntegerRowView: View {
             text = String(descriptor.integerValue ?? 0)
             return
         }
-        guard editWriteAllowed(recorder: editRecorder) else { return }
+        guard editWriteAllowed(recorder: editRecorder, projectGuard: editProjectGuard) else { return }
         let old = descriptor.integerValue
         descriptor.setIntegerValue(value)
         text = String(descriptor.integerValue ?? value)
         recordDescriptorValueChange(
             recorder: editRecorder, target: editTarget,
             oldValue: old, newValue: descriptor.integerValue,
-            apply: { descriptor.setIntegerValue($0) })
+            apply: { descriptor.setIntegerValue($0) },
+            projectGuard: editProjectGuard)
         onEdited()
     }
 }
@@ -362,17 +402,20 @@ struct TextRowView: View {
     var onEdited: () -> Void
     var editRecorder: EditRecorder?
     var editTarget: EditTargetKey?
+    var editProjectGuard: ProjectEditGuard?
     @State private var text: String
     @FocusState private var isFocused: Bool
 
     init(
         descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
-        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil,
+        editProjectGuard: ProjectEditGuard? = nil
     ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
         self.editRecorder = editRecorder
         self.editTarget = editTarget
+        self.editProjectGuard = editProjectGuard
         _text = State(initialValue: descriptor.stringValue ?? "")
     }
 
@@ -387,13 +430,14 @@ struct TextRowView: View {
     }
 
     private func commit() {
-        guard editWriteAllowed(recorder: editRecorder) else { return }
+        guard editWriteAllowed(recorder: editRecorder, projectGuard: editProjectGuard) else { return }
         let old = descriptor.stringValue
         descriptor.setStringValue(text)
         recordDescriptorValueChange(
             recorder: editRecorder, target: editTarget,
             oldValue: old, newValue: descriptor.stringValue,
-            apply: { descriptor.setStringValue($0) })
+            apply: { descriptor.setStringValue($0) },
+            projectGuard: editProjectGuard)
         onEdited()
     }
 }
@@ -403,17 +447,20 @@ struct MultilineTextRowView: View {
     var onEdited: () -> Void
     var editRecorder: EditRecorder?
     var editTarget: EditTargetKey?
+    var editProjectGuard: ProjectEditGuard?
     @State private var text: String
     @FocusState private var isFocused: Bool
 
     init(
         descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
-        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil,
+        editProjectGuard: ProjectEditGuard? = nil
     ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
         self.editRecorder = editRecorder
         self.editTarget = editTarget
+        self.editProjectGuard = editProjectGuard
         _text = State(initialValue: descriptor.stringValue ?? "")
     }
 
@@ -425,14 +472,15 @@ struct MultilineTextRowView: View {
             .focused($isFocused)
             .onChange(of: isFocused) { _, focused in
                 if !focused {
-                    guard editWriteAllowed(recorder: editRecorder)
+                    guard editWriteAllowed(recorder: editRecorder, projectGuard: editProjectGuard)
                     else { return }
                     let old = descriptor.stringValue
                     descriptor.setStringValue(text)
                     recordDescriptorValueChange(
                         recorder: editRecorder, target: editTarget,
                         oldValue: old, newValue: descriptor.stringValue,
-                        apply: { descriptor.setStringValue($0) })
+                        apply: { descriptor.setStringValue($0) },
+                        projectGuard: editProjectGuard)
                     onEdited()
                 }
             }
@@ -446,29 +494,33 @@ struct EnumRowView: View {
     var onEdited: () -> Void
     var editRecorder: EditRecorder?
     var editTarget: EditTargetKey?
+    var editProjectGuard: ProjectEditGuard?
 
     init(
         descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
-        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil,
+        editProjectGuard: ProjectEditGuard? = nil
     ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
         self.editRecorder = editRecorder
         self.editTarget = editTarget
+        self.editProjectGuard = editProjectGuard
     }
 
     var body: some View {
         Picker("", selection: Binding(
             get: { descriptor.stringValue ?? "" },
             set: { newValue in
-                guard editWriteAllowed(recorder: editRecorder)
+                guard editWriteAllowed(recorder: editRecorder, projectGuard: editProjectGuard)
                 else { return }
                 let old = descriptor.stringValue
                 descriptor.setStringValue(newValue)
                 recordDescriptorValueChange(
                     recorder: editRecorder, target: editTarget,
                     oldValue: old, newValue: descriptor.stringValue,
-                    apply: { descriptor.setStringValue($0) })
+                    apply: { descriptor.setStringValue($0) },
+                    projectGuard: editProjectGuard)
                 onEdited()
             }
         )) {
@@ -501,6 +553,7 @@ struct AnimationRowView: View {
     var onEdited: () -> Void
     var editRecorder: EditRecorder?
     var editTarget: EditTargetKey?
+    var editProjectGuard: ProjectEditGuard?
     /// 再生速度の編集セッション開始時の基点捕捉（FE-R15-004 /
     /// FE-R27-129-03）。セッションの開始が受理された直後、最初の
     /// 書き込みより前に呼ばれ、呼び出し側が Core の基点を返す。
@@ -540,6 +593,7 @@ struct AnimationRowView: View {
         descriptor: PropertyDescriptor, animationContext: AnimationEvaluationContext,
         onEdited: @escaping () -> Void,
         editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil,
+        editProjectGuard: ProjectEditGuard? = nil,
         onPlaybackRateSessionBegan: ((PropertyDescriptor) -> PlaybackRateEditBaseline?)? = nil,
         onPlaybackRateSessionEnding: ((PropertyDescriptor, PlaybackRateEditBaseline, EditSessionToken?) -> Void)? = nil
     ) {
@@ -548,6 +602,7 @@ struct AnimationRowView: View {
         self.onEdited = onEdited
         self.editRecorder = editRecorder
         self.editTarget = editTarget
+        self.editProjectGuard = editProjectGuard
         self.onPlaybackRateSessionBegan = onPlaybackRateSessionBegan
         self.onPlaybackRateSessionEnding = onPlaybackRateSessionEnding
         let animation = descriptor.animationValue
@@ -729,7 +784,8 @@ struct AnimationRowView: View {
                 // AnimationSlider の右クリックメニュー）。
                 AnimationTypeMenuButton(
                     descriptor: descriptor, onEdited: onEdited,
-                    editRecorder: editRecorder, editTarget: editTarget)
+                    editRecorder: editRecorder, editTarget: editTarget,
+                    editProjectGuard: editProjectGuard)
                 Text(caption(for: animation))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -804,7 +860,8 @@ struct AnimationRowView: View {
         _ value: Double, segment: Int?, sessionToken: EditSessionToken?
     ) {
         guard let animation = descriptor.animationValue else { return }
-        guard editWriteAllowed(recorder: editRecorder, sessionToken: sessionToken)
+        guard editWriteAllowed(recorder: editRecorder, sessionToken: sessionToken,
+            projectGuard: editProjectGuard)
         else { return }
         // 確定処理（FE-R13-004）は記録より前に適用し、記録する
         // 実効値が確定後の値と一致するようにする。
@@ -865,7 +922,8 @@ struct AnimationRowView: View {
             target: EditTargetKey(
                 object: editTarget.object, key: editTarget.key + "#" + branch),
             oldValue: oldValue, newValue: newValue, apply: apply,
-            sessionToken: sessionToken)
+            sessionToken: sessionToken,
+            projectGuard: editProjectGuard)
     }
 
     private func commit() {
@@ -1056,7 +1114,8 @@ struct AnimationRowView: View {
     private func writeMovementAmount(_ value: Double, sessionToken: EditSessionToken?) {
         guard let animation = descriptor.animationValue,
               animation.animationType == .movementAmount else { return }
-        guard editWriteAllowed(recorder: editRecorder, sessionToken: sessionToken)
+        guard editWriteAllowed(recorder: editRecorder, sessionToken: sessionToken,
+            projectGuard: editProjectGuard)
         else { return }
         let oldState = animation.recordedState
         let radius = max(abs(animation.minValue), abs(animation.maxValue))
@@ -1092,7 +1151,8 @@ struct AnimationRowView: View {
                 object: editTarget.object, key: editTarget.key + "#movement"),
             oldValue: oldState, newValue: newState,
             apply: { descriptor.restoreAnimationRecordedState($0) },
-            sessionToken: sessionToken)
+            sessionToken: sessionToken,
+            projectGuard: editProjectGuard)
     }
 
     private func commitMovementAmount() {
