@@ -282,9 +282,14 @@ struct AnimationRowView: View {
         } else {
             value = animation.map { animationContext.value(of: $0) } ?? 0
         }
-        let initial = formatNumber(value)
+        let initial = formatAnimationValue(value, spec: descriptor.sliderSpec)
         _text = State(initialValue: initial)
         _uneditedText = State(initialValue: initial)
+    }
+
+    /// 表示用の数値書式（スライダ表示仕様の stringFormat に従う）。
+    private func formatValue(_ value: Double) -> String {
+        formatAnimationValue(value, spec: descriptor.sliderSpec)
     }
 
     /// キーフレーム編集の対象区間。キーフレーム対応型でキーフレーム
@@ -320,7 +325,7 @@ struct AnimationRowView: View {
                 // 文字列を破棄しない。
                 .onChange(of: editingSegment) { _, _ in
                     if !isFocused {
-                        text = formatNumber(displayedValue)
+                        text = formatValue(displayedValue)
                         uneditedText = text
                     }
                 }
@@ -338,13 +343,31 @@ struct AnimationRowView: View {
                 }
             if let animation = descriptor.animationValue {
                 // 本家と同様、入力欄の横にスライダを並べる。範囲は
-                // アニメーション自身の定義値（minValue / maxValue）。
-                if animation.maxValue > animation.minValue {
-                    Slider(
-                        value: sliderBinding,
-                        in: animation.minValue...animation.maxValue
-                    )
-                    .frame(minWidth: 60)
+                // 表示仕様（AnimationSliderSpec）の基準範囲を、同一
+                // Animation の全有効値で共有するスケールで広げたもの
+                // （AnimationSliderScale）。絶対制限（minValue /
+                // maxValue）全域をそのまま範囲にすると、基準範囲に
+                // 対して刻みが粗くなりドラッグで値が跳ぶ（FE-R1-042）。
+                // 仕様が無い項目ではスライダを出さず数値入力のみ。
+                if let spec = descriptor.sliderSpec {
+                    // 単位は入力欄の横へ出す。単位が本家リソースの
+                    // キー名のまま（未解決）の場合は、キー名を
+                    // ユーザーへ見せず単位なしとして扱う。
+                    if !spec.unitIsResourceKey, !spec.unit.isEmpty {
+                        Text(spec.unit)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    let range = AnimationSliderScale.sliderRange(
+                        for: animation,
+                        valueIndex: editingSegment ?? 0, spec: spec)
+                    if range.max > range.min {
+                        Slider(
+                            value: sliderBinding,
+                            in: range.min...range.max
+                        )
+                        .frame(minWidth: 60)
+                    }
                 }
                 // アニメーション種別の切替メニュー（本家は
                 // AnimationSlider の右クリックメニュー）。
@@ -366,7 +389,7 @@ struct AnimationRowView: View {
             set: { newValue in
                 guard descriptor.animationValue != nil else { return }
                 writeValue(newValue)
-                text = formatNumber(displayedValue)
+                text = formatValue(displayedValue)
                 uneditedText = text
                 onEdited()
             }
@@ -413,14 +436,14 @@ struct AnimationRowView: View {
             // "inf"）は確定せず、表示をモデルの現在値へ戻す
             // （未確定の入力が残って見えないように。非有限値をモデルへ
             // 入れると保存時に 0.0 へ化ける。FE-R3-118-02）。
-            text = formatNumber(displayedValue)
+            text = formatValue(displayedValue)
             uneditedText = text
             return
         }
         // 確定先はセッションが所有する区間（フォーカス取得時点）。
         // 現在の再生ヘッド位置の区間ではない（R20-114-01）。
         writeValue(value, segment: focusedSegment ?? editingSegment)
-        text = formatNumber(displayedValue)
+        text = formatValue(displayedValue)
         uneditedText = text
         onEdited()
     }
@@ -457,5 +480,19 @@ func formatNumber(_ value: Double) -> String {
         return String(Int(value))
     }
     return String(format: "%.4g", value)
+}
+
+/// アニメーション行の表示書式。スライダ表示仕様がある場合はその
+/// stringFormat（"F<n>" = 小数第 n 位まで）で整形する（本家の
+/// TextBoxSlider のテキスト表示と同じ規則）。仕様が無い、または
+/// 形式を解釈できない場合は従来の formatNumber に落とす。
+func formatAnimationValue(_ value: Double, spec: AnimationSliderSpec?) -> String {
+    guard let spec,
+          spec.stringFormat.hasPrefix("F"),
+          let digits = Int(spec.stringFormat.dropFirst()),
+          (0...10).contains(digits) else {
+        return formatNumber(value)
+    }
+    return String(format: "%.\(digits)f", value)
 }
 
