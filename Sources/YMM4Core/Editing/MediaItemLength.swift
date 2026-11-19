@@ -219,7 +219,16 @@ extension BaseItem {
                 : Double(length) * abs(previousFirstValue) / 100
             // 本家は double から int へのキャスト（0 方向への
             // 切り捨て）。消費量・長さは負にならないため床と一致する。
-            length = Int(consumed / abs(newFirstValue) * 100)
+            let scaled = consumed / abs(newFirstValue) * 100
+            // 極小の新速度では換算結果が整数の表現範囲を超え、
+            // Swift の Int 変換が実行時トラップになる。有限で
+            // 範囲内に収まる場合だけ変換し、範囲外は 1 未満の
+            // 場合と同じ既定の長さへ倒す（Mac 側の安全策。
+            // FE-R27-129-05。本家の範囲外キャストの結果とは
+            // 照合していない）。
+            length = scaled.isFinite && scaled < Double(Int.max)
+                ? Int(scaled)
+                : Self.defaultItemLength
         }
         if length < 1 {
             length = Self.defaultItemLength
@@ -236,5 +245,81 @@ extension BaseItem {
             contentOffset = contentLength - (contentOffset + scaled)
         }
         return length != oldLength || contentOffset != oldContentOffset
+    }
+
+    /// 編集セッション開始時点の基点を捕捉する（FE-R15-004）。
+    ///
+    /// 基点の所有は呼び出し側（アプリ層の行のセッション状態）へ
+    /// 移り、寿命はセッションと一致させる。捕捉し直しや後続
+    /// セッションへの持ち越しはしない（FE-R27-129-03）。
+    public func capturePlaybackRateEditBaseline() -> PlaybackRateEditBaseline {
+        PlaybackRateEditBaseline(
+            firstValue: playbackRate2.firstValue,
+            isConstant: playbackRate2.animationType == .none,
+            contentLength: contentLength,
+            originalContentLength: originalContentLength)
+    }
+
+    /// 編集終了時の長さ調整の適用（FE-R15-004 の編集終了時調整の
+    /// 適用層）。分岐の優先をここで一元的に決める:
+    ///
+    /// - 分岐 (1): 素材本来の長さが基点から変わっていれば、編集の
+    ///   途中でファイルが差し替わり、ファイル変更の経路
+    ///   （`adjustLengthAfterFileChange`）が既に長さを決め直して
+    ///   いるため、分岐 (3) を重ねて実行しない（FE-R27-129-04。
+    ///   本家は else-if 連鎖で分岐が排他）。
+    /// - 分岐 (2): 素材長が変わり、かつ長さの終端が区切り上に
+    ///   ある場合の決め直しは、区切り（`ContentSeparations`）の
+    ///   供給が Mac 側 Core に無いため未実装（実装台帳
+    ///   FE-R15-EDITEND の設計メモ参照）。基点には分岐 (2) の
+    ///   判定に要る素材長を含めてある。
+    /// - 分岐 (3): `adjustLengthAfterPlaybackRateChange` による
+    ///   比率再計算。
+    ///
+    /// - Parameter baseline: 編集セッション開始時点の基点
+    ///   （`capturePlaybackRateEditBaseline`）。
+    /// - Parameter fps: オフセット付け替えの時間換算に使う FPS。
+    /// - Returns: 長さまたはオフセットを変えたら true。
+    @discardableResult
+    public func finishPlaybackRateEdit(
+        baseline: PlaybackRateEditBaseline, fps: Int
+    ) -> Bool {
+        guard originalContentLength == baseline.originalContentLength
+        else { return false }
+        return adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: baseline.firstValue,
+            previousIsConstant: baseline.isConstant,
+            fps: fps)
+    }
+}
+
+/// 再生速度の編集セッションの基点（FE-R27-129-03 / 04）。
+///
+/// 本家 `EditingValue` が編集開始時（BeginEdit）に捕捉する値の
+/// うち、編集終了時調整の分岐判定に要るもの。旧再生速度の先頭値
+/// と定数かどうかは分岐 (3) の入力であり、素材本来の長さは
+/// 分岐 (1) の成立判定（編集の途中でのファイル差し替えの検出）
+/// に、素材長は分岐 (2)（未実装）の判定に使う（本家も
+/// `OldContentLength` / `OldOriginalContentLength` を保持する。
+/// 監査 Round 27 の補足）。
+public struct PlaybackRateEditBaseline: Equatable, Sendable {
+    /// 編集開始時点の再生速度の先頭値（%）。
+    public var firstValue: Double
+    /// 編集開始時点で再生速度が定数（アニメーション種別
+    /// 「なし」）だったか。
+    public var isConstant: Bool
+    /// 編集開始時点の素材長（エコー尾込み）。
+    public var contentLength: TimeSpanValue
+    /// 編集開始時点の素材本来の長さ（エコー尾なし）。
+    public var originalContentLength: TimeSpanValue
+
+    public init(
+        firstValue: Double, isConstant: Bool,
+        contentLength: TimeSpanValue, originalContentLength: TimeSpanValue
+    ) {
+        self.firstValue = firstValue
+        self.isConstant = isConstant
+        self.contentLength = contentLength
+        self.originalContentLength = originalContentLength
     }
 }
