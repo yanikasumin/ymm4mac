@@ -587,17 +587,19 @@ public struct Animation: Equatable, Sendable {
         }
     }
 
-    // MARK: - 種別変更の Undo 記録用の状態写し
+    // MARK: - Undo 記録用の状態写し
 
-    /// 種別変更の前後状態の写し（種別と値列のみ）。
+    /// 編集の前後状態の写し（種別と値列のみ）。
     ///
     /// 種別変更（`changeAnimationType`）は値列を組み替える不可逆な
     /// 操作であるため、Undo で種別だけを戻しても変更前の値列は
     /// 復元できない。記録側はこの写しを変更前後の組として保持し、
     /// Undo/Redo では `restoreRecordedState` でそのまま書き戻す
-    /// （FE-R23-127-01）。キーフレーム列・長さ等の評価文脈は所有
-    /// アイテムから注入されるもので種別変更では変わらないため、
-    /// 写しには含めない。
+    /// （FE-R23-127-01）。値列全体を一体で記録する編集（移動量指定
+    /// の第2値。実体化による値列の個数の変化まで復元するため、
+    /// FE-R25-128-01）でも同じ写しを使う。キーフレーム列・長さ等の
+    /// 評価文脈は所有アイテムから注入されるもので、これらの編集
+    /// では変わらないため、写しには含めない。
     public struct RecordedState: Equatable, Sendable {
         public var animationType: AnimationType
         public var values: [AnimationValue]
@@ -613,9 +615,10 @@ public struct Animation: Equatable, Sendable {
         RecordedState(animationType: animationType, values: values)
     }
 
-    /// 記録済みの状態をそのまま書き戻す。種別変更の Undo/Redo
-    /// 専用の復元経路であり、正規化（`changeAnimationType`）は
-    /// 再実行しない。通常の編集経路では使わない（種別変更は
+    /// 記録済みの状態をそのまま書き戻す。種別変更と、値列全体を
+    /// 一体で記録する編集（移動量指定の第2値）の Undo/Redo で使う
+    /// 復元経路であり、正規化（`changeAnimationType`）は再実行
+    /// しない。通常の編集経路では使わない（種別変更は
     /// `changeAnimationType`、値の書き込みは `setValue` 等を通す）。
     public mutating func restoreRecordedState(_ state: RecordedState) {
         animationType = state.animationType
@@ -650,6 +653,27 @@ public struct Animation: Equatable, Sendable {
             values.append(AnimationValue(keyFrameValue(values.count)))
         }
         values[index] = AnimationValue(clamped(value))
+    }
+
+    /// 値列のインデックス指定の書き換え（キーフレーム区間ではない
+    /// 値の編集用。移動量指定の第2値など、FE-R13-003）。
+    ///
+    /// 値列が対象位置まで実体化していない場合は、読み取り側の代用
+    /// 規則（範囲外は末尾の値、無ければ既定値）と同じ値で対象位置
+    /// まで実体化してから書き換える（区間版 `setValue(_:atSegment:)`
+    /// の実体化と同じ規則）。クランプ範囲は呼び出し側が渡す: 移動量
+    /// 指定の第2値では本家がその値のスライダの Min/Max を絶対制限の
+    /// 対称範囲（±最大絶対値）へ置き換えるため、定義範囲
+    /// [minValue, maxValue] へは固定しない。
+    public mutating func setValue(
+        _ value: Double, atValueIndex index: Int, clampRange: ClosedRange<Double>
+    ) {
+        guard index >= 0 else { return }
+        while values.count <= index {
+            values.append(AnimationValue(keyFrameValue(values.count)))
+        }
+        values[index] = AnimationValue(
+            min(max(value, clampRange.lowerBound), clampRange.upperBound))
     }
 
     /// 先頭の値を書き換える。本家 `SetFirstValue`。

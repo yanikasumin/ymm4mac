@@ -501,6 +501,15 @@ struct AnimationRowView: View {
     @State private var focusedSegment: Int?
     /// 未編集とみなすテキスト（数値行と同じ FE-R1-019 対策）。
     @State private var uneditedText: String
+    /// 移動量指定の第2値（移動量）の入力状態。第1値とは独立した
+    /// 編集セッションを持つ（FE-R13-003）。
+    @State private var movementText: String
+    @State private var movementUneditedText: String
+    @FocusState private var isMovementFocused: Bool
+    /// 第2値のスライダのドラッグについての Undo セッションの状態。
+    /// 第1値の `sliderSession` とは独立に開閉し、1ドラッグを履歴
+    /// 1エントリへまとめる（FE-R25-128-01）。
+    @State private var movementSliderSession: EditDragSession = .idle
 
     init(
         descriptor: PropertyDescriptor, animationContext: AnimationEvaluationContext,
@@ -529,6 +538,13 @@ struct AnimationRowView: View {
         let initial = formatAnimationValue(value, spec: descriptor.sliderSpec)
         _text = State(initialValue: initial)
         _uneditedText = State(initialValue: initial)
+        let movementValue = animation.map {
+            AnimationSliderScale.editValue(of: $0, valueIndex: 1)
+        } ?? 0
+        let movementInitial = formatAnimationValue(
+            movementValue, spec: descriptor.sliderSpec)
+        _movementText = State(initialValue: movementInitial)
+        _movementUneditedText = State(initialValue: movementInitial)
     }
 
     /// 表示用の数値書式（スライダ表示仕様の stringFormat に従う）。
@@ -557,6 +573,31 @@ struct AnimationRowView: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            mainRow
+            if isMovementAmount {
+                movementRow
+            }
+        }
+        // 種別が移動量指定へ変わった時点で第2値の入力欄を現在の
+        // モデル値へ同期する（FE-R25-128-02）。`movementText` は
+        // ビュー生成時に読み取り側の代用値（例: 定数 50 の先頭値）
+        // を取り込んで初期化されるため、種別切替で第2値の行が
+        // 出現しても、行側の .onChange(of: movementValue) は初回
+        // 表示では発火せず、古い代用値（50）がモデルの第2値（0）
+        // と食い違ったまま残り得た。基線（uneditedText）も一緒に
+        // 同期し、未編集のままの確定で古い値が書き戻されることも
+        // 防ぐ（FE バッチ1の数値欄の基線規則と同趣旨）。入力中は
+        // 未確定の文字列を破棄しない。
+        .onChange(of: descriptor.animationValue?.animationType) { _, newType in
+            if newType == .movementAmount, !isMovementFocused {
+                movementText = formatValue(movementValue)
+                movementUneditedText = movementText
+            }
+        }
+    }
+
+    private var mainRow: some View {
         HStack(spacing: 6) {
             TextField("", text: $text)
                 .textFieldStyle(.roundedBorder)
@@ -690,6 +731,9 @@ struct AnimationRowView: View {
         guard let animation = descriptor.animationValue else { return }
         guard editWriteAllowed(recorder: editRecorder, sessionToken: sessionToken)
         else { return }
+        // 確定処理（FE-R13-004）は記録より前に適用し、記録する
+        // 実効値が確定後の値と一致するようにする。
+        let value = fixedOnCommit(value, for: animation)
         if animation.animationType == .none {
             let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationConstantValue(value)
@@ -713,6 +757,21 @@ struct AnimationRowView: View {
                 apply: { descriptor.setAnimationFirstValue($0) },
                 sessionToken: sessionToken)
         }
+    }
+
+    /// 確定値の確定処理（FE-R13-004）。表示仕様がある場合は本家
+    /// `TextBoxSlider.FixValue` 相当（Delta 由来の桁で丸めてから
+    /// 定義範囲へクランプ）を Core の純粋関数で適用する。スライダは
+    /// Mac では即時書き込みのためドラッグ中も同じ経路を通る（本家は
+    /// 編集終了時に1回だけ適用するが、最終値は一致する）。
+    /// 仕様が無い項目では、本家でスライダ無しの数値編集に相当する
+    /// 確定処理を確認できないため、丸めずに従来どおり記述子の
+    /// クランプだけに委ねる。
+    private func fixedOnCommit(_ value: Double, for animation: YMM4Core.Animation) -> Double {
+        guard let spec = descriptor.sliderSpec else { return value }
+        return AnimationSliderScale.fixedValue(
+            value, delta: spec.delta,
+            minimum: animation.minValue, maximum: animation.maxValue)
     }
 
     /// 書き込み後の値を読み戻して（ setter がクランプするため、
@@ -757,6 +816,172 @@ struct AnimationRowView: View {
             value, segment: focusedSegment ?? editingSegment, sessionToken: nil)
         text = formatValue(editTargetValue)
         uneditedText = text
+        onEdited()
+    }
+
+    // MARK: 移動量指定の第2値（FE-R13-003）
+
+    /// 移動量指定かどうか。第2値の編集行はこの種別のときだけ出す。
+    private var isMovementAmount: Bool {
+        descriptor.animationValue?.animationType == .movementAmount
+    }
+
+    /// 第2値（1フレームあたりの移動量）の表示・編集対象値。第1値と
+    /// 同じく `AnimationSliderScale.editValue` の規則（対象インデックス
+    /// の実値、短い値列では末尾値への代用）に従う。
+    private var movementValue: Double {
+        guard let animation = descriptor.animationValue else { return 0 }
+        return AnimationSliderScale.editValue(of: animation, valueIndex: 1)
+    }
+
+    /// 移動量指定の第2値の編集行。本家は `Animation` の有効値ごとに
+    /// 独立した `TextBoxSlider` を並べるため、第1値の行とは別の
+    /// 入力欄＋スライダを持つ。範囲は Core の
+    /// `AnimationSliderScale.sliderRange(for:valueIndex: 1)`（基準範囲・
+    /// 絶対制限とも ±最大絶対値の対称置換済み）を使う。仕様が無い
+    /// 項目では第1値と同じくスライダを出さず数値入力のみ。
+    private var movementRow: some View {
+        HStack(spacing: 6) {
+            Text("移動量")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("", text: $movementText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 110)
+                .focused($isMovementFocused)
+                .onSubmit { commitMovementAmount() }
+                // モデル側の値が変わったら（種別の切替直後など）
+                // 入力欄も追従させる。入力中は未確定の文字列を
+                // 破棄しない（第1値の区間追随と同じ規則）。
+                .onChange(of: movementValue) { _, _ in
+                    if !isMovementFocused {
+                        movementText = formatValue(movementValue)
+                        movementUneditedText = movementText
+                    }
+                }
+                .onChange(of: isMovementFocused) { _, focused in
+                    if focused {
+                        movementUneditedText = movementText
+                    } else {
+                        commitMovementAmount()
+                    }
+                }
+            if let animation = descriptor.animationValue,
+               let spec = descriptor.sliderSpec {
+                if !spec.unitIsResourceKey, !spec.unit.isEmpty {
+                    Text(spec.unit)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                let range = AnimationSliderScale.sliderRange(
+                    for: animation, valueIndex: 1, spec: spec)
+                if range.max > range.min {
+                    Slider(
+                        value: movementSliderBinding,
+                        in: range.min...range.max,
+                        onEditingChanged: movementSliderEditingChanged
+                    )
+                    .frame(minWidth: 60)
+                }
+            }
+        }
+    }
+
+    private var movementSliderBinding: Binding<Double> {
+        Binding(
+            get: { movementValue },
+            set: { newValue in
+                guard descriptor.animationValue != nil else { return }
+                // 開始拒否されたドラッグの継続書き込みは、他の
+                // セッションが終わっても許可されない（第1値と
+                // 同じ規則。FE-R21-126-01）。
+                guard movementSliderSession.writeAllowed(recorder: editRecorder)
+                else { return }
+                writeMovementAmount(
+                    newValue, sessionToken: movementSliderSession.token)
+                movementText = formatValue(movementValue)
+                movementUneditedText = movementText
+                onEdited()
+            }
+        )
+    }
+
+    /// 第2値のスライダのドラッグ開始・終了で Undo セッションを
+    /// 開閉し、ドラッグ全体を履歴1エントリへまとめる。第1値の
+    /// セッションとは独立である（FE-R25-128-01）。
+    private func movementSliderEditingChanged(_ editing: Bool) {
+        if editing {
+            movementSliderSession.begin(using: editRecorder)
+        } else {
+            movementSliderSession.endCommitting(to: editRecorder)
+        }
+    }
+
+    /// 第2値の書き込みと Undo 記録。クランプ範囲は本家の第2値の
+    /// スライダの Min/Max（絶対制限の対称範囲 ±最大絶対値）であり、
+    /// 定義範囲 [minValue, maxValue] ではクランプしない（定義範囲が
+    /// 0..100 の項目でも移動量は負値を取りうる）。確定処理
+    /// （FE-R13-004）も同じ対称範囲で適用する。
+    /// 書き込みは第1値と同じく入口で記録可否を確認し、記録できる
+    /// 場合だけモデルを変更してから記録する（FE-R25-128-01）。
+    private func writeMovementAmount(_ value: Double, sessionToken: EditSessionToken?) {
+        guard let animation = descriptor.animationValue,
+              animation.animationType == .movementAmount else { return }
+        guard editWriteAllowed(recorder: editRecorder, sessionToken: sessionToken)
+        else { return }
+        let oldState = animation.recordedState
+        let radius = max(abs(animation.minValue), abs(animation.maxValue))
+        let clampRange = (-radius)...radius
+        var value = value
+        if let spec = descriptor.sliderSpec {
+            value = AnimationSliderScale.fixedValue(
+                value, delta: spec.delta,
+                minimum: clampRange.lowerBound, maximum: clampRange.upperBound)
+        }
+        descriptor.setAnimationValue(value, atValueIndex: 1, clampRange: clampRange)
+        recordMovementChange(oldState: oldState, sessionToken: sessionToken)
+    }
+
+    /// 第2値の変更を Undo へ登録する。記録は変更前後の状態
+    /// （種別＋値列、`Animation.RecordedState`）を一体で保持し、
+    /// 適用は `restoreAnimationRecordedState` でそのまま書き戻す。
+    /// 値列全体を一体で記録するのは、短い値列の実体化（値列の
+    /// 個数の変化）まで含めて復元するためであり、第2値だけの
+    /// 記録では実体化前の個数へ戻せない（FE-R25-128-01。考え方は
+    /// 種別変更の記録 FE-R23-127-01 と同じ）。対象キーは第1値
+    /// （#const / #first / #seg<n>）と種別変更（#type）から
+    /// 区別する。
+    private func recordMovementChange(
+        oldState: YMM4Core.Animation.RecordedState,
+        sessionToken: EditSessionToken?
+    ) {
+        guard let editRecorder, let editTarget else { return }
+        let newState = descriptor.animationValue?.recordedState
+        recordDescriptorValueChange(
+            recorder: editRecorder,
+            target: EditTargetKey(
+                object: editTarget.object, key: editTarget.key + "#movement"),
+            oldValue: oldState, newValue: newState,
+            apply: { descriptor.restoreAnimationRecordedState($0) },
+            sessionToken: sessionToken)
+    }
+
+    private func commitMovementAmount() {
+        guard let animation = descriptor.animationValue,
+              animation.animationType == .movementAmount else { return }
+        // 未編集なら書き戻さない（FE-R1-019 と同じ趣旨）。
+        guard movementText != movementUneditedText else { return }
+        guard let value = Double(movementText), value.isFinite else {
+            movementText = formatValue(movementValue)
+            movementUneditedText = movementText
+            return
+        }
+        // テキスト確定は離散編集であり、Undo セッションのトークンは
+        // 持たない（第1値の commit と同じ。他人のセッションが有効
+        // なら writeMovementAmount の入口で拒否される）。
+        writeMovementAmount(value, sessionToken: nil)
+        movementText = formatValue(movementValue)
+        movementUneditedText = movementText
         onEdited()
     }
 }

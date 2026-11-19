@@ -165,4 +165,53 @@ final class AnimationTests: XCTestCase {
         let keyFrames = KeyFrames(frames: [10, 5, 10, 1])
         XCTAssertEqual(keyFrames.frames, [1, 5, 10])
     }
+
+    // MARK: - 値インデックス指定の書き換え（FE-R13-003）
+
+    func testSetValueAtIndexWritesMovementAmountSecondValue() {
+        // 移動量指定の第2値（移動量）は定義範囲 [0, 100] の外の負値も
+        // 対称範囲では書ける（本家は第2値の Min/Max を対称置換する）。
+        var animation = Animation(
+            defaultValue: 0, minValue: 0, maxValue: 100,
+            animationType: .movementAmount,
+            values: [AnimationValue(10), AnimationValue(5)]
+        )
+        animation.setValue(-30, atValueIndex: 1, clampRange: -100...100)
+        XCTAssertEqual(animation.values.map(\.value), [10, -30])
+        XCTAssertEqual(animation.animationType, .movementAmount)
+    }
+
+    func testSetValueAtIndexMaterializesShortValueList() {
+        // 値列が [50] だけの状態で第2値を書くと、手前は代用規則
+        // （末尾の値）で実体化してから対象位置だけが変わる。
+        var animation = Animation(
+            defaultValue: 100, minValue: 0, maxValue: 100,
+            animationType: .movementAmount,
+            values: [AnimationValue(50)]
+        )
+        animation.setValue(3, atValueIndex: 1, clampRange: -100...100)
+        XCTAssertEqual(animation.values.map(\.value), [50, 3])
+    }
+
+    func testSetValueAtIndexClampsToGivenRange() {
+        var animation = Animation(
+            defaultValue: 0, minValue: 0, maxValue: 100,
+            animationType: .movementAmount,
+            values: [AnimationValue(0), AnimationValue(0)]
+        )
+        animation.setValue(150, atValueIndex: 1, clampRange: -100...100)
+        XCTAssertEqual(animation.values.map(\.value), [0, 100])
+        animation.setValue(-150, atValueIndex: 1, clampRange: -100...100)
+        XCTAssertEqual(animation.values.map(\.value), [0, -100])
+    }
+
+    func testSetValueAtIndexIgnoresNegativeIndex() {
+        var animation = Animation(
+            defaultValue: 0, minValue: 0, maxValue: 100,
+            animationType: .movementAmount,
+            values: [AnimationValue(0), AnimationValue(0)]
+        )
+        animation.setValue(9, atValueIndex: -1, clampRange: -100...100)
+        XCTAssertEqual(animation.values.map(\.value), [0, 0])
+    }
 }
