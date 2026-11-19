@@ -6,16 +6,33 @@ import YMM4Core
 /// 記録先（recorder）または対象キーが無い場合は何もしない。
 /// 適用クロージャは記述子を保持し、記述子の読み書きクロージャが
 /// 対象オブジェクトを強く保持するため、履歴に残る間は対象も残る
-/// （`EditTargetKey` の接続側契約）。
+/// （`EditTargetKey` の接続側契約）。セッション中の書き込みは
+/// 所有者のトークンをそのまま転送する（FE-R20-126-03）。
 func recordDescriptorValueChange<Value: Equatable>(
     recorder: EditRecorder?, target: EditTargetKey?,
     oldValue: Value?, newValue: Value?,
-    apply: @escaping (Value) -> Void
+    apply: @escaping (Value) -> Void,
+    sessionToken: EditSessionToken? = nil
 ) {
     guard let recorder, let target,
           let oldValue, let newValue else { return }
     recorder.recordValueChange(
-        target: target, oldValue: oldValue, newValue: newValue, apply: apply)
+        target: target, oldValue: oldValue, newValue: newValue, apply: apply,
+        sessionToken: sessionToken)
+}
+
+/// 記述子への書き込みの入口確認（FE-R20-126-03）。
+///
+/// 記録先が存在し、かつ記録できる状態（セッションが無い、または
+/// 自分がその所有者）の場合だけ書き込みを許可する。許可されない
+/// 場合はモデル変更自体を行わない（他人のセッションへ変更が混入
+/// したり、無記録の変更が残ったりすることを書き込みの入口で防ぐ）。
+/// 記録先が無い構成では従来どおり無記録で書き込む。
+func editWriteAllowed(
+    recorder: EditRecorder?, sessionToken: EditSessionToken? = nil
+) -> Bool {
+    guard let recorder else { return true }
+    return recorder.canRecordValueChange(sessionToken: sessionToken)
 }
 
 // MARK: - 数値
@@ -26,9 +43,9 @@ struct NumberRowView: View {
     var editRecorder: EditRecorder?
     var editTarget: EditTargetKey?
     @State private var text: String
-    /// スライダのドラッグについて、この行が Undo セッションを
-    /// 開始したか（所有の追跡）。
-    @State private var sliderSessionOwned = false
+    /// スライダのドラッグについて、この行が所有する Undo セッション
+    /// のトークン（所有の追跡。FE-R20-126-03）。
+    @State private var sliderSessionToken: EditSessionToken?
     /// 未編集とみなすテキスト（初期表示・フォーカス取得時点・
     /// プログラム側の同期直後の文字列）。確定時に text がこれと
     /// 一致すれば書き戻さない（FE-R1-019。表示は %.4g へ丸まるため、
@@ -81,10 +98,10 @@ struct NumberRowView: View {
     private func sliderEditingChanged(_ editing: Bool) {
         guard let editRecorder else { return }
         if editing {
-            sliderSessionOwned = editRecorder.beginSession()
-        } else if sliderSessionOwned {
-            editRecorder.commitSession()
-            sliderSessionOwned = false
+            sliderSessionToken = editRecorder.beginSession()
+        } else if let token = sliderSessionToken {
+            editRecorder.commitSession(token: token)
+            sliderSessionToken = nil
         }
     }
 
@@ -102,6 +119,11 @@ struct NumberRowView: View {
         Binding(
             get: { descriptor.numberValue ?? 0 },
             set: { newValue in
+                // 自分のセッションの所有者でない書き込みは入口で
+                // 拒否する（FE-R20-126-03）。
+                guard editWriteAllowed(
+                    recorder: editRecorder, sessionToken: sliderSessionToken)
+                else { return }
                 let old = descriptor.numberValue
                 descriptor.setNumberValue(newValue)
                 text = formatNumber(descriptor.numberValue ?? newValue)
@@ -109,7 +131,8 @@ struct NumberRowView: View {
                 recordDescriptorValueChange(
                     recorder: editRecorder, target: editTarget,
                     oldValue: old, newValue: descriptor.numberValue,
-                    apply: { descriptor.setNumberValue($0) })
+                    apply: { descriptor.setNumberValue($0) },
+                    sessionToken: sliderSessionToken)
                 onEdited()
             }
         )
@@ -128,6 +151,9 @@ struct NumberRowView: View {
             uneditedText = text
             return
         }
+        // 他のセッションが有効な間は離散編集を行わない
+        // （FE-R20-126-03。入口で拒否し、モデルを変更しない）。
+        guard editWriteAllowed(recorder: editRecorder) else { return }
         let old = descriptor.numberValue
         descriptor.setNumberValue(value)
         text = formatNumber(descriptor.numberValue ?? value)
@@ -147,9 +173,9 @@ struct IntegerRowView: View {
     var editTarget: EditTargetKey?
     @State private var text: String
     @FocusState private var isFocused: Bool
-    /// スライダのドラッグについて、この行が Undo セッションを
-    /// 開始したか（所有の追跡）。
-    @State private var sliderSessionOwned = false
+    /// スライダのドラッグについて、この行が所有する Undo セッション
+    /// のトークン（所有の追跡。FE-R20-126-03）。
+    @State private var sliderSessionToken: EditSessionToken?
 
     init(
         descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
@@ -175,6 +201,8 @@ struct IntegerRowView: View {
             Stepper("", value: Binding(
                 get: { descriptor.integerValue ?? 0 },
                 set: { newValue in
+                    guard editWriteAllowed(recorder: editRecorder)
+                    else { return }
                     let old = descriptor.integerValue
                     descriptor.setIntegerValue(newValue)
                     text = String(newValue)
@@ -202,10 +230,10 @@ struct IntegerRowView: View {
     private func sliderEditingChanged(_ editing: Bool) {
         guard let editRecorder else { return }
         if editing {
-            sliderSessionOwned = editRecorder.beginSession()
-        } else if sliderSessionOwned {
-            editRecorder.commitSession()
-            sliderSessionOwned = false
+            sliderSessionToken = editRecorder.beginSession()
+        } else if let token = sliderSessionToken {
+            editRecorder.commitSession(token: token)
+            sliderSessionToken = nil
         }
     }
 
@@ -221,13 +249,17 @@ struct IntegerRowView: View {
         Binding(
             get: { Double(descriptor.integerValue ?? 0) },
             set: { newValue in
+                guard editWriteAllowed(
+                    recorder: editRecorder, sessionToken: sliderSessionToken)
+                else { return }
                 let old = descriptor.integerValue
                 descriptor.setIntegerValue(Int(newValue.rounded()))
                 text = String(descriptor.integerValue ?? Int(newValue.rounded()))
                 recordDescriptorValueChange(
                     recorder: editRecorder, target: editTarget,
                     oldValue: old, newValue: descriptor.integerValue,
-                    apply: { descriptor.setIntegerValue($0) })
+                    apply: { descriptor.setIntegerValue($0) },
+                    sessionToken: sliderSessionToken)
                 onEdited()
             }
         )
@@ -238,6 +270,7 @@ struct IntegerRowView: View {
             text = String(descriptor.integerValue ?? 0)
             return
         }
+        guard editWriteAllowed(recorder: editRecorder) else { return }
         let old = descriptor.integerValue
         descriptor.setIntegerValue(value)
         text = String(descriptor.integerValue ?? value)
@@ -281,6 +314,7 @@ struct TextRowView: View {
     }
 
     private func commit() {
+        guard editWriteAllowed(recorder: editRecorder) else { return }
         let old = descriptor.stringValue
         descriptor.setStringValue(text)
         recordDescriptorValueChange(
@@ -318,6 +352,8 @@ struct MultilineTextRowView: View {
             .focused($isFocused)
             .onChange(of: isFocused) { _, focused in
                 if !focused {
+                    guard editWriteAllowed(recorder: editRecorder)
+                    else { return }
                     let old = descriptor.stringValue
                     descriptor.setStringValue(text)
                     recordDescriptorValueChange(
@@ -352,6 +388,8 @@ struct EnumRowView: View {
         Picker("", selection: Binding(
             get: { descriptor.stringValue ?? "" },
             set: { newValue in
+                guard editWriteAllowed(recorder: editRecorder)
+                else { return }
                 let old = descriptor.stringValue
                 descriptor.setStringValue(newValue)
                 recordDescriptorValueChange(
@@ -392,9 +430,9 @@ struct AnimationRowView: View {
     var editTarget: EditTargetKey?
     @State private var text: String
     @FocusState private var isFocused: Bool
-    /// スライダのドラッグについて、この行が Undo セッションを
-    /// 開始したか（所有の追跡）。
-    @State private var sliderSessionOwned = false
+    /// スライダのドラッグについて、この行が所有する Undo セッション
+    /// のトークン（所有の追跡。FE-R20-126-03）。
+    @State private var sliderSessionToken: EditSessionToken?
     /// 入力セッションが所有する編集対象区間。フォーカスを得た時点で
     /// 固定し、確定まで保持する。再生ヘッドが別区間へ移っても、
     /// 未確定の入力が別区間へ書き込まれることはない（R20-114-01）。
@@ -535,7 +573,7 @@ struct AnimationRowView: View {
             get: { editTargetValue },
             set: { newValue in
                 guard descriptor.animationValue != nil else { return }
-                writeValue(newValue)
+                writeValue(newValue, sessionToken: sliderSessionToken)
                 text = formatValue(editTargetValue)
                 uneditedText = text
                 onEdited()
@@ -561,43 +599,52 @@ struct AnimationRowView: View {
     private func sliderEditingChanged(_ editing: Bool) {
         guard let editRecorder else { return }
         if editing {
-            sliderSessionOwned = editRecorder.beginSession()
-        } else if sliderSessionOwned {
-            editRecorder.commitSession()
-            sliderSessionOwned = false
+            sliderSessionToken = editRecorder.beginSession()
+        } else if let token = sliderSessionToken {
+            editRecorder.commitSession(token: token)
+            sliderSessionToken = nil
         }
     }
 
     /// 値の書き込み経路の振り分け: 定数は定数化、キーフレーム区間が
     /// あればその区間の開始値、それ以外は先頭値。
-    private func writeValue(_ value: Double) {
-        writeValue(value, segment: editingSegment)
+    private func writeValue(_ value: Double, sessionToken: EditSessionToken?) {
+        writeValue(value, segment: editingSegment, sessionToken: sessionToken)
     }
 
     /// 書き込みと Undo 記録。記録の対象キーは書き込み経路（定数／
     /// 先頭値／区間）ごとに分け、適用クロージャも同じ経路で書き戻す
     /// （経路が違えば戻し方も違うため。FE-UNDO-WIRING）。
-    private func writeValue(_ value: Double, segment: Int?) {
+    /// 書き込みは入口で記録可否を確認し、他人のセッションが有効な
+    /// 場合はモデルを変更しない（FE-R20-126-03）。
+    private func writeValue(
+        _ value: Double, segment: Int?, sessionToken: EditSessionToken?
+    ) {
         guard let animation = descriptor.animationValue else { return }
+        guard editWriteAllowed(recorder: editRecorder, sessionToken: sessionToken)
+        else { return }
         if animation.animationType == .none {
             let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationConstantValue(value)
             recordAnimationChange(
                 branch: "const", valueIndex: 0, oldValue: old,
-                apply: { descriptor.setAnimationConstantValue($0) })
+                apply: { descriptor.setAnimationConstantValue($0) },
+                sessionToken: sessionToken)
         } else if let segment {
             let old = AnimationSliderScale.editValue(
                 of: animation, valueIndex: segment)
             descriptor.setAnimationValue(value, atSegment: segment)
             recordAnimationChange(
                 branch: "seg\(segment)", valueIndex: segment, oldValue: old,
-                apply: { descriptor.setAnimationValue($0, atSegment: segment) })
+                apply: { descriptor.setAnimationValue($0, atSegment: segment) },
+                sessionToken: sessionToken)
         } else {
             let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationFirstValue(value)
             recordAnimationChange(
                 branch: "first", valueIndex: 0, oldValue: old,
-                apply: { descriptor.setAnimationFirstValue($0) })
+                apply: { descriptor.setAnimationFirstValue($0) },
+                sessionToken: sessionToken)
         }
     }
 
@@ -605,7 +652,8 @@ struct AnimationRowView: View {
     /// 要求値ではなく実効値を記録する）Undo へ登録する。
     private func recordAnimationChange(
         branch: String, valueIndex: Int, oldValue: Double,
-        apply: @escaping (Double) -> Void
+        apply: @escaping (Double) -> Void,
+        sessionToken: EditSessionToken?
     ) {
         guard let editRecorder, let editTarget else { return }
         let newValue = descriptor.animationValue.map {
@@ -615,7 +663,8 @@ struct AnimationRowView: View {
             recorder: editRecorder,
             target: EditTargetKey(
                 object: editTarget.object, key: editTarget.key + "#" + branch),
-            oldValue: oldValue, newValue: newValue, apply: apply)
+            oldValue: oldValue, newValue: newValue, apply: apply,
+            sessionToken: sessionToken)
     }
 
     private func commit() {
@@ -634,7 +683,11 @@ struct AnimationRowView: View {
         }
         // 確定先はセッションが所有する区間（フォーカス取得時点）。
         // 現在の再生ヘッド位置の区間ではない（R20-114-01）。
-        writeValue(value, segment: focusedSegment ?? editingSegment)
+        // テキスト確定は離散編集であり、Undo セッションのトークンは
+        // 持たない（他人のセッションが有効なら writeValue の入口で
+        // 拒否される）。
+        writeValue(
+            value, segment: focusedSegment ?? editingSegment, sessionToken: nil)
         text = formatValue(editTargetValue)
         uneditedText = text
         onEdited()

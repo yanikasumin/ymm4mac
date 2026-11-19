@@ -66,6 +66,11 @@ struct AnimationTypeMenuButton: View {
     @ViewBuilder
     private func checkButton(type: AnimationType, name: String) -> some View {
         Button {
+            // 他人のセッションが有効な間は離散編集を行わない
+            // （FE-R20-126-03。入口で拒否し、モデルを変更しない）。
+            if let editRecorder, !editRecorder.canRecordValueChange() {
+                return
+            }
             let old = currentType
             descriptor.setAnimationType(type)
             // 種別だけを記録する。値列の正規化は種別変更と対の操作

@@ -125,6 +125,11 @@ private struct PropertyRowView: View {
             Toggle("", isOn: Binding(
                 get: { descriptor.boolValue ?? false },
                 set: { newValue in
+                    // 他人のセッションが有効な間は離散編集を行わない
+                    // （FE-R20-126-03。入口で拒否し、モデルを変更しない）。
+                    if let editRecorder, !editRecorder.canRecordValueChange() {
+                        return
+                    }
                     let old = descriptor.boolValue
                     descriptor.setBoolValue(newValue)
                     if let old, let editRecorder, let editTarget {

@@ -1,22 +1,48 @@
 import Foundation
 
+/// 編集セッションの所有権トークン（FE-R20-126-03）。
+///
+/// `EditRecorder.beginSession` が開始のたびに発行し、セッションの
+/// 所有者だけが保持する。値変更の記録・セッションの確定・破棄は
+/// このトークンの提示を必須とし、所有者でない経路の変更が有効な
+/// セッションへ混入することを防ぐ。値は識別子でしかなく、生成は
+/// `EditRecorder` だけが行う。
+public struct EditSessionToken: Equatable, Sendable {
+    let id: UUID
+
+    init(id: UUID) {
+        self.id = id
+    }
+}
+
 /// Undo 記録の集約点（FE-UNDO-WIRING）。
 ///
 /// Core の `EditCoordinator`（履歴とトランザクションの統括）への
 /// 投入経路をここ1か所へ集約する。所有はアプリ層の `WorkspaceState`
 /// が持ち、プロジェクト（ウィンドウ）ごとに1つである。各編集経路は:
 ///
-/// - 離散編集（数値確定・トグル・選択など）: 書き込みの前後で
-///   `recordValueChange` を呼ぶ。セッションが有効でなければ、その
-///   変更だけのトランザクションとして即時に確定する。
-/// - 連続編集（スライダ・ドラッグ）: `beginSession` でトランザクション
-///   を開き、途中の変更は同じセッションへ蓄積され（同一対象の連鎖は
-///   Core の収集規則で統合される）、終了時に `commitSession` /
-///   `cancelSession` で閉じる。開始が拒否された場合は無記録で続行
-///   する（呼び出し側は戻り値で所有の有無を追跡すること）。
+/// - 離散編集（数値確定・トグル・選択など）: 書き込みの入口で
+///   `canRecordValueChange` を確認し、記録できる場合だけモデルを
+///   変更してから `recordValueChange` で記録する。セッションが
+///   有効でなければ、その変更だけのトランザクションとして即時に
+///   確定する。
+/// - 連続編集（スライダ・ドラッグ）: `beginSession` で所有権トークン
+///   つきのトランザクションを開き、途中の変更はトークンを提示して
+///   同じセッションへ蓄積され（同一対象の連鎖は Core の収集規則で
+///   統合される）、終了時に `commitSession` / `cancelSession` で
+///   閉じる。開始が拒否された場合はトークンが得られず、その編集は
+///   行われない（呼び出し側が入口で確認する）。
 /// - タイムラインの構造変更（追加・削除・ドラッグ）: 変更前後の
 ///   スナップショット差分をコマンド化する `recordTimelineChange` /
-///   `TimelineEditSnapshot` を使う。
+///   `TimelineEditSnapshot` を使う。開始できない場合は変更自体を
+///   実行しない（戻り値で呼び出し側へ伝える）。
+///
+/// セッションの所有権（FE-R20-126-03）: 有効なセッションがある間、
+/// 所有者でない経路の離散編集はセッションへ取り込まず、モデルも
+/// 変更しない。記録は後付けではなく、書き込み経路の入口
+/// （`canRecordValueChange`）で可否を確認する形に統一する。
+/// `recordValueChange` 自身もトークンの照合を行い、入口確認を
+/// すり抜けた記録投入を二重に防ぐ。
 ///
 /// 本家の自動監視（UndoRedoable）は模倣しない。ここを通らない編集は
 /// 記録されず、Undo 対応とはみなさない（未移行経路は実装ログに列挙）。
@@ -29,51 +55,58 @@ public final class EditRecorder {
     /// 履歴とトランザクションの統括（Core）。
     public let coordinator = EditCoordinator()
 
-    /// この接続側が開始したセッションのトランザクション。
+    /// 有効なセッション（所有権トークンとトランザクションの組）。
     /// 同時に有効なセッションは1つだけであり、所有の追跡は監査
     /// Round 10 の接続条件（開始していないセッションの終了通知では
     /// Undo 処理をしない）の実装である。
-    private var sessionTransaction: EditTransaction?
+    private var session: (token: EditSessionToken, transaction: EditTransaction)?
 
     /// セッションが有効か。
-    public var hasActiveSession: Bool { sessionTransaction != nil }
+    public var hasActiveSession: Bool { session != nil }
 
-    /// セッション所有のトランザクション（差分の投入用）。
-    public var activeSessionTransaction: EditTransaction? { sessionTransaction }
+    /// トークンが指すセッションのトランザクション（差分の投入用）。
+    /// トークンが現在のセッションと一致しない場合は nil。
+    public func sessionTransaction(for token: EditSessionToken) -> EditTransaction? {
+        guard let session, session.token == token else { return nil }
+        return session.transaction
+    }
 
     public init() {}
 
     // MARK: - セッション（連続編集）
 
-    /// 連続編集のセッションを開始する。既にセッションが有効な場合、
-    /// および Core 側で開始が拒否された場合は false を返し、呼び出し
-    /// 側はその編集を無記録で続行する（開始していないセッションの
-    /// 終了通知は `commitSession` / `cancelSession` でも無視される）。
+    /// 連続編集のセッションを開始し、所有権トークンを返す。既に
+    /// セッションが有効な場合、および Core 側で開始が拒否された
+    /// 場合は nil を返し、その編集は開始されない（呼び出し側は
+    /// トークンが得られた場合だけ書き込みへ進む）。
     @discardableResult
-    public func beginSession() -> Bool {
-        guard sessionTransaction == nil,
+    public func beginSession() -> EditSessionToken? {
+        guard session == nil,
               let transaction = coordinator.beginTransaction()
-        else { return false }
-        sessionTransaction = transaction
-        return true
+        else { return nil }
+        let token = EditSessionToken(id: UUID())
+        session = (token: token, transaction: transaction)
+        return token
     }
 
     /// セッションを確定し、蓄積した変更を履歴1エントリとして登録する。
-    /// 自分が開始したセッションが無い場合は何もしない。
-    public func commitSession() {
-        guard let transaction = sessionTransaction else { return }
-        sessionTransaction = nil
-        coordinator.commit(transaction)
+    /// トークンが現在のセッションと一致しない場合は何もしない
+    /// （他人のセッションを誤って確定しない）。
+    public func commitSession(token: EditSessionToken) {
+        guard let session, session.token == token else { return }
+        self.session = nil
+        coordinator.commit(session.transaction)
     }
 
     /// セッションを破棄する。蓄積した変更は Core 側で開始状態へ
     /// 巻き戻される。タイムラインのドラッグでは、操作層自身が
     /// スナップショットから復元済みのため、こちらに蓄積される
     /// コマンドは通常は無く、巻き戻しは空振りになる。
-    public func cancelSession() {
-        guard let transaction = sessionTransaction else { return }
-        sessionTransaction = nil
-        coordinator.cancel(transaction)
+    /// トークンが一致しない場合は何もしない。
+    public func cancelSession(token: EditSessionToken) {
+        guard let session, session.token == token else { return }
+        self.session = nil
+        coordinator.cancel(session.transaction)
     }
 
     /// プロジェクト切り替え時の後片付け。未確定のセッションがあれば
@@ -81,26 +114,50 @@ public final class EditRecorder {
     /// （監査 Round 7 の接続条件）。呼び出しは `WorkspaceState` の
     /// プロジェクト差し替え直前に限る。
     public func resetForProjectSwitch() {
-        cancelSession()
+        if let session {
+            cancelSession(token: session.token)
+        }
         coordinator.history.clear()
     }
 
     // MARK: - 値変更の記録
 
+    /// 値の書き込みが記録可能な状態か（書き込み経路の入口確認。
+    /// FE-R20-126-03）。
+    ///
+    /// - セッションが有効な間は、その所有者（トークン一致）だけが
+    ///   書き込める。
+    /// - セッションが無い場合は、他のトランザクションが有効でない
+    ///   場合に限り書き込める（離散編集として即時に記録される）。
+    ///
+    /// false の場合、呼び出し側はモデル変更自体を行わない。
+    public func canRecordValueChange(sessionToken: EditSessionToken? = nil) -> Bool {
+        if let session {
+            return sessionToken == session.token
+        }
+        return coordinator.activeTransaction == nil
+    }
+
     /// 適用済みの値変更を記録する。セッションが有効ならそこへ蓄積し、
     /// そうでなければその変更だけのトランザクションとして即時に
-    /// 確定する。他の経路のトランザクションが有効な間は記録しない
-    /// （未確定の変更と履歴が混ざるのを避ける。Core 側でも開始は
-    /// 拒否される）。
+    /// 確定する。
+    ///
+    /// セッションが有効な間は、所有者のトークンを提示した記録だけを
+    /// 受け付ける。それ以外（トークン無し・不一致）の記録は混入を
+    /// 防ぐため破棄する。モデル変更の防止は入口確認
+    /// （`canRecordValueChange`）の責務であり、ここの照合は入口を
+    /// すり抜けた投入への二重の防壁である。
     public func recordValueChange<Value: Equatable>(
         target: EditTargetKey,
         oldValue: Value,
         newValue: Value,
-        apply: @escaping (Value) -> Void
+        apply: @escaping (Value) -> Void,
+        sessionToken: EditSessionToken? = nil
     ) {
         guard oldValue != newValue else { return }
-        if let sessionTransaction {
-            sessionTransaction.addValueChange(
+        if let session {
+            guard sessionToken == session.token else { return }
+            session.transaction.addValueChange(
                 target: target, oldValue: oldValue, newValue: newValue,
                 apply: apply)
             return

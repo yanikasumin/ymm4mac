@@ -33,10 +33,11 @@ struct ProjectView: View {
     /// タイムライン帯の再評価の契機（Undo/Redo 適用時）。帯はモデルを
     /// 直接読むため、版数を渡して body の再評価を促す。
     @State private var timelineDisplayRevision = 0
-    /// タイムラインドラッグについて、この接続側がトランザクションを
-    /// 開始したか（監査 Round 10 の接続条件）。開始していない
-    /// セッション（背景・範囲選択）の終了通知では Undo 処理をしない。
-    @State private var dragUndoOwned = false
+    /// タイムラインドラッグについて、この接続側が所有するセッション
+    /// のトークン（監査 Round 10 の接続条件＋FE-R20-126-03）。開始して
+    /// いないセッション（背景・範囲選択）の終了通知では Undo 処理を
+    /// しない。
+    @State private var dragUndoToken: EditSessionToken?
     /// ドラッグ開始時点のタイムライン写し（Undo 記録用）。
     @State private var dragUndoSnapshot: TimelineEditSnapshot?
     @State private var roundTripResult: String?
@@ -745,9 +746,10 @@ struct ProjectView: View {
 
     @State private var handleDrag: HandleDragState?
     /// プレビュー上の移動ドラッグ／ハンドルドラッグについて、この
-    /// 接続側が Undo セッションを開始したか（所有の追跡）。
-    @State private var previewDragUndoOwned = false
-    @State private var handleDragUndoOwned = false
+    /// 接続側が所有する Undo セッションのトークン（所有の追跡。
+    /// FE-R20-126-03）。
+    @State private var previewDragSessionToken: EditSessionToken?
+    @State private var handleDragSessionToken: EditSessionToken?
 
     /// 選択アイテムの操作ハンドル群（表示は 9px、当たり判定は 18px）。
     private func selectionHandles(
@@ -828,8 +830,11 @@ struct ProjectView: View {
                     guard let index = timeline.items.firstIndex(where: { $0 === item }),
                           let props = item as? VideoItemProperties else { return }
                     // ドラッグの書き込みを1履歴エントリへまとめる
-                    // セッションを開く（FE-UNDO-WIRING）。
-                    handleDragUndoOwned = workspace.editRecorder.beginSession()
+                    // セッションを開く（FE-UNDO-WIRING）。開始でき
+                    // なかった場合、書き込みは writeAnimationValue の
+                    // 入口確認で拒否され、モデルは変更されない
+                    // （FE-R20-126-03）。
+                    handleDragSessionToken = workspace.editRecorder.beginSession()
                     let context = animationContext(for: item, timeline: timeline)
                     let center = layout.viewPoint(
                         fromVideoPoint: CGPoint(x: bounds.midX, y: bounds.midY)
@@ -860,7 +865,7 @@ struct ProjectView: View {
                     let factor = Double(hypot(dx, dy) / drag.startDistance)
                     let newZoom = drag.startZoom * factor
                     guard abs(newZoom - drag.lastWritten) >= 0.5 else { return }
-                    writeAnimationProperty(item: target, displayName: "拡大率", value: newZoom, timeline: timeline)
+                    writeAnimationProperty(item: target, displayName: "拡大率", value: newZoom, timeline: timeline, sessionToken: handleDragSessionToken)
                     updated.lastWritten = newZoom
                 case .rotation:
                     let angle = atan2(Double(dy), Double(dx)) * 180 / .pi
@@ -869,7 +874,7 @@ struct ProjectView: View {
                     while delta < -180 { delta += 360 }
                     let newRotation = drag.startRotation + delta
                     guard abs(newRotation - drag.lastWritten) >= 0.5 else { return }
-                    writeAnimationProperty(item: target, displayName: "回転角", value: newRotation, timeline: timeline)
+                    writeAnimationProperty(item: target, displayName: "回転角", value: newRotation, timeline: timeline, sessionToken: handleDragSessionToken)
                     updated.lastWritten = newRotation
                 }
                 handleDrag = updated
@@ -877,9 +882,9 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 handleDrag = nil
-                if handleDragUndoOwned {
-                    workspace.editRecorder.commitSession()
-                    handleDragUndoOwned = false
+                if let token = handleDragSessionToken {
+                    workspace.editRecorder.commitSession(token: token)
+                    handleDragSessionToken = nil
                 }
                 // ドラッグ中の間引きで残った未反映分を確定させる
                 // （再生中なら単一入口の規則で dirty に保留される）。
@@ -890,13 +895,15 @@ struct ProjectView: View {
     /// アニメーション付きプロパティへの書き込み（表示名で引く）。
     /// ドラッグ移動と同じ規則（writeAnimationValue に集約）。
     private func writeAnimationProperty(
-        item: BaseItem, displayName: String, value: Double, timeline: Timeline
+        item: BaseItem, displayName: String, value: Double, timeline: Timeline,
+        sessionToken: EditSessionToken?
     ) {
         for descriptor in ItemPropertyMetadata.descriptors(for: item)
         where descriptor.displayName == displayName {
             guard case .animation = descriptor.kind else { continue }
             writeAnimationValue(
-                descriptor: descriptor, item: item, timeline: timeline, value: value)
+                descriptor: descriptor, item: item, timeline: timeline,
+                value: value, sessionToken: sessionToken)
         }
     }
 
@@ -906,13 +913,17 @@ struct ProjectView: View {
     /// 区間の開始値、それ以外は先頭値（FE-R1-006。先頭値への固定
     /// 書き換えでは、表示中の区間と無関係な値が変わる）。
     /// 書き込みは Undo 記録の対象とし、ドラッグ中は呼び出し側が
-    /// 開いたセッションへ蓄積される（FE-UNDO-WIRING）。
+    /// 開いたセッションへ蓄積される（FE-UNDO-WIRING）。書き込みの
+    /// 入口で記録可否を確認し、セッションの所有者でない場合は
+    /// モデルを変更しない（FE-R20-126-03）。
     private func writeAnimationValue(
         descriptor: PropertyDescriptor, item: BaseItem, timeline: Timeline,
-        value: Double
+        value: Double, sessionToken: EditSessionToken?
     ) {
         guard let animation = descriptor.animationValue else { return }
         let recorder = workspace.editRecorder
+        guard recorder.canRecordValueChange(sessionToken: sessionToken)
+        else { return }
         if animation.animationType == .none {
             let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationConstantValue(value)
@@ -922,7 +933,8 @@ struct ProjectView: View {
             recorder.recordValueChange(
                 target: EditTargetKey(item, key: "\(descriptor.id)#const"),
                 oldValue: old, newValue: new,
-                apply: { descriptor.setAnimationConstantValue($0) })
+                apply: { descriptor.setAnimationConstantValue($0) },
+                sessionToken: sessionToken)
         } else if animation.animationType.isKeyFrameSupported,
                   !animation.keyFrames.frames.isEmpty {
             let context = animationContext(for: item, timeline: timeline)
@@ -936,7 +948,8 @@ struct ProjectView: View {
             recorder.recordValueChange(
                 target: EditTargetKey(item, key: "\(descriptor.id)#seg\(segment)"),
                 oldValue: old, newValue: new,
-                apply: { descriptor.setAnimationValue($0, atSegment: segment) })
+                apply: { descriptor.setAnimationValue($0, atSegment: segment) },
+                sessionToken: sessionToken)
         } else {
             let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationFirstValue(value)
@@ -946,7 +959,8 @@ struct ProjectView: View {
             recorder.recordValueChange(
                 target: EditTargetKey(item, key: "\(descriptor.id)#first"),
                 oldValue: old, newValue: new,
-                apply: { descriptor.setAnimationFirstValue($0) })
+                apply: { descriptor.setAnimationFirstValue($0) },
+                sessionToken: sessionToken)
         }
     }
 
@@ -968,7 +982,7 @@ struct ProjectView: View {
                     // 0.5px 以上動いたときだけ行う。
                     guard abs(newX - drag.lastWrittenX) >= 0.5
                         || abs(newY - drag.lastWrittenY) >= 0.5 else { return }
-                    writeItemPosition(item: item, x: newX, y: newY, timeline: timeline)
+                    writeItemPosition(item: item, x: newX, y: newY, timeline: timeline, sessionToken: previewDragSessionToken)
                     drag.lastWrittenX = newX
                     drag.lastWrittenY = newY
                     previewDrag = drag
@@ -986,8 +1000,11 @@ struct ProjectView: View {
                     timeline: timeline, videoPoint: startVideoPoint
                 ), let props = timeline.items[index] as? VideoItemProperties {
                     // 移動ドラッグの書き込みを1履歴エントリへまとめる
-                    // セッションを開く（FE-UNDO-WIRING）。
-                    previewDragUndoOwned = workspace.editRecorder.beginSession()
+                    // セッションを開く（FE-UNDO-WIRING）。開始でき
+                    // なかった場合、書き込みは writeAnimationValue の
+                    // 入口確認で拒否され、モデルは変更されない
+                    // （FE-R20-126-03）。
+                    previewDragSessionToken = workspace.editRecorder.beginSession()
                     selectedItemIndex = index
                     let item = timeline.items[index]
                     let context = animationContext(for: item, timeline: timeline)
@@ -1011,9 +1028,9 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 previewDrag = nil
-                if previewDragUndoOwned {
-                    workspace.editRecorder.commitSession()
-                    previewDragUndoOwned = false
+                if let token = previewDragSessionToken {
+                    workspace.editRecorder.commitSession(token: token)
+                    previewDragSessionToken = nil
                 }
                 // ドラッグ中の間引きで残った未反映分を確定させる
                 // （再生中なら単一入口の規則で dirty に保留される）。
@@ -1097,7 +1114,8 @@ struct ProjectView: View {
     /// （writeAnimationValue の振り分け）で、既存の記述子経路を
     /// 通して X/Y へ書き込む。
     private func writeItemPosition(
-        item: BaseItem, x: Double, y: Double, timeline: Timeline
+        item: BaseItem, x: Double, y: Double, timeline: Timeline,
+        sessionToken: EditSessionToken?
     ) {
         for descriptor in ItemPropertyMetadata.descriptors(for: item) {
             guard case .animation = descriptor.kind else { continue }
@@ -1108,7 +1126,8 @@ struct ProjectView: View {
             default: continue
             }
             writeAnimationValue(
-                descriptor: descriptor, item: item, timeline: timeline, value: value)
+                descriptor: descriptor, item: item, timeline: timeline,
+                value: value, sessionToken: sessionToken)
         }
     }
 
@@ -1379,21 +1398,21 @@ struct ProjectView: View {
     /// 監査 Round 10 の接続条件）。
     @discardableResult
     private func beginTimelineDragUndo(timeline: Timeline) -> Bool {
-        dragUndoOwned = workspace.editRecorder.beginSession()
-        dragUndoSnapshot = dragUndoOwned
+        dragUndoToken = workspace.editRecorder.beginSession()
+        dragUndoSnapshot = dragUndoToken != nil
             ? TimelineEditSnapshot(timeline: timeline) : nil
-        return dragUndoOwned
+        return dragUndoToken != nil
     }
 
     /// タイムラインドラッグの確定通知。自分が開始したセッションに
     /// ついてだけ、開始時点との差分を記録して確定する。
     private func commitTimelineDragUndo(timeline: Timeline) {
-        if dragUndoOwned, let snapshot = dragUndoSnapshot,
-           let transaction = workspace.editRecorder.activeSessionTransaction {
+        if let token = dragUndoToken, let snapshot = dragUndoSnapshot,
+           let transaction = workspace.editRecorder.sessionTransaction(for: token) {
             snapshot.recordDiff(into: transaction, timeline: timeline)
-            workspace.editRecorder.commitSession()
+            workspace.editRecorder.commitSession(token: token)
         }
-        dragUndoOwned = false
+        dragUndoToken = nil
         dragUndoSnapshot = nil
     }
 
@@ -1402,10 +1421,10 @@ struct ProjectView: View {
     /// のトランザクションを破棄するだけである。開始していない
     /// セッション（背景・範囲選択の Escape 等）の通知は対象外。
     private func cancelTimelineDragUndo() {
-        if dragUndoOwned {
-            workspace.editRecorder.cancelSession()
+        if let token = dragUndoToken {
+            workspace.editRecorder.cancelSession(token: token)
         }
-        dragUndoOwned = false
+        dragUndoToken = nil
         dragUndoSnapshot = nil
     }
 
