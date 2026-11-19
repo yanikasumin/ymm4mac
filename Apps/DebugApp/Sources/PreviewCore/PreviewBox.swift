@@ -88,10 +88,12 @@ public final class PreviewBox: PreviewRenderSession {
     /// 合成そのものの失敗を診断へ記録するときの種別。
     public static let compositionFailureKind = "previewComposition"
 
-    /// 指定フレームで合成し、読み戻した画像を返す。失敗時は nil。
+    /// 指定フレームで合成し、読み戻した画像と、その画像に対応する
+    /// アイテム別の実描画矩形を一体の結果として返す（FE-R1-023-A の
+    /// 描画結果の契約）。失敗時は nil。
     public func render(
         frame: Int, timeline: Timeline, usage: TimelineSourceUsage = .paused
-    ) -> CGImage? {
+    ) -> PreviewFrameResult? {
         guard !isDisposed, let devices, let context, let composer else { return nil }
         let videoInfo = timeline.videoInfo
         context.targetSize = PixelSize(width: videoInfo.width, height: videoInfo.height)
@@ -108,8 +110,44 @@ public final class PreviewBox: PreviewRenderSession {
             )
             return nil
         }
-        guard let output = composer.output else { return nil }
-        return devices.makeCGImage(from: output)
+        guard let output = composer.output,
+              let image = devices.makeCGImage(from: output) else { return nil }
+        return PreviewFrameResult(
+            image: image,
+            itemRects: itemRects(from: composer, devices: devices, videoInfo: videoInfo)
+        )
+    }
+
+    /// 合成器のアイテム別出力から実描画矩形を作る。矩形の出所は GPU
+    /// 層に登録済みの画像の内容境界（bounds に変換を適用した外接
+    /// 矩形）であり、アイテムの変換式をアプリ側で複製しない。
+    /// 描画内容の無いアイテム（出力0件の透明な代替描画のみ）は
+    /// ここで除外され、当たり判定可能な矩形を持たない。
+    private func itemRects(
+        from composer: TimelineComposer,
+        devices: MetalGraphicsDevices,
+        videoInfo: VideoInfo
+    ) -> [PreviewItemRect] {
+        let videoSize = CGSize(width: videoInfo.width, height: videoInfo.height)
+        return composer.itemOutputs.enumerated().compactMap {
+            (drawOrder, itemOutput) -> PreviewItemRect? in
+            guard itemOutput.hasDrawnContent,
+                  let token = itemOutput.output,
+                  let metal = devices.image(for: token)
+            else { return nil }
+            let centered = MetalDrawingEffect.boundingRect(
+                of: metal.bounds, transformedBy: metal.transform
+            )
+            guard centered.right > centered.left,
+                  centered.bottom > centered.top else { return nil }
+            return PreviewItemRect(
+                itemIndex: itemOutput.itemIndex,
+                bounds: PreviewLayout.videoRect(
+                    fromCenteredRect: centered, videoSize: videoSize
+                ),
+                drawOrder: drawOrder
+            )
+        }
     }
 
     public func dispose() {

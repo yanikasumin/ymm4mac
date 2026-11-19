@@ -139,7 +139,9 @@ public final class MetalDrawingEffect: DrawingEffectProcessor, PlaneSplitGeometr
     }
 
     /// 矩形の四隅を変換（w 除算つき）した外接矩形。
-    static func boundingRect(of rect: RectF, transformedBy matrix: Matrix4x4) -> RectF {
+    /// プレビューの当たり判定用データ（FE-R1-023-A）が登録済み画像の
+    /// 実描画矩形を求めるためにも使うため公開する。
+    public static func boundingRect(of rect: RectF, transformedBy matrix: Matrix4x4) -> RectF {
         let corners = [
             Vector3(x: rect.left, y: rect.top, z: 0),
             Vector3(x: rect.right, y: rect.top, z: 0),

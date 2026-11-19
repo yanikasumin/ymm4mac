@@ -25,7 +25,13 @@ private final class FakeSession: PreviewRenderSession {
     /// しない前提の不変設定（テスト側との競合を作らない。R16-01）。
     var recordKindOnFrames: Set<Int> = []
 
-    func render(frame: Int, timeline: Timeline, usage: TimelineSourceUsage) -> CGImage? {
+    /// 結果を返すかどうか（真なら画像とアイテム別矩形の一体の
+    /// 結果を返す。FE-R1-023-A）。偽なら従来どおり失敗（nil）。
+    var producesResult = false
+    /// 結果に含めるアイテム別矩形（producesResult が真のとき）。
+    var resultRects: [PreviewItemRect] = []
+
+    func render(frame: Int, timeline: Timeline, usage: TimelineSourceUsage) -> PreviewFrameResult? {
         lock.lock()
         frames.append(frame)
         lock.unlock()
@@ -35,7 +41,17 @@ private final class FakeSession: PreviewRenderSession {
         if blockRenders {
             _ = gate.wait(timeout: .now() + 10)
         }
-        return nil
+        guard producesResult else { return nil }
+        return PreviewFrameResult(image: Self.makeImage(), itemRects: resultRects)
+    }
+
+    private static func makeImage() -> CGImage {
+        let context = CGContext(
+            data: nil, width: 1, height: 1, bitsPerComponent: 8,
+            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        return context.makeImage()!
     }
 
     func dispose() { disposed = true }
@@ -324,6 +340,46 @@ final class PreviewRenderWorkerTests: XCTestCase {
         XCTAssertEqual(payloads[1].history.count, 1)
         XCTAssertTrue(payloads[2].failures.isEmpty)
         XCTAssertTrue(payloads[2].history.isEmpty)
+    }
+
+    /// 描画結果の契約（FE-R1-023-A）: 画像とアイテム別矩形は一体の
+    /// 結果として、識別子・フレームと組で届く。矩形は途中で
+    /// 欠落・付け替えされず、そのまま届く。
+    func testFrameResultDeliveredWithItemRectsIntact() {
+        let session = FakeSession()
+        session.producesResult = true
+        let rects = [
+            PreviewItemRect(
+                itemIndex: 2, bounds: CGRect(x: 10, y: 20, width: 300, height: 200),
+                drawOrder: 0
+            ),
+            PreviewItemRect(
+                itemIndex: 0, bounds: CGRect(x: 100, y: 50, width: 400, height: 300),
+                drawOrder: 1
+            ),
+        ]
+        session.resultRects = rects
+        let worker = makeWorker(sessions: [session])
+        let delivered = expectation(description: "frame result delivered")
+        var received: (
+            result: PreviewFrameResult,
+            identity: PreviewRenderWorker.Identity, frame: Int
+        )?
+        worker.onImage = { result, identity, frame, _, _ in
+            received = (result, identity, frame)
+            delivered.fulfill()
+        }
+        let id = identity(generation: 1, version: 4)
+        worker.setModel(
+            identity: id, timelines: [], timeline: Timeline(),
+            baseDirectory: nil
+        )
+        worker.request(frame: 12, usage: .paused, identity: id)
+        wait(for: [delivered], timeout: 5)
+        XCTAssertEqual(received?.identity, id)
+        XCTAssertEqual(received?.frame, 12)
+        XCTAssertEqual(received?.result.itemRects, rects)
+        XCTAssertEqual(received?.result.image.width, 1)
     }
 
     /// 初期化失敗の通知には識別子が付き、どのモデルの失敗か
