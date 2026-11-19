@@ -21,17 +21,33 @@ public enum ItemPropertyMetadata {
             result += videoDescriptors(group: "描画", idPrefix: "", accesses: videoAccesses(of: visual))
         }
         if let video = item as? VideoItem {
+            result += [waveformDescriptor(access(video, \.isWaveformEnabled))]
             result += videoItemDescriptors(for: video)
             result += audioDescriptors(volume: access(video, \.volume), pan: access(video, \.pan))
+            result += echoDescriptors(
+                isEnabled: access(video, \.echoIsEnabled),
+                interval: access(video, \.echoInterval),
+                attenuation: access(video, \.echoAttenuation)
+            )
         }
         if let audio = item as? AudioItem {
+            result += [waveformDescriptor(access(audio, \.isWaveformEnabled))]
             result += audioItemDescriptors(for: audio)
             result += audioDescriptors(volume: access(audio, \.volume), pan: access(audio, \.pan))
+            result += [playbackRateModeDescriptor(
+                group: "音声", access(audio, \.playbackRateAudioProcessingMode)
+            )]
+            result += echoDescriptors(
+                isEnabled: access(audio, \.echoIsEnabled),
+                interval: access(audio, \.echoInterval),
+                attenuation: access(audio, \.echoAttenuation)
+            )
         }
         if let image = item as? ImageItem {
             result += imageItemDescriptors(for: image)
         }
         if let voice = item as? VoiceItem {
+            result += [waveformDescriptor(access(voice, \.isWaveformEnabled))]
             result += voiceDescriptors(for: voice)
         }
         if let text = item as? TextItem {
@@ -213,6 +229,62 @@ public enum ItemPropertyMetadata {
         ]
     }
 
+    // MARK: - メディア系アイテム共通（波形・再生速度変更方式・エコー）
+
+    /// 波形表示。本家では全般グループ（`GeneralGroupName`）の
+    /// Order 5 で、宣言は具象型（VideoItem / AudioItem / VoiceItem）
+    /// 側にある。基本グループの既存項目（BaseItem 宣言分）の後ろ、
+    /// グループ末尾に置く。表示名は `*IsWaveformEnabledName` =「波形」。
+    private static func waveformDescriptor(_ waveform: Access<Bool>) -> PropertyDescriptor {
+        .boolean(
+            id: "IsWaveformEnabled", displayName: "波形", group: "基本",
+            get: waveform.get, set: waveform.set
+        )
+    }
+
+    /// 再生速度変更方式。本家では各具象型のグループに
+    /// `EnumComboBox` で置かれ、表示名キーは3型共通で
+    /// `AudioPlayerPlaybackRateMode` =「再生速度変更方式」。
+    /// 選択肢の表示名も本家リソースによる（Resampling は
+    /// `AudioPlayerPlaybackRateModeResampling`、Sola は
+    /// `PlaybackRateAudioProcessingModeSolaName`）。
+    private static func playbackRateModeDescriptor(
+        group: String, _ mode: Access<PlaybackRateAudioProcessingMode>
+    ) -> PropertyDescriptor {
+        .enumeration(
+            id: "PlaybackRateAudioProcessingMode", displayName: "再生速度変更方式", group: group,
+            options: playbackRateModeOptions,
+            get: mode.get, set: mode.set
+        )
+    }
+
+    /// エコー3項目。本家では `EchoGroupName` =「エコー」の独立
+    /// グループに同順（有効・間隔・減衰）で並ぶ。値域は本家の
+    /// `Range` 属性どおり（間隔 0〜2秒、減衰 0〜90％）。
+    /// 書き込みはモデルのプロパティ経由であり、動画・音声では
+    /// didSet の素材長再計算（FE-R15-006）がそのまま走る。
+    private static func echoDescriptors(
+        isEnabled: Access<Bool>, interval: Access<Double>, attenuation: Access<Double>
+    ) -> [PropertyDescriptor] {
+        let group = "エコー"
+        return [
+            .boolean(
+                id: "EchoIsEnabled", displayName: "有効", group: group,
+                get: isEnabled.get, set: isEnabled.set
+            ),
+            .number(
+                id: "EchoInterval", displayName: "間隔", group: group,
+                range: 0...2,
+                get: interval.get, set: interval.set
+            ),
+            .number(
+                id: "EchoAttenuation", displayName: "減衰", group: group,
+                range: 0...90,
+                get: attenuation.get, set: attenuation.set
+            ),
+        ]
+    }
+
     // MARK: - メディアアイテム固有（ファイル参照）
 
     /// ファイルパスの読み書き。モデルの値は `String?`（未指定は
@@ -230,12 +302,16 @@ public enum ItemPropertyMetadata {
     /// 表示名は `Texts` の実文字列が確認できないためプロパティ名
     /// そのままにする（従来方針）。
     private static func videoItemDescriptors(for video: VideoItem) -> [PropertyDescriptor] {
-        let access = filePathAccess(get: { video.filePath }, set: { video.filePath = $0 })
+        let pathAccess = filePathAccess(get: { video.filePath }, set: { video.filePath = $0 })
         return [
             .filePath(
                 id: "FilePath", displayName: "FilePath", group: "動画",
                 fileGroup: .video, showsThumbnail: true,
-                get: access.get, set: access.set
+                get: pathAccess.get, set: pathAccess.set
+            ),
+            // 本家では動画グループの Order 231（FilePath の後）。
+            playbackRateModeDescriptor(
+                group: "動画", access(video, \.playbackRateAudioProcessingMode)
             ),
         ]
     }
@@ -291,6 +367,7 @@ public enum ItemPropertyMetadata {
                 id: "Serif", displayName: "セリフ", group: "音声", multiline: true,
                 get: { voice.serif }, set: { voice.serif = $0 }
             ),
+            decorationsDescriptor(for: voice),
             .animation(
                 id: "Volume", displayName: "音量", group: "音声",
                 get: { voice.volume }, set: { voice.volume = $0 }
@@ -298,6 +375,30 @@ public enum ItemPropertyMetadata {
             .animation(
                 id: "Pan", displayName: "パン", group: "音声",
                 get: { voice.pan }, set: { voice.pan = $0 }
+            ),
+            // 本家 Order 161（パンの後）。グループは本家では
+            // VoiceGroupName だが、既存の音声系と同じ「音声」に置く。
+            playbackRateModeDescriptor(
+                group: "音声", access(voice, \.playbackRateAudioProcessingMode)
+            ),
+            // 本家 Order 178。表示名キーはキャラクター設定と共通の
+            // `CharacterAdditionalTimeName` =「セリフ後の余韻」。
+            // 値域は `Range` 属性どおり -100000〜100000。
+            .number(
+                id: "AdditionalTime", displayName: "セリフ後の余韻", group: "音声",
+                range: -100_000...100_000,
+                get: { voice.additionalTime }, set: { voice.additionalTime = $0 }
+            ),
+            // 本家 Order 180 / 190。値域は `Range` 属性どおり 0〜100000。
+            .number(
+                id: "VoiceFadeIn", displayName: "フェードイン", group: "音声",
+                range: 0...100_000,
+                get: { voice.voiceFadeIn }, set: { voice.voiceFadeIn = $0 }
+            ),
+            .number(
+                id: "VoiceFadeOut", displayName: "フェードアウト", group: "音声",
+                range: 0...100_000,
+                get: { voice.voiceFadeOut }, set: { voice.voiceFadeOut = $0 }
             ),
             .enumeration(
                 id: "JimakuVisibility", displayName: "字幕の設定", group: "字幕",
@@ -307,7 +408,137 @@ public enum ItemPropertyMetadata {
         ]
         result += videoDescriptors(group: "字幕", idPrefix: "Jimaku", accesses: videoAccesses(of: voice))
         result += appearanceDescriptors(group: "字幕", accesses: appearanceAccesses(of: voice))
+        result += echoDescriptors(
+            isEnabled: access(voice, \.echoIsEnabled),
+            interval: access(voice, \.echoInterval),
+            attenuation: access(voice, \.echoAttenuation)
+        )
         return result
+    }
+
+    /// セリフの部分装飾（本家 `VoiceItem.Decorations`）。
+    ///
+    /// 本家では `Display` 属性が無く、セリフのリッチテキスト編集の
+    /// 中で選択範囲へ装飾を適用して編集する。Mac にはリッチテキスト
+    /// 編集部品が無いため、本単位では編集経路をインスペクタの
+    /// コレクション記述子で提供する（要素の追加・削除と項目別編集）。
+    /// セリフの直後に置くのは、本家で装飾がセリフ編集の一部である
+    /// ことに対応する。
+    ///
+    /// 子記述子へ出すのは非オプショナルの項目のみとする。
+    /// `Foreground` / `DecorationColor`（`Color?`）と
+    /// `CharacterSpacing`（`Double?`）/ `StyleType`（`Int?`）は
+    /// 「未指定」を表す手段が記述子の種別に無いため出さない。
+    /// これらは編集対象外として保持され、他の項目の編集で消える
+    /// ことはない（子記述子は要素の項目単位で読み書きする）。
+    /// `Font` は空文字列を未指定（nil）として橋渡しする
+    /// （ファイル参照の空文字列への寄せと同じ扱い）。
+    /// 表示名は `VoiceItem*Name` に根拠があるもの（太字・
+    /// イタリック・下線・打ち消し線・フォント）はその文言を使い、
+    /// 根拠が無いものはプロパティ名そのままにする。
+    private static func decorationsDescriptor(for voice: VoiceItem) -> PropertyDescriptor {
+        .collection(
+            id: "Decorations", displayName: "Decorations", group: "音声",
+            count: { voice.decorations.count },
+            elements: { index in decorationChildren(of: voice, at: index) },
+            insert: {
+                voice.decorations.append(TextDecoration(start: 0, length: 0))
+                return true
+            },
+            remove: { index in
+                guard voice.decorations.indices.contains(index) else { return false }
+                voice.decorations.remove(at: index)
+                return true
+            }
+        )
+    }
+
+    private static func decorationChildren(
+        of voice: VoiceItem, at index: Int
+    ) -> [PropertyDescriptor] {
+        guard voice.decorations.indices.contains(index) else { return [] }
+        let group = "音声"
+        // 要素は値型のため、読み書きは位置経由で行う。削除と競合して
+        // 位置が無効になった読み取りは既定値、書き込みは何もしない。
+        func read<T>(_ keyPath: KeyPath<TextDecoration, T>, fallback: T) -> T {
+            voice.decorations.indices.contains(index)
+                ? voice.decorations[index][keyPath: keyPath] : fallback
+        }
+        func write<T>(_ keyPath: WritableKeyPath<TextDecoration, T>, _ newValue: T) {
+            guard voice.decorations.indices.contains(index) else { return }
+            voice.decorations[index][keyPath: keyPath] = newValue
+        }
+        return [
+            .integer(
+                id: "Start", displayName: "Start", group: group,
+                get: { read(\.start, fallback: 0) }, set: { write(\.start, $0) }
+            ),
+            .integer(
+                id: "Length", displayName: "Length", group: group,
+                get: { read(\.length, fallback: 0) }, set: { write(\.length, $0) }
+            ),
+            .boolean(
+                id: "IsBold", displayName: "太字", group: group,
+                get: { read(\.isBold, fallback: false) }, set: { write(\.isBold, $0) }
+            ),
+            .boolean(
+                id: "IsItalic", displayName: "イタリック", group: group,
+                get: { read(\.isItalic, fallback: false) }, set: { write(\.isItalic, $0) }
+            ),
+            .number(
+                id: "Scale", displayName: "Scale", group: group,
+                get: { read(\.scale, fallback: 1) }, set: { write(\.scale, $0) }
+            ),
+            .text(
+                id: "Font", displayName: "フォント", group: group,
+                get: { read(\.font, fallback: nil) ?? "" },
+                set: { write(\.font, $0.isEmpty ? nil : $0) }
+            ),
+            .boolean(
+                id: "IsLineBreak", displayName: "IsLineBreak", group: group,
+                get: { read(\.isLineBreak, fallback: false) }, set: { write(\.isLineBreak, $0) }
+            ),
+            .number(
+                id: "OffsetX", displayName: "OffsetX", group: group,
+                get: { read(\.offsetX, fallback: 0) }, set: { write(\.offsetX, $0) }
+            ),
+            .number(
+                id: "OffsetY", displayName: "OffsetY", group: group,
+                get: { read(\.offsetY, fallback: 0) }, set: { write(\.offsetY, $0) }
+            ),
+            .boolean(
+                id: "IsAbsoluteX", displayName: "IsAbsoluteX", group: group,
+                get: { read(\.isAbsoluteX, fallback: false) }, set: { write(\.isAbsoluteX, $0) }
+            ),
+            .boolean(
+                id: "IsAbsoluteY", displayName: "IsAbsoluteY", group: group,
+                get: { read(\.isAbsoluteY, fallback: false) }, set: { write(\.isAbsoluteY, $0) }
+            ),
+            .number(
+                id: "RotationZ", displayName: "RotationZ", group: group,
+                get: { read(\.rotationZ, fallback: 0) }, set: { write(\.rotationZ, $0) }
+            ),
+            .boolean(
+                id: "IsStrikethrough", displayName: "打ち消し線", group: group,
+                get: { read(\.isStrikethrough, fallback: false) },
+                set: { write(\.isStrikethrough, $0) }
+            ),
+            .boolean(
+                id: "IsUnderline", displayName: "下線", group: group,
+                get: { read(\.isUnderline, fallback: false) },
+                set: { write(\.isUnderline, $0) }
+            ),
+            .integer(
+                id: "RotationGroupId", displayName: "RotationGroupId", group: group,
+                get: { read(\.rotationGroupId, fallback: 0) },
+                set: { write(\.rotationGroupId, $0) }
+            ),
+            .integer(
+                id: "PositionGroupId", displayName: "PositionGroupId", group: group,
+                get: { read(\.positionGroupId, fallback: 0) },
+                set: { write(\.positionGroupId, $0) }
+            ),
+        ]
     }
 
     // MARK: - TextItem 固有
@@ -537,6 +768,10 @@ public enum ItemPropertyMetadata {
         (.vTopLeft, "縦書 上揃え　[左]"), (.vCenterLeft, "縦書 中央揃え[左]"),
         (.vBottomLeft, "縦書 下揃え　[左]"),
     ] as [(BasePoint, String)])
+
+    private static let playbackRateModeOptions = options([
+        (.resampling, "リサンプリング / 音程変化"), (.sola, "SOLA / 音程維持"),
+    ] as [(PlaybackRateAudioProcessingMode, String)])
 
     private static let jimakuVisibilityOptions = options([
         (.useCharacterSetting, "キャラクターの設定に従う"), (.visible, "表示"),
