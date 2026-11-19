@@ -128,4 +128,76 @@ public final class Timeline {
         guard let targets else { return }
         selectedItems = targets
     }
+
+    /// 単一アイテムだけを選択する。本家 `SelectItem`。
+    public func selectItem(_ target: BaseItem) {
+        selectItems([target])
+    }
+
+    /// アイテムの選択状態を反転する。本家 `ToggleSelectionStatus`。
+    /// 等価は参照同一性で判定する。
+    public func toggleSelectionStatus(_ target: BaseItem) {
+        if selectedItems.contains(where: { $0 === target }) {
+            selectedItems.removeAll { $0 === target }
+        } else {
+            selectedItems.append(target)
+        }
+    }
+
+    /// 現在の選択先頭（アンカー）から対象アイテムまでの範囲を選択する。
+    /// 本家 `SelectBetweenItems(IItem)`。
+    ///
+    /// 範囲は「アンカーと対象の開始フレームの小さい方」から
+    /// 「後ろ側にある方の終了フレーム」まで、レイヤーは両者の最小〜最大。
+    /// 範囲内のアイテム（レイヤーが範囲内で、区間と重なるもの）が
+    /// アンカー→中間（Items の順）→対象の順で選択になる。
+    /// 選択が空なら対象だけを選択する。
+    public func selectBetweenItems(to target: BaseItem) {
+        guard let anchor = selectedItems.first else {
+            selectItems([target])
+            return
+        }
+        let fromFrame = min(anchor.frame, target.frame)
+        let toFrame = anchor.frame < target.frame
+            ? target.frame + target.length
+            : anchor.frame + anchor.length
+        let fromLayer = min(anchor.layer, target.layer)
+        let toLayer = max(anchor.layer, target.layer)
+        selectBetweenItems(
+            fromFrame: fromFrame, fromLayer: fromLayer,
+            toFrame: toFrame, toLayer: toLayer,
+            fromItem: anchor, toItem: target
+        )
+    }
+
+    /// フレーム×レイヤーの矩形範囲を選択する。
+    /// 本家 `SelectBetweenItems(int, int, int, int)`（範囲選択ドラッグの
+    /// 確定時にビューから呼ばれる形）。
+    public func selectBetweenItems(
+        fromFrame: Int, fromLayer: Int, toFrame: Int, toLayer: Int
+    ) {
+        selectBetweenItems(
+            fromFrame: fromFrame, fromLayer: fromLayer,
+            toFrame: toFrame, toLayer: toLayer,
+            fromItem: nil, toItem: nil
+        )
+    }
+
+    /// 範囲選択の本体。本家 `SelectBetweenItems`（private）。
+    /// fromItem / toItem は範囲の内外によらず先頭と末尾へ無条件に含める。
+    private func selectBetweenItems(
+        fromFrame: Int, fromLayer: Int, toFrame: Int, toLayer: Int,
+        fromItem: BaseItem?, toItem: BaseItem?
+    ) {
+        var result: [BaseItem] = []
+        if let fromItem { result.append(fromItem) }
+        for item in items where item !== fromItem && item !== toItem {
+            if fromLayer <= item.layer && item.layer <= toLayer
+                && item.intersectsWith(frame: fromFrame, length: toFrame - fromFrame) {
+                result.append(item)
+            }
+        }
+        if let toItem { result.append(toItem) }
+        selectItems(result)
+    }
 }

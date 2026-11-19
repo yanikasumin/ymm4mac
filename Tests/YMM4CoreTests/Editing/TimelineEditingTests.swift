@@ -362,4 +362,95 @@ final class TimelineEditingTests: XCTestCase {
             8
         )
     }
+
+    // MARK: - 選択ヘルパ（本家 SelectItem / ToggleSelectionStatus / SelectBetweenItems）
+
+    func testSelectItemAndToggleSelectionStatus() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 0, length: 10, layer: 0)
+        let b = makeItem(frame: 20, length: 10, layer: 0)
+        timeline.items = [a, b]
+        timeline.selectItem(a)
+        XCTAssertEqual(timeline.selectedItems.count, 1)
+        XCTAssertTrue(timeline.selectedItems.first === a)
+        timeline.toggleSelectionStatus(b)
+        XCTAssertEqual(timeline.selectedItems.count, 2)
+        timeline.toggleSelectionStatus(a)
+        XCTAssertEqual(timeline.selectedItems.count, 1)
+        XCTAssertTrue(timeline.selectedItems.first === b)
+    }
+
+    /// アンカー（選択先頭）から対象までの矩形内が選択になる。
+    /// 並びはアンカー→中間（Items の順）→対象。
+    func testSelectBetweenItemsToItem() {
+        let timeline = Timeline()
+        let anchor = makeItem(frame: 0, length: 10, layer: 0)
+        let middle = makeItem(frame: 15, length: 10, layer: 1)
+        let outside = makeItem(frame: 15, length: 10, layer: 3)
+        let target = makeItem(frame: 30, length: 10, layer: 1)
+        timeline.items = [anchor, middle, outside, target]
+        timeline.selectItem(anchor)
+        timeline.selectBetweenItems(to: target)
+        XCTAssertEqual(timeline.selectedItems.count, 3)
+        XCTAssertTrue(timeline.selectedItems[0] === anchor)
+        XCTAssertTrue(timeline.selectedItems[1] === middle)
+        XCTAssertTrue(timeline.selectedItems[2] === target)
+    }
+
+    /// 選択が空なら対象だけが選択になる（本家 SelectBetweenItems の頭）。
+    func testSelectBetweenItemsWithEmptySelection() {
+        let timeline = Timeline()
+        let target = makeItem(frame: 30, length: 10, layer: 1)
+        timeline.items = [target]
+        timeline.selectBetweenItems(to: target)
+        XCTAssertEqual(timeline.selectedItems.count, 1)
+        XCTAssertTrue(timeline.selectedItems.first === target)
+    }
+
+    /// 矩形（フレーム×レイヤー）版: レイヤー範囲外と区間外は入らない。
+    func testSelectBetweenItemsRect() {
+        let timeline = Timeline()
+        let inside = makeItem(frame: 12, length: 5, layer: 1)
+        let layerOut = makeItem(frame: 12, length: 5, layer: 2)
+        let frameOut = makeItem(frame: 40, length: 5, layer: 1)
+        timeline.items = [inside, layerOut, frameOut]
+        timeline.selectBetweenItems(fromFrame: 10, fromLayer: 0, toFrame: 20, toLayer: 1)
+        XCTAssertEqual(timeline.selectedItems.count, 1)
+        XCTAssertTrue(timeline.selectedItems.first === inside)
+    }
+
+    // MARK: - 複製（本家 UnsafeCloneWithoutCollision）
+
+    /// 複製は同じ位置に増え、選択は元の側に残り、グループは再発行される。
+    func testUnsafeCloneWithoutCollision() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 10, length: 20, layer: 1, group: 5)
+        let b = makeItem(frame: 40, length: 20, layer: 1, group: 5)
+        let other = makeItem(frame: 100, length: 10, layer: 0)
+        timeline.items = [a, b, other]
+        timeline.selectItem(a)
+        timeline.unsafeCloneWithoutCollision()
+        XCTAssertEqual(timeline.items.count, 5)
+        // 選択は元の2つのまま（複製は選択されない）
+        XCTAssertEqual(timeline.selectedItems.count, 1)
+        XCTAssertTrue(timeline.selectedItems.first === a)
+        let clones = timeline.items.filter { $0 !== a && $0 !== b && $0 !== other }
+        XCTAssertEqual(clones.count, 2)
+        // 複製は元の位置・レイヤー・長さを保つ
+        XCTAssertTrue(clones.contains(where: { $0.frame == 10 && $0.layer == 1 && $0.length == 20 }))
+        XCTAssertTrue(clones.contains(where: { $0.frame == 40 && $0.layer == 1 && $0.length == 20 }))
+        // グループは元の 5 とは別の新しい ID で、複製同士は同じ ID
+        XCTAssertNotEqual(clones[0].group, 0)
+        XCTAssertNotEqual(clones[0].group, 5)
+        XCTAssertEqual(clones[0].group, clones[1].group)
+        XCTAssertEqual(a.group, 5)
+    }
+
+    /// 選択が空なら何も増えない。
+    func testUnsafeCloneWithoutCollisionEmptySelection() {
+        let timeline = Timeline()
+        timeline.items = [makeItem(frame: 0, length: 10, layer: 0)]
+        timeline.unsafeCloneWithoutCollision()
+        XCTAssertEqual(timeline.items.count, 1)
+    }
 }
