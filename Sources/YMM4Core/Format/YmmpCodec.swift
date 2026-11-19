@@ -135,46 +135,17 @@ public enum YmmpCodec {
             }
         }
         project.loadOldTimeline(legacyTimeline: legacyTimeline)
-        resolveCharacterReferences(in: project)
+        // キャラクター参照の解決。本家では VoiceItem / TachieItem /
+        // TachieFaceItem の `Character` は [JsonIgnore] の実行時参照であり、
+        // 保存されるのは `CharacterName` だけである。そのため本家
+        // ファイルのアイテムには "Character" オブジェクトが存在せず、
+        // デコード直後は参照が未解決のままになる。読み込みの最後に、
+        // プロジェクトのキャラクター一覧から名前で引いて参照を
+        // 張り直す（MAC-0014 のレビュー制約）。規則の実体は
+        // `Project.resolveCharacterReferencesByName()`（編集後の
+        // 再解決と共通）。
+        project.resolveCharacterReferencesByName()
         return (project, diagnostics)
-    }
-
-    /// キャラクター参照の解決。本家では VoiceItem / TachieItem /
-    /// TachieFaceItem の `Character` は [JsonIgnore] の実行時参照であり、
-    /// 保存されるのは `CharacterName` だけである（VoiceItem.cs の
-    /// Character プロパティが [JsonIgnore]、CharacterName だけが保存対象）。
-    /// そのため本家ファイルのアイテムには "Character" オブジェクトが
-    /// 存在せず、デコード直後は参照が未解決のままになる。読み込みの
-    /// 最後に、プロジェクトのキャラクター一覧から名前で引いて参照を
-    /// 張り直す（MAC-0014 のレビュー制約）。名前が一致するキャラクターが
-    /// 無い場合は、デコード済みの参照（移行期の自前ファイルが埋め込む
-    /// 複製）をそのまま残す。
-    private static func resolveCharacterReferences(in project: Project) {
-        guard !project.characters.isEmpty else { return }
-        func resolve(_ characterName: String) -> Character? {
-            guard !characterName.isEmpty else { return nil }
-            return project.characters.first { $0.name == characterName }
-        }
-        for timeline in project.timelines {
-            for item in timeline.items {
-                switch item {
-                case let voice as VoiceItem:
-                    if let resolved = resolve(voice.characterName) {
-                        voice.character = resolved
-                    }
-                case let tachie as TachieItem:
-                    if let resolved = resolve(tachie.characterName) {
-                        tachie.character = resolved
-                    }
-                case let face as TachieFaceItem:
-                    if let resolved = resolve(face.characterName) {
-                        face.character = resolved
-                    }
-                default:
-                    break
-                }
-            }
-        }
     }
 
     /// ファイルからプロジェクトを読み込む。
