@@ -26,6 +26,15 @@ macOSネイティブ版 YukkuriMovieMaker 4 移植プロジェクト。
 
 **要件定義の正式な状態:** 現行の正式な開発基準は[要件定義 v1.2](https://github.com/yanikasumin/ymm4-native-research/blob/main/docs/REQUIREMENTS.md)（2026-11-16発効）。v1.1で最低対応OSをmacOS 26.0 Tahoeに確定し（CR-001）、v1.2で実装言語をSwiftに確定した（CR-002）。新たな要件変更・例外実装には引き続き本人の明示承認が必要。
 
+## ライセンス・帰属
+
+- 画面アイコン: **Material Design Icons by Pictogrammers, Apache License 2.0**。
+  @mdi/svg v7.4.47 から画面で使う分だけを抽出し、パスデータを Swift の
+  辞書へ変換した改変物として収録している（生成手順は
+  `Apps/DebugApp/Tools/generate-mdi-icons.py`）。ライセンス文は
+  `Apps/DebugApp/Resources/License/Material Design Icons.txt` に原文のまま
+  同梱し、アプリ組み立て時にバンドルへも入る。
+
 ## このリポジトリの文書
 
 - [AGENTS.md](AGENTS.md): 作業者向けの開発規則

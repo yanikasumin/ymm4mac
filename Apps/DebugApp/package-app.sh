@@ -33,6 +33,10 @@ rm -rf "$APP_PATH"
 mkdir -p "$APP_PATH/Contents/MacOS"
 cp "$BIN_PATH/$EXECUTABLE_NAME" "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME"
 cp "$SCRIPT_DIR/Info.plist" "$APP_PATH/Contents/Info.plist"
+# ライセンス文の同梱（MDI アイコンは Apache License 2.0。本家も
+# Resources/License/ に同名の文を置く形に合わせる）。
+mkdir -p "$APP_PATH/Contents/Resources"
+cp -R "$SCRIPT_DIR/Resources/License" "$APP_PATH/Contents/Resources/License"
 printf 'APPL????' > "$APP_PATH/Contents/PkgInfo"
 
 codesign --force --sign - "$APP_PATH"
