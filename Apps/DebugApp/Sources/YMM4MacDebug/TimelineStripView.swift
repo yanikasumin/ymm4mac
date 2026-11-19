@@ -58,13 +58,22 @@ struct TimelineStripView: View {
     /// 促すための受け口。
     var onEdited: () -> Void = {}
     /// ドラッグセッションの開始通知（Undo 接続単位がここへ
-    /// EditCoordinator のトランザクション開始を差す。現時点では未接続）。
-    var onDragBegan: () -> Void = {}
+    /// EditCoordinator のトランザクション開始を差す。FE-UNDO-WIRING
+    /// で ProjectView 側の記録へ接続済み）。戻り値は記録の開始可否で、
+    /// false の場合は操作層がモデル変更セッション自体を開始しない
+    /// （FE-R20-126-02）。
+    var onDragBegan: () -> Bool = { true }
     /// ドラッグセッションの確定通知。変更の有無にかかわらず1回だけ
     /// 呼ばれる（FE-R9-003。Undo 接続単位の記録接続点）。
     var onDragCommitted: () -> Void = {}
     /// ドラッグセッションのキャンセル通知（復元済みの後に1回だけ）。
     var onDragCancelled: () -> Void = {}
+    /// Undo 記録の集約点（コンテキストメニューの追加・削除・移動の
+    /// 記録に使う。nil の場合は無記録で実行する）。
+    var editRecorder: EditRecorder?
+    /// 外部（Undo/Redo の適用等）からの再評価の契機。body で読む
+    /// ことで、モデルが帯の外で変わった場合に描画へ追随させる。
+    var displayRevision: Int = 0
 
     /// スクロール位置の写し（NSScrollView が所有者で、これは報告用）。
     /// 縦グリッドの間引き・仮想化の範囲・追加位置のレイヤー決定に使う。
@@ -117,8 +126,10 @@ struct TimelineStripView: View {
             let canvasWidth = max(contentWidth, canvasViewportWidth)
             // dragRevision を読むことで、ドラッグ中のモデル変更のたびに
             // body が再評価され、コンテンツが新しい位置で描かれる。
+            // displayRevision は Undo/Redo 適用時など帯の外の変更用。
             let _ = dragRevision
             let _ = layerRevision
+            let _ = displayRevision
 
             TimelineScrollContainerRepresentable(
                 configuration: TimelineScrollConfiguration(

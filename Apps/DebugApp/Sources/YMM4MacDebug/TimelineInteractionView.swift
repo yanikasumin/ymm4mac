@@ -47,7 +47,12 @@ struct TimelineInteractionConfiguration {
     /// 再描画へ伝える通知ではない（そちらは onModelChanged の責務。
     /// FE-R11-001）。選択の変更はセッション開始前のクリック処理として
     /// この通知より前に済んでいる（スナップショットは選択変更より前に取る）。
-    var onDragBegan: () -> Void
+    /// 戻り値 false は接続側（Undo 記録）が開始を拒否したことを表し、
+    /// その場合このビューはモデル変更セッション自体を開始しない
+    /// （複製・衝突解決・移動のいずれも行わない。FE-R20-126-02）。
+    /// セッションを開始していないため、対になる終了通知
+    /// （onDragCommitted / onDragCancelled）も送らない。
+    var onDragBegan: () -> Bool
     /// セッション確定（MouseUp で1回だけ、変更の有無にかかわらず。
     /// FE-R9-003）。セッション状態の破棄より前に呼ばれる（FE-R9-002）。
     var onDragCommitted: () -> Void
@@ -249,7 +254,18 @@ final class TimelineInteractionView: NSView {
         // セッション開始の通知は、アイテムへの最初のモデル変更
         // （複製・衝突解決）より前に送る（FE-R9-002: 接続側が変更前
         // 状態を記録できる順序）。
-        configuration.onDragBegan()
+        guard configuration.onDragBegan() else {
+            // 接続側が開始を拒否した（別のトランザクションが有効で
+            // 記録を開始できない）。無記録のモデル変更を残さないため、
+            // セッション自体を開始せずに畳む（FE-R20-126-02）。
+            // クリック選択はモデル変更ではないため残してよい
+            // （本家でも選択は Undo の対象外）。スナップショットは
+            // endSession で破棄し、終了通知は送らない（開始して
+            // いないセッションの通知は接続側でも無視される契約だが、
+            // 送らないことで対の崩れ自体を無くす）。
+            endSession()
+            return
+        }
 
         // DragStart（本家 DragStartCommand）: Alt 単独なら複製し、
         // 開始値を押さえ、選択＋グループの衝突を解消する。
