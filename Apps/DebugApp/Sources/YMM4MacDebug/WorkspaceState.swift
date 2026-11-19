@@ -52,9 +52,51 @@ final class WorkspaceState: ObservableObject {
         hasUnsavedChanges = true
     }
 
+    /// 未保存の変更がある場合に破棄確認を出す（FE-R1-001）。
+    /// 本家 MainViewModel が新規作成・開く・閉じる・ウィンドウ終了の
+    /// 全てで共通に使う手順と同じ意味: 未保存なら
+    /// 保存／保存しない／キャンセルを聞き、「保存」が選ばれた場合は
+    /// 保存が成功するまで確認を繰り返す（本家は while ループ）。
+    /// 破棄してよい（または未保存でない）なら true、中止なら false。
+    /// 文言は macOS 標準の形に寄せた簡潔なものにする（本家の
+    /// ProjectFileNotSavedMessage の文言自体はリソース側で未確認）。
+    func confirmDiscardUnsavedChanges() -> Bool {
+        while hasUnsavedChanges {
+            let alert = NSAlert()
+            alert.messageText = "保存されていない変更があります"
+            alert.informativeText = "保存しない場合、変更は失われます。"
+            alert.addButton(withTitle: "保存")
+            alert.addButton(withTitle: "保存しない")
+            alert.addButton(withTitle: "キャンセル")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                save()
+            case .alertSecondButtonReturn:
+                return true
+            default:
+                return false
+            }
+        }
+        return true
+    }
+
+    /// 「開く」の入口。未保存の変更があれば破棄確認を出してから
+    /// ファイル選択ダイアログを開く。ダイアログ側でキャンセルした
+    /// 場合はプロジェクトには触らない（破棄は行われない）。
+    func requestOpenProject() {
+        guard confirmDiscardUnsavedChanges() else { return }
+        isImporterPresented = true
+    }
+
+    /// アプリ終了時の破棄確認（DebugAppDelegate）から参照する現在の
+    /// ワークスペース。単一ワークスペース前提のアプリのため生成時に
+    /// 登録する（終了確認は App の .commands からは届かない経路のため）。
+    nonisolated(unsafe) static weak var current: WorkspaceState?
+
     init() {
         project = Self.makeNewProject()
         diagnostics = YmmpLoadDiagnostics()
+        Self.current = self
     }
 
     /// 起動時・「新規プロジェクト」で使う空プロジェクト。
@@ -68,6 +110,7 @@ final class WorkspaceState: ObservableObject {
     }
 
     func newProject() {
+        guard confirmDiscardUnsavedChanges() else { return }
         project = Self.makeNewProject()
         diagnostics = YmmpLoadDiagnostics()
         sourceURL = nil

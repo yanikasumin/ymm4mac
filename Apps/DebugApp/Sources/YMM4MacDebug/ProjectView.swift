@@ -284,7 +284,12 @@ struct ProjectView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .sheet(isPresented: $isVideoSettingsPresented) {
-                    VideoSettingsView(timeline: timeline) { resetPreview() }
+                    VideoSettingsView(timeline: timeline) {
+                        // 動画情報の書き込みはモデル変更（OK で適用した
+                        // 時点で確定する）ため未保存フラグも立てる。
+                        workspace.markEdited()
+                        resetPreview()
+                    }
                 }
                 .sheet(isPresented: $isExportDialogPresented) {
                     ExportDialogView(
@@ -432,6 +437,7 @@ struct ProjectView: View {
         project.timelines.append(newTimeline)
         timelineIndex = project.timelines.count - 1
         selectedItemIndex = nil
+        workspace.markEdited()
         resetPreview()
     }
 
@@ -452,6 +458,7 @@ struct ProjectView: View {
         } else if timelineIndex >= project.timelines.count {
             timelineIndex = project.timelines.count - 1
         }
+        workspace.markEdited()
         if wasDisplayed {
             selectedItemIndex = nil
             resetPreview()
@@ -492,6 +499,7 @@ struct ProjectView: View {
         guard project.timelines.indices.contains(index) else { return }
         project.timelines[index].name =
             renameText.trimmingCharacters(in: .whitespaces)
+        workspace.markEdited()
         renamingTimelineIndex = nil
     }
 
@@ -1726,6 +1734,9 @@ struct ProjectView: View {
     /// 現在フレーム・表示最上段レイヤー（GetCurrentLayer()）へ追加する。
     private func handleDroppedURLs(_ urls: [URL], timeline: Timeline) {
         if urls.count == 1, urls[0].pathExtension.lowercased() == "ymmp" {
+            // プロジェクトを開く操作と同じく、未保存の変更があれば
+            // 破棄確認を出してから読み込む（FE-R1-001）。
+            guard workspace.confirmDiscardUnsavedChanges() else { return }
             workspace.load(url: urls[0])
             return
         }
@@ -2041,7 +2052,7 @@ struct ProjectView: View {
                 workspace.newProject()
             }
             toolbarButton("folder", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.openProject, shortcut: UIStrings.Toolbar.shortcutOpen)) {
-                workspace.isImporterPresented = true
+                workspace.requestOpenProject()
             }
             toolbarButton("square.and.arrow.down", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.saveProject, shortcut: UIStrings.Toolbar.shortcutSave)) {
                 workspace.save()
@@ -2663,7 +2674,13 @@ struct ProjectView: View {
         usage: TimelineSourceUsage = .paused, modelChanged: Bool = false,
         forceModelRefresh: Bool = false
     ) {
-        if modelChanged { previewModelDirty = true }
+        if modelChanged {
+            previewModelDirty = true
+            // 編集の合流点。モデル変更を伴う全経路（各ビューの
+            // onEdited、ファイル差し替え、メニュー編集操作）がここを
+            // 通るため、未保存フラグはここで立てる（FE-R1-001）。
+            workspace.markEdited()
+        }
         if isPlayingForm {
             // 再生中はモデルに触らないため、識別子は現在設置済みの
             // もののまま（版数は再生中に上がらない）。

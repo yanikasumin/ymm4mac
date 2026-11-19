@@ -18,6 +18,21 @@ final class DebugAppDelegate: NSObject, NSApplicationDelegate {
         // 集約中の辞書保存を終了前に確定する。
         UserDictionaryStore.shared.flushPendingSave()
     }
+
+    /// 終了（ウィンドウを閉じる・⌘Q）前に未保存の変更を確認する
+    /// （FE-R1-001。本家の SaveProjectOnCloseWindowCommand 相当）。
+    /// キャンセルが選ばれた場合は終了を取り消す。
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard let workspace = WorkspaceState.current else {
+            return .terminateNow
+        }
+        let proceed = MainActor.assumeIsolated {
+            workspace.confirmDiscardUnsavedChanges()
+        }
+        return proceed ? .terminateNow : .terminateCancel
+    }
 }
 
 @main
@@ -49,7 +64,7 @@ struct YMM4MacDebugApp: App {
             CommandGroup(replacing: .newItem) {
                 Button(UIStrings.Menu.newProject) { workspace.newProject() }
                     .keyboardShortcut("n", modifiers: .command)
-                Button(UIStrings.Menu.openProject) { workspace.isImporterPresented = true }
+                Button(UIStrings.Menu.openProject) { workspace.requestOpenProject() }
                     .keyboardShortcut("o", modifiers: .command)
             }
             CommandGroup(after: .newItem) {

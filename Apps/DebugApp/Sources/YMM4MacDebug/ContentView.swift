@@ -127,7 +127,7 @@ struct ContentView: View {
                     workspace.newProject()
                 }
                 Button("ファイルを開く…") {
-                    workspace.isImporterPresented = true
+                    workspace.requestOpenProject()
                 }
             }
             if let loadError = workspace.loadError {
