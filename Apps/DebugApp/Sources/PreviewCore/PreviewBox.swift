@@ -63,6 +63,9 @@ public final class PreviewBox: PreviewRenderSession {
         // 内部合成器（シーン・合成グループ）で同じインスタンスを共有し、
         // 内部の子にも同じく効かせる（MAC-0028）。
         let effectProvider = MetalEffectPairProvider(devices: devices)
+        // デコーダ選択の基盤（Issue #70 段階3）: プレビューの映像・
+        // 口パク包絡で1つを共有する。書き出し側も同じ規則で作る。
+        let mediaSupport = FFmpegMediaSupport()
         let provider = MetalSourceProvider(
             devices: devices, baseDirectory: baseDirectory,
             sceneResolver: { id in allTimelines.first { $0.id == id } },
@@ -71,8 +74,9 @@ public final class PreviewBox: PreviewRenderSession {
             effectProvider: effectProvider,
             diagnostics: diagnostics,
             tachieVolumeEnvelopeProvider: makeLipSyncEnvelopeProvider(
-                baseDirectory: baseDirectory
-            )
+                baseDirectory: baseDirectory, mediaSupport: mediaSupport
+            ),
+            mediaSupport: mediaSupport
         )
         self.composer = TimelineComposer(
             scene: TimelineScene(timeline: timeline),

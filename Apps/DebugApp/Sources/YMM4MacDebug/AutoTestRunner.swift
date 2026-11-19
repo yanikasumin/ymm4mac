@@ -265,7 +265,8 @@ final class AutoTestJob: @unchecked Sendable {
                 devices: devices, baseDirectory: baseDirectory,
                 sceneResolver: { id in timelines.first { $0.id == id } },
                 timeline: timeline,
-                effectProvider: effectProvider
+                effectProvider: effectProvider,
+                mediaSupport: FFmpegMediaSupport()
             )
             self.composer = TimelineComposer(
                 scene: TimelineScene(timeline: timeline),
@@ -416,9 +417,8 @@ final class AutoTestJob: @unchecked Sendable {
     // MARK: - 音声
 
     private func makeAudioFactory() -> AudioSourceFactory {
-        let pcmProviderFactory = AVFoundationPCMProviderFactory(
-            baseDirectory: baseDirectory
-        )
+        let pcmProviderFactory = FFmpegMediaSupport()
+            .makePCMProviderFactory(baseDirectory: baseDirectory)
         return AudioSourceFactory(
             providerFactory: pcmProviderFactory,
             sceneTimelineResolver: { [timelines] id in
@@ -597,10 +597,9 @@ final class AutoTestJob: @unchecked Sendable {
     }
 
     private static func resolveFFmpegPath() -> String {
-        for candidate in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
-        where FileManager.default.isExecutableFile(atPath: candidate) {
-            return candidate
-        }
-        return "ffmpeg"
+        // バイナリ解決層（Issue #70 段階1）へ移行。従来の候補
+        // （Homebrew の2箇所）は開発パスとして解決順に含まれ、
+        // 見つからなければ従来どおり "ffmpeg"（PATH 探索）に倒す。
+        FFmpegBinaryResolver().resolve(tool: "ffmpeg")?.path ?? "ffmpeg"
     }
 }

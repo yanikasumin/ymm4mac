@@ -13,11 +13,17 @@ import YMM4GPU
 /// 同一性と要求世代を照合してから結果を適用する。
 ///
 /// 供給の規則は再生・プレビュー側と揃える:
-/// - 音声: 既存の PCM 供給工場（`AVFoundationPCMProviderFactory`）が
-///   返す供給元の duration（提示区間）。再生時に聞こえる長さと
-///   同じものがアイテム長になる。
+/// - 音声: 再生側と同じ合成 PCM 供給工場（Issue #70 段階3:
+///   AVFoundation → FFmpeg）が返す供給元の duration（提示区間）。
+///   再生時に聞こえる長さと同じものがアイテム長になる。
+///   AVFoundation で復号できない素材は FFmpeg 供給の長さになる
+///   （「長さだけ読めるが実際は開けない」食い違いを作らない）。
 /// - 動画: 映像トラックの提示区間（`MetalVideoSource` と同じ規則。
-///   提示区間の計算は供給工場の共有実装を使う）。
+///   提示区間の計算は供給工場の共有実装を使う）。AVFoundation で
+///   トラック自体が読めない素材は段階1の ffprobe プローブへ倒し、
+///   供給層と同じ素材情報（`MediaProbeResult.makeMediaFileInfo`）
+///   を参照する。プローブの寸法は符号化サイズであり、回転
+///   （preferredTransform）は適用されない（互換性の後続課題）。
 /// - 画像: ImageIO で寸法だけを読む（長さは持たない）。
 /// ファイルが存在しない場合は nil（呼び出し側は確定しない）。
 /// 存在するがメディアとして開けない場合は、再生時間を 0 とした
@@ -98,13 +104,22 @@ enum MediaFileInfoFetcher {
         }
     }
 
-    /// 音声は既存の PCM 供給工場経由で duration を取る。工場の生成は
-    /// 同期的に待つ実装のため、メインスレッドの外で実行する。
+    /// 音声は再生側と同じ合成 PCM 供給工場経由で duration を取る。
+    /// 工場の生成は同期的に待つ実装のため、メインスレッドの外で
+    /// 実行する。台帳（MediaAvailabilityRegistry）は再生側の基盤が
+    /// 持つため、ここでは記録先なしで工場を組み立てる。
     private static func fetchAudio(
         path: String, audioTrackIndex: Int, baseDirectory: URL
     ) async -> MediaFileInfo {
         let duration = await Task.detached { () -> TimeSpanValue in
-            let factory = AVFoundationPCMProviderFactory(baseDirectory: baseDirectory)
+            let factory = CompositePCMProviderFactory(
+                primary: AVFoundationPCMProviderFactory(baseDirectory: baseDirectory),
+                fallback: FFmpegPCMProviderFactory(
+                    baseDirectory: baseDirectory,
+                    resolution: FFmpegBinaryResolver().resolveAll(),
+                    registry: nil
+                )
+            )
             return factory.createProvider(
                 filePath: path, audioTrackIndex: audioTrackIndex
             )?.duration ?? .zero
@@ -113,11 +128,12 @@ enum MediaFileInfoFetcher {
     }
 
     /// 動画は映像トラックの提示区間と、変換行列を適用した寸法を取る。
+    /// トラックが読めない場合は ffprobe プローブへ倒す。
     private static func fetchVideo(url: URL) async -> MediaFileInfo {
         let asset = AVURLAsset(url: url)
         guard let track = try? await asset.loadTracks(withMediaType: .video).first
         else {
-            return MediaFileInfo(duration: .zero)
+            return probeFallback(url: url)
         }
         let timeRange = (try? await track.load(.timeRange)) ?? .invalid
         let segments = (try? await track.load(.segments)) ?? []
@@ -140,6 +156,23 @@ enum MediaFileInfoFetcher {
             width: width > 0 ? width : nil,
             height: height > 0 ? height : nil
         )
+    }
+
+    /// AVFoundation でトラックが読めない素材の情報を ffprobe の
+    /// プローブから取る（供給層と同じ素材情報）。長さが確定できない
+    /// 場合は従来どおり再生時間 0 の情報へ倒す（本家で開けない素材の
+    /// ContentLength 0 と同じ扱い）。
+    private static func probeFallback(url: URL) -> MediaFileInfo {
+        let resolution = FFmpegBinaryResolver().resolveAll()
+        guard let ffprobe = resolution.ffprobe,
+              let probe = try? FFmpegProber().probe(
+                  path: url.path, ffprobePath: ffprobe.path
+              ),
+              let info = probe.makeMediaFileInfo()
+        else {
+            return MediaFileInfo(duration: .zero)
+        }
+        return info
     }
 
     /// 画像は寸法だけを読む。読めなくてもファイルが存在する以上は
