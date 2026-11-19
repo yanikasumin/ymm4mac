@@ -490,6 +490,15 @@ struct AnimationRowView: View {
     var onEdited: () -> Void
     var editRecorder: EditRecorder?
     var editTarget: EditTargetKey?
+    /// 再生速度の編集セッション開始時の基点捕捉（FE-R15-004 /
+    /// FE-R27-129-03）。セッションの開始が受理された直後、最初の
+    /// 書き込みより前に呼ばれ、呼び出し側が Core の基点を返す。
+    /// 再生速度の記述子でのみ使う。
+    var onPlaybackRateSessionBegan: ((PropertyDescriptor) -> PlaybackRateEditBaseline?)?
+    /// 再生速度の編集セッション終了直前の通知（FE-R27-129-01）。
+    /// セッションを確定する前に呼ばれ、呼び出し側が編集終了時
+    /// 調整を実行して、その変更を同じセッションへ記録する。
+    var onPlaybackRateSessionEnding: ((PropertyDescriptor, PlaybackRateEditBaseline, EditSessionToken?) -> Void)?
     @State private var text: String
     @FocusState private var isFocused: Bool
     /// スライダのドラッグについての Undo セッションの状態（開始前・
@@ -510,17 +519,26 @@ struct AnimationRowView: View {
     /// 第1値の `sliderSession` とは独立に開閉し、1ドラッグを履歴
     /// 1エントリへまとめる（FE-R25-128-01）。
     @State private var movementSliderSession: EditDragSession = .idle
+    /// 再生速度の編集セッションの基点（FE-R27-129-03）。セッション
+    /// 開始時に捕捉し、この行が保持する。寿命はセッションと一致
+    /// し（開始時に捕捉、終了時に消費して破棄）、選択変更で行が
+    /// 破棄されても後続のセッションへ持ち越されない。
+    @State private var playbackRateBaseline: PlaybackRateEditBaseline?
 
     init(
         descriptor: PropertyDescriptor, animationContext: AnimationEvaluationContext,
         onEdited: @escaping () -> Void,
-        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil,
+        onPlaybackRateSessionBegan: ((PropertyDescriptor) -> PlaybackRateEditBaseline?)? = nil,
+        onPlaybackRateSessionEnding: ((PropertyDescriptor, PlaybackRateEditBaseline, EditSessionToken?) -> Void)? = nil
     ) {
         self.descriptor = descriptor
         self.animationContext = animationContext
         self.onEdited = onEdited
         self.editRecorder = editRecorder
         self.editTarget = editTarget
+        self.onPlaybackRateSessionBegan = onPlaybackRateSessionBegan
+        self.onPlaybackRateSessionEnding = onPlaybackRateSessionEnding
         let animation = descriptor.animationValue
         let value: Double
         if let animation {
@@ -595,6 +613,48 @@ struct AnimationRowView: View {
                 movementUneditedText = movementText
             }
         }
+        // 行が破棄されたら、進行中の再生速度セッションは「編集
+        // セッションの終了」として確定する（FE-R27-129-03。本家の
+        // 編集画面を閉じる際の EndEdit に相当し、基点が後続の
+        // セッションへ残らない）。プロジェクト切替でセッションが
+        // 既に破棄（巻き戻し）されている場合は、終了通知側が
+        // トークンの失効を検出して調整を行わず、こちらの確定も
+        // 空振りになる（FE-R16-002 と同じ多層防御）。
+        .onDisappear {
+            if isPlaybackRate, case .owning = sliderSession {
+                finishPlaybackRateSessionIfNeeded()
+                sliderSession.endCommitting(to: editRecorder)
+            }
+        }
+    }
+
+    /// 再生速度の記述子か。編集終了時調整（FE-R15-004）の接続は
+    /// この記述子に限る（基点捕捉の対象限定は従来どおり）。
+    private var isPlaybackRate: Bool { descriptor.id == "PlaybackRate2" }
+
+    /// 再生速度のセッション開始直後の基点捕捉。開始が受理された
+    /// 場合（自分が所有するセッションが開けた、または記録先が
+    /// 無い構成）だけ捕捉し、開始を拒否された編集では捕捉しない
+    /// （監査 Round 27 §6: 拒否された編集が基点を捕捉しては
+    /// ならない）。
+    private func capturePlaybackRateBaselineIfSessionAccepted() {
+        guard isPlaybackRate, playbackRateBaseline == nil,
+              let onPlaybackRateSessionBegan else { return }
+        guard sliderSession.token != nil || editRecorder == nil else { return }
+        playbackRateBaseline = onPlaybackRateSessionBegan(descriptor)
+    }
+
+    /// 再生速度のセッション終了直前の編集終了時調整。基点があれば
+    /// 呼び出し側へ渡して消費し、セッションの確定は呼び出し側
+    /// （ドラッグ終了・テキスト確定・行の破棄）がこの直後に行う。
+    /// 調整とその記録が速度の変更と同じ履歴エントリへ入るのは
+    /// この順序による（FE-R27-129-01）。
+    private func finishPlaybackRateSessionIfNeeded() {
+        guard isPlaybackRate, let baseline = playbackRateBaseline
+        else { return }
+        playbackRateBaseline = nil
+        onPlaybackRateSessionEnding?(
+            descriptor, baseline, sliderSession.token)
     }
 
     private var mainRow: some View {
@@ -706,10 +766,14 @@ struct AnimationRowView: View {
     /// ドラッグ全体を履歴1エントリへまとめる。開始を拒否された
     /// ドラッグは、終了まで書き込み禁止のままになる
     /// （FE-R21-126-01）。
+    /// 再生速度の行では、開始直後に基点を捕捉し、終了時は確定の
+    /// 直前に編集終了時調整を差し挟む（FE-R27-129-01 / 03）。
     private func sliderEditingChanged(_ editing: Bool) {
         if editing {
             sliderSession.begin(using: editRecorder)
+            capturePlaybackRateBaselineIfSessionAccepted()
         } else {
+            finishPlaybackRateSessionIfNeeded()
             sliderSession.endCommitting(to: editRecorder)
         }
     }
@@ -811,12 +875,42 @@ struct AnimationRowView: View {
         // 現在の再生ヘッド位置の区間ではない（R20-114-01）。
         // テキスト確定は離散編集であり、Undo セッションのトークンは
         // 持たない（他人のセッションが有効なら writeValue の入口で
-        // 拒否される）。
-        writeValue(
-            value, segment: focusedSegment ?? editingSegment, sessionToken: nil)
+        // 拒否される）。再生速度の行だけは、書き込みと編集終了時
+        // 調整を1つのセッションへまとめる専用経路を通る
+        // （FE-R27-129-01）。
+        if isPlaybackRate {
+            commitPlaybackRateText(value)
+        } else {
+            writeValue(
+                value, segment: focusedSegment ?? editingSegment,
+                sessionToken: nil)
+        }
         text = formatValue(editTargetValue)
         uneditedText = text
         onEdited()
+    }
+
+    /// 再生速度のテキスト確定（FE-R27-129-01）。値の書き込みと
+    /// 編集終了時調整が別々の履歴エントリへ分かれないよう、
+    /// 開始→基点捕捉→書き込み→終了時調整→確定を1つのセッション
+    /// として同期的に完結させる。開始が拒否された場合は書き込み
+    /// 自体を行わない（離散編集の入口拒否と同じで、モデルも
+    /// 基点も変わらない。監査 Round 27 の受け入れ試験 4）。
+    private func commitPlaybackRateText(_ value: Double) {
+        sliderSession.begin(using: editRecorder)
+        guard sliderSession.writeAllowed(recorder: editRecorder) else {
+            // 開始拒否: 記録側にセッションは開かれていないため、
+            // 状態だけを開始前へ戻す（endCancelling は所有中の
+            // 場合にだけ作用する）。
+            sliderSession.endCancelling(to: editRecorder)
+            return
+        }
+        capturePlaybackRateBaselineIfSessionAccepted()
+        writeValue(
+            value, segment: focusedSegment ?? editingSegment,
+            sessionToken: sliderSession.token)
+        finishPlaybackRateSessionIfNeeded()
+        sliderSession.endCommitting(to: editRecorder)
     }
 
     // MARK: 移動量指定の第2値（FE-R13-003）

@@ -1713,6 +1713,72 @@ struct ProjectView: View {
         }
     }
 
+    /// 再生速度の編集セッション開始時の基点捕捉（FE-R15-004 /
+    /// FE-R27-129-03）。
+    ///
+    /// 行がセッションの開始を受理した直後、最初の書き込みより
+    /// 前に呼ばれ、編集開始時点の値を Core の基点として返す。
+    /// 基点の所有は行のセッション状態へ移り、寿命がセッションと
+    /// 一致する。旧実装の ProjectView 側の辞書は、終了通知の欠落
+    /// で基点が後続セッションへ残り、符号反転を挟むと合成結果が
+    /// 誤る問題（FE-R27-129-03）のため廃止した。対象は再生速度の
+    /// 記述子だけ。
+    private func capturePlaybackRateEditBaseline(
+        descriptor: PropertyDescriptor, item: BaseItem
+    ) -> PlaybackRateEditBaseline? {
+        guard descriptor.id == "PlaybackRate2" else { return nil }
+        return item.capturePlaybackRateEditBaseline()
+    }
+
+    /// 再生速度の編集セッション終了時の調整（FE-R15-004 の
+    /// 編集終了時調整、FE-R27-129-01 / 04）。
+    ///
+    /// 行がセッションを確定する前に呼ばれ、分岐の優先判定と比率
+    /// 換算を Core（`finishPlaybackRateEdit`）で行い、長さ・
+    /// オフセットの変更を同じセッション（トークン提示）へ記録
+    /// する。これにより速度の変更と調整が履歴1エントリへ収まる。
+    /// 適用クロージャは配置値の書き戻しと同じく、書き戻しの直後
+    /// にタイムライン長のキャッシュを再計算する
+    /// （FE-R20-126-01 と同じ不変条件）。失効したトークン
+    /// （プロジェクト切替でセッションが破棄済み等）では、調整
+    /// 自体を行わない。
+    private func finishPlaybackRateEditSession(
+        descriptor: PropertyDescriptor, baseline: PlaybackRateEditBaseline,
+        token: EditSessionToken?, item: BaseItem, timeline: Timeline
+    ) {
+        guard descriptor.id == "PlaybackRate2" else { return }
+        let recorder = workspace.editRecorder
+        guard recorder.canRecordValueChange(sessionToken: token)
+        else { return }
+        let oldLength = item.length
+        let oldContentOffset = item.contentOffset
+        guard item.finishPlaybackRateEdit(
+            baseline: baseline, fps: timeline.videoInfo.fps
+        ) else { return }
+        if item.length != oldLength {
+            recorder.recordValueChange(
+                target: EditTargetKey(item, key: "Length"),
+                oldValue: oldLength, newValue: item.length,
+                apply: { value in
+                    item.length = value
+                    timeline.refreshTimelineLengthAndMaxLayer()
+                },
+                sessionToken: token)
+        }
+        if item.contentOffset != oldContentOffset {
+            recorder.recordValueChange(
+                target: EditTargetKey(item, key: "ContentOffset"),
+                oldValue: oldContentOffset, newValue: item.contentOffset,
+                apply: { value in
+                    item.contentOffset = value
+                    timeline.refreshTimelineLengthAndMaxLayer()
+                },
+                sessionToken: token)
+        }
+        timeline.refreshTimelineLengthAndMaxLayer()
+        requestPreviewRender(modelChanged: true)
+    }
+
     /// インスペクタでのファイル差し替え（FE-R1-043）。
     ///
     /// 通知は記述子が新しいパスを書き込むより前に届くため、ここで
@@ -2939,7 +3005,16 @@ struct ProjectView: View {
                         applyFileChange(item: item, newPath: newPath, timeline: timeline)
                     },
                     editRecorder: workspace.editRecorder,
-                    editTargetOwner: item
+                    editTargetOwner: item,
+                    onPlaybackRateSessionBegan: { descriptor in
+                        capturePlaybackRateEditBaseline(
+                            descriptor: descriptor, item: item)
+                    },
+                    onPlaybackRateSessionEnding: { descriptor, baseline, token in
+                        finishPlaybackRateEditSession(
+                            descriptor: descriptor, baseline: baseline,
+                            token: token, item: item, timeline: timeline)
+                    }
                 )
                 EffectInspectorView(
                     item: item,

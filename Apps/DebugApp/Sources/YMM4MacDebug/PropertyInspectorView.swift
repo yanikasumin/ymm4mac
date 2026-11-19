@@ -30,6 +30,16 @@ struct PropertyInspectorView: View {
     /// 複合の子記述子では最上位の所有者を保ち、キー文字列側に
     /// 経路（親記述子 ID とコレクション位置）を積んで区別する。
     var editTargetOwner: AnyObject? = nil
+    /// 再生速度の編集セッション開始時の基点捕捉（FE-R15-004 /
+    /// FE-R27-129-03）。行がセッションの開始を受理した直後、最初
+    /// の書き込みより前に呼ばれ、呼び出し側が Core の基点を返す。
+    /// 基点の所有は行のセッション状態へ移る。
+    var onPlaybackRateSessionBegan: ((PropertyDescriptor) -> PlaybackRateEditBaseline?)?
+    /// 再生速度の編集セッション終了直前の通知（FE-R27-129-01）。
+    /// 行がセッションを確定する前に呼ばれ、呼び出し側が編集
+    /// 終了時調整を実行して、その変更（長さ・オフセット）を
+    /// 同じセッションへ記録する。
+    var onPlaybackRateSessionEnding: ((PropertyDescriptor, PlaybackRateEditBaseline, EditSessionToken?) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -47,7 +57,9 @@ struct PropertyInspectorView: View {
                             onFilePathChanged: onFilePathChanged,
                             editRecorder: editRecorder,
                             editTargetOwner: editTargetOwner,
-                            editTargetKeyPath: ""
+                            editTargetKeyPath: "",
+                            onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
+                            onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
                         )
                     }
                 }
@@ -68,6 +80,8 @@ private struct PropertyRowView: View {
     var editTargetOwner: AnyObject? = nil
     /// 対象キーの経路部分（複合の親記述子 ID を積んだもの）。
     var editTargetKeyPath: String = ""
+    var onPlaybackRateSessionBegan: ((PropertyDescriptor) -> PlaybackRateEditBaseline?)?
+    var onPlaybackRateSessionEnding: ((PropertyDescriptor, PlaybackRateEditBaseline, EditSessionToken?) -> Void)?
 
     /// この行の値変更の対象キー。記録先が無い場合は nil。
     private var editTarget: EditTargetKey? {
@@ -87,7 +101,9 @@ private struct PropertyRowView: View {
                 onFilePathChanged: onFilePathChanged,
                 editRecorder: editRecorder,
                 editTargetOwner: editTargetOwner,
-                editTargetKeyPath: editTargetKeyPath
+                editTargetKeyPath: editTargetKeyPath,
+                onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
+                onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
             )
         case .collection:
             CollectionRowView(
@@ -97,7 +113,9 @@ private struct PropertyRowView: View {
                 onFilePathChanged: onFilePathChanged,
                 editRecorder: editRecorder,
                 editTargetOwner: editTargetOwner,
-                editTargetKeyPath: editTargetKeyPath
+                editTargetKeyPath: editTargetKeyPath,
+                onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
+                onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
             )
         default:
             HStack(alignment: .center, spacing: 8) {
@@ -177,7 +195,9 @@ private struct PropertyRowView: View {
             AnimationRowView(
                 descriptor: descriptor, animationContext: animationContext,
                 onEdited: onEdited,
-                editRecorder: editRecorder, editTarget: editTarget
+                editRecorder: editRecorder, editTarget: editTarget,
+                onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
+                onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
             )
         case .object, .collection:
             // body 側で専用レイアウトへ振り分けるため、ここには来ない。
@@ -195,6 +215,8 @@ private struct ObjectRowView: View {
     var editRecorder: EditRecorder? = nil
     var editTargetOwner: AnyObject? = nil
     var editTargetKeyPath: String = ""
+    var onPlaybackRateSessionBegan: ((PropertyDescriptor) -> PlaybackRateEditBaseline?)?
+    var onPlaybackRateSessionEnding: ((PropertyDescriptor, PlaybackRateEditBaseline, EditSessionToken?) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -210,7 +232,9 @@ private struct ObjectRowView: View {
                         onFilePathChanged: onFilePathChanged,
                         editRecorder: editRecorder,
                         editTargetOwner: editTargetOwner,
-                        editTargetKeyPath: editTargetKeyPath + descriptor.id + "/"
+                        editTargetKeyPath: editTargetKeyPath + descriptor.id + "/",
+                        onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
+                        onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
                     )
                 }
             }
@@ -232,6 +256,8 @@ private struct CollectionRowView: View {
     var editRecorder: EditRecorder? = nil
     var editTargetOwner: AnyObject? = nil
     var editTargetKeyPath: String = ""
+    var onPlaybackRateSessionBegan: ((PropertyDescriptor) -> PlaybackRateEditBaseline?)?
+    var onPlaybackRateSessionEnding: ((PropertyDescriptor, PlaybackRateEditBaseline, EditSessionToken?) -> Void)?
     @State private var revision = 0
 
     var body: some View {
@@ -272,7 +298,9 @@ private struct CollectionRowView: View {
                                 editRecorder: editRecorder,
                                 editTargetOwner: editTargetOwner,
                                 editTargetKeyPath:
-                                    editTargetKeyPath + descriptor.id + "[\(index)]/"
+                                    editTargetKeyPath + descriptor.id + "[\(index)]/",
+                                onPlaybackRateSessionBegan: onPlaybackRateSessionBegan,
+                                onPlaybackRateSessionEnding: onPlaybackRateSessionEnding
                             )
                         }
                     }
