@@ -90,10 +90,14 @@ public final class MetalAlphaMaskEffect: AlphaMaskEffect {
             registerTransparent(bounds: source.bounds)
             return
         }
-        if context.devices.image(for: input1) == nil, input1.label == "flood" {
-            // 「直前の画像」が無い場合に合成器が渡す "flood" トークンは、
+        if context.devices.image(for: input1) == nil, input1.role == .floodSubstitute {
+            // 「直前の画像」が無い場合に合成器が渡す Flood 代替トークンは、
             // 本家 TimelineSource がコンストラクタで作る不透明な白の
-            // Flood 出力に対応する（B-2(i)）。全面不透明な白のマスクに
+            // Flood 出力に対応する（B-2(i)）。素性はラベルではなく役割で
+            // 識別する（ラベルはデバッグ専用で意味論に使わない）。
+            // 実体が未登録であることも条件に含める: 役割はトークンの
+            // 素性、未登録は実体が無いことの確認であり、役割が違う。
+            // 全面不透明な白のマスクに
             // よる AlphaMask は恒等変換（出力 = 入力そのもの）である
             // ため、本体画像をそのまま出力として登録する。1×1 の白
             // テクスチャを経由する形は、サンプラの境界処理で全面が
