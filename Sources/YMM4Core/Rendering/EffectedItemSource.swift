@@ -348,6 +348,12 @@ public final class EffectedItemSource {
 
     /// 合成済みの出力。初回 Update の完了までは nil。
     public private(set) var output: ImageReference?
+    /// 直近の合成で、内容が描画先へ実際に描かれたか。出力が0件で
+    /// 透明な 1×1 矩形の代替描画だけが行われた場合と、全出力の画像が
+    /// 無かった場合は false になる。出力トークン自体は代替描画でも
+    /// 存在するため、「描画出力のあるアイテム」かどうかはこの値で
+    /// 判定する（FE-R1-023-A の当たり判定用データの材料）。
+    public private(set) var hasDrawnContent = false
     /// 先頭出力の描画変換。出力が0件なら空の描画変換（本家
     /// CreateEmptyDrawDescription 相当）。
     public private(set) var drawDescription: DrawDescription = .empty
@@ -437,6 +443,7 @@ public final class EffectedItemSource {
         effectedOutputs = []
         source.dispose()
         output = nil
+        hasDrawnContent = false
     }
 
     private func updateEffects(_ description: TimelineItemSourceDescription) throws {
@@ -475,6 +482,7 @@ public final class EffectedItemSource {
 
         let target = targetFactory.makeTarget()
         target.beginDraw()
+        var drewContent = false
         if effectedOutputs.isEmpty {
             // 出力が0件でも Output は有効な参照を返す（透明な 1x1 矩形）。
             target.fillRect(RectF(left: 0, top: 0, right: 1, bottom: 1), color: .transparent)
@@ -483,9 +491,11 @@ public final class EffectedItemSource {
                 let image = applyItemTransform ? effectedOutput.output : effectedOutput.preRenderOutput
                 if let image {
                     target.drawImage(image)
+                    drewContent = true
                 }
             }
         }
+        hasDrawnContent = drewContent
         target.endDraw()
         // 本家の終了順序は EndDraw → Close → ターゲット解除（FrameBuffer 境界の
         // EndDraw → ターゲット解除 → Close とは異なる）。この層ではターゲット
