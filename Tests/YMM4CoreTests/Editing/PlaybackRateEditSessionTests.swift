@@ -362,4 +362,36 @@ final class PlaybackRateEditSessionTests: XCTestCase {
         XCTAssertEqual(fixture.item.length, 600)
         XCTAssertEqual(fixture.item.contentOffset, seconds(-12))
     }
+
+    /// 受け入れ試験 10（FE-CONTENTSEP）: エコー有効中の速度変更
+    /// では、分岐 (2) が分岐 (3) より優先され（素材長が尾の
+    /// 再計算で変わり、編集開始時点で終端が区切り上にあるため）、
+    /// 調整は同じセッションの1エントリに収まり、Undo で速度・
+    /// 長さ・素材長が一体で戻る。
+    func testEchoRateEditUsesSeparatorBranchInSameHistoryEntry() {
+        let fixture = makeFixture()
+        fixture.item.echoIsEnabled = true
+        fixture.item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        fixture.item.resetLength(fps: 30)
+        XCTAssertEqual(fixture.item.contentLength, seconds(10.6))
+        XCTAssertEqual(fixture.item.length, 318)
+
+        commitRateEdit(fixture, 200)
+        // 分岐 (3) の比率換算なら 318 × 100 / 200 = 159 になる。
+        // 分岐 (2) の決め直し（11.2 秒を 200% で適用 = 5.6 秒 =
+        // 168 フレーム）が優先する。
+        XCTAssertEqual(fixture.item.length, 168)
+        XCTAssertEqual(fixture.item.contentLength, seconds(11.2))
+        XCTAssertEqual(fixture.recorder.coordinator.history.undoCount, 1)
+
+        XCTAssertTrue(fixture.recorder.coordinator.undo())
+        XCTAssertEqual(fixture.item.playbackRate, 100)
+        XCTAssertEqual(fixture.item.length, 318)
+        XCTAssertEqual(fixture.item.contentLength, seconds(10.6))
+
+        XCTAssertTrue(fixture.recorder.coordinator.redo())
+        XCTAssertEqual(fixture.item.playbackRate, 200)
+        XCTAssertEqual(fixture.item.length, 168)
+        XCTAssertEqual(fixture.item.contentLength, seconds(11.2))
+    }
 }
