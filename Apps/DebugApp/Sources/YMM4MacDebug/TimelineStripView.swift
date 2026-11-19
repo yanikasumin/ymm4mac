@@ -59,8 +59,10 @@ struct TimelineStripView: View {
     var onEdited: () -> Void = {}
     /// ドラッグセッションの開始通知（Undo 接続単位がここへ
     /// EditCoordinator のトランザクション開始を差す。FE-UNDO-WIRING
-    /// で ProjectView 側の記録へ接続済み）。
-    var onDragBegan: () -> Void = {}
+    /// で ProjectView 側の記録へ接続済み）。戻り値は記録の開始可否で、
+    /// false の場合は操作層がモデル変更セッション自体を開始しない
+    /// （FE-R20-126-02）。
+    var onDragBegan: () -> Bool = { true }
     /// ドラッグセッションの確定通知。変更の有無にかかわらず1回だけ
     /// 呼ばれる（FE-R9-003。Undo 接続単位の記録接続点）。
     var onDragCommitted: () -> Void = {}

@@ -118,16 +118,23 @@ public final class EditRecorder {
 
     /// タイムラインの構造変更（追加・削除・移動など）を、変更前後の
     /// スナップショット差分として1トランザクションに記録する。
-    /// トランザクションを開始できない場合は変更だけを実行する
-    /// （無記録）。
-    public func recordTimelineChange(timeline: Timeline, _ body: () -> Void) {
+    ///
+    /// トランザクションを開始できない場合（別のトランザクションや
+    /// セッションが有効な間）は `body` を実行せず false を返す
+    /// （FE-R20-126-02）。「記録できない変更を無記録で実行する」と、
+    /// 変更だけがモデルに残り履歴と乖離するため、実行可否は呼び出し
+    /// 側が戻り値で判断する契約とする。実行した場合は true を返す
+    /// （実質的な変更が無く履歴エントリが作られなかった場合も、
+    /// 変更の実行自体は行われているため true）。
+    @discardableResult
+    public func recordTimelineChange(timeline: Timeline, _ body: () -> Void) -> Bool {
         guard let transaction = coordinator.beginTransaction() else {
-            body()
-            return
+            return false
         }
         let snapshot = TimelineEditSnapshot(timeline: timeline)
         body()
         snapshot.recordDiff(into: transaction, timeline: timeline)
         coordinator.commit(transaction)
+        return true
     }
 }

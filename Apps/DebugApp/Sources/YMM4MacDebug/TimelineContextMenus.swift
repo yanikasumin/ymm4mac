@@ -51,13 +51,16 @@ extension TimelineStripView {
 
     /// タイムラインの構造変更を Undo 記録つきで実行する
     /// （FE-UNDO-WIRING。記録は変更前後の差分で行う）。
-    /// 記録先が無い場合はそのまま実行する。
-    func recordTimelineEdit(_ body: () -> Void) {
+    /// 記録先が無い場合はそのまま実行する。記録を開始できない場合は
+    /// 変更を実行せず false を返し、呼び出し側は後続処理（選択の
+    /// 復元・再描画）を行わない（FE-R20-126-02）。
+    @discardableResult
+    func recordTimelineEdit(_ body: () -> Void) -> Bool {
         if let editRecorder {
-            editRecorder.recordTimelineChange(timeline: timeline, body)
-        } else {
-            body()
+            return editRecorder.recordTimelineChange(timeline: timeline, body)
         }
+        body()
+        return true
     }
 
     /// 選択中アイテムを同一性で捕捉する。削除を挟む操作では、削除前に
@@ -265,9 +268,9 @@ extension TimelineStripView {
             // 選択中アイテムと削除対象が別でも選択がずれないよう、
             // 削除前に同一性を捕捉して削除後に復元する（FE-R1-003）。
             let captured = captureSelectedItem()
-            recordTimelineEdit {
+            guard recordTimelineEdit({
                 timeline.deleteItems([item])
-            }
+            }) else { return }
             restoreSelection(of: captured)
             onEdited()
         }
@@ -288,10 +291,10 @@ extension TimelineStripView {
             timeline.selectItems([item])
             selectedItemIndex = index
         }
-        recordTimelineEdit {
+        guard recordTimelineEdit({
             timeline.moveSelectedAndGroupedItems(
                 deltaFrame: deltaFrame, deltaLayer: deltaLayer)
-        }
+        }) else { return }
         onEdited()
     }
 
@@ -331,7 +334,7 @@ extension TimelineStripView {
         // レイヤー設定（layerSettings）の付け替えも差分捕捉に含まれる
         // ため、Undo で設定側（表示名・色・表示状態）も含めて操作全体
         // が復元される（FE-R20-126-04）。
-        recordTimelineEdit {
+        guard recordTimelineEdit({
             let doomed = timeline.items.filter { $0.layer == target }
             if !doomed.isEmpty {
                 timeline.deleteItems(doomed)
@@ -342,7 +345,7 @@ extension TimelineStripView {
             timeline.layerSettings.items.removeAll { $0.layer == target }
             shiftLayerSettings { layer in layer > target ? layer - 1 : layer }
             timeline.refreshTimelineLengthAndMaxLayer()
-        }
+        }) else { return }
         restoreSelection(of: captured)
         layerRevision += 1
         onEdited()

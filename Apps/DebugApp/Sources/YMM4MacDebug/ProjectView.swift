@@ -1372,15 +1372,17 @@ struct ProjectView: View {
     // MARK: - Undo/Redo の接続（FE-UNDO-WIRING）
 
     /// タイムラインドラッグの開始通知。トランザクションを開始し、
-    /// 開始時点の写しを取る。開始が拒否された場合はこのセッション
-    /// を無記録として扱い、終了通知でも何もしない（所有の追跡は
-    /// 監査 Round 10 の接続条件）。フックの形状上、開始の拒否を
-    /// 操作層へ veto として返すことはできないため、ドラッグ自体は
-    /// 通常どおり進む（制約として実装ログに明記）。
-    private func beginTimelineDragUndo(timeline: Timeline) {
+    /// 開始時点の写しを取る。開始可否を戻り値で操作層へ返し、拒否
+    /// された場合は操作層がモデル変更セッション自体を開始しない
+    /// （FE-R20-126-02。無記録のドラッグ変更を残さない）。開始して
+    /// いないセッションの終了通知では何もしない（所有の追跡は
+    /// 監査 Round 10 の接続条件）。
+    @discardableResult
+    private func beginTimelineDragUndo(timeline: Timeline) -> Bool {
         dragUndoOwned = workspace.editRecorder.beginSession()
         dragUndoSnapshot = dragUndoOwned
             ? TimelineEditSnapshot(timeline: timeline) : nil
+        return dragUndoOwned
     }
 
     /// タイムラインドラッグの確定通知。自分が開始したセッションに
@@ -1443,17 +1445,19 @@ struct ProjectView: View {
         case .deleteSelection:
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
-            workspace.editRecorder.recordTimelineChange(timeline: timeline) {
+            // 記録を開始できない間は削除自体を実行しない
+            // （FE-R20-126-02。無記録の構造変更を残さない）。
+            guard workspace.editRecorder.recordTimelineChange(timeline: timeline, {
                 timeline.deleteSelectedAndGroupedItems()
-            }
+            }) else { return }
             selectedItemIndex = nil
             requestPreviewRender(modelChanged: true)
         case .deleteAndMoveAll:
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
-            workspace.editRecorder.recordTimelineChange(timeline: timeline) {
+            guard workspace.editRecorder.recordTimelineChange(timeline: timeline, {
                 _ = timeline.deleteAndMoveAll()
-            }
+            }) else { return }
             reflectCoreSelection(timeline)
             requestPreviewRender(modelChanged: true)
         case .groupSelection:
