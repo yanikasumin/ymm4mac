@@ -55,6 +55,27 @@ final class TimelineVerticalLineTests: XCTestCase {
         XCTAssertEqual(line.frameInterval, 30)
     }
 
+    /// FE-R35-132-02: 同じ種別への代入では、読み込んだ線オブジェクトの
+    /// 未知フィールドが維持されること。種別を変えた場合は従来どおり
+    /// 既定インスタンスへ差し替わること。
+    func testSameTypeAssignmentPreservesUnknownLineFields() {
+        var line = TimelineVerticalLine()
+        line.line = PreservedObject(.object([
+            (key: "$type", value: .string(
+                "YukkuriMovieMaker.Project.VerticalBPMLine, YukkuriMovieMaker.Plugin")),
+            (key: "BPM", value: .number(120)),
+            (key: "FutureField", value: .string("keep-me")),
+        ]))
+        XCTAssertEqual(line.lineType, .bpm)
+        line.lineType = .bpm
+        XCTAssertEqual(line.bpm, 120)
+        XCTAssertEqual(
+            line.line.value.field("FutureField")?.stringValue, "keep-me")
+        line.lineType = .frame
+        XCTAssertEqual(line.frameInterval, 30)
+        XCTAssertNil(line.line.value.field("FutureField"))
+    }
+
     // MARK: - TimeSpan 文字列変換
 
     func testTimeSpanStringConversion() {
@@ -91,6 +112,38 @@ final class TimelineVerticalLineTests: XCTestCase {
         XCTAssertEqual(
             TimelineVerticalLine.timeSpanString(fromTicks: (86_400 + 7_200) * 10_000_000),
             "1.02:00:00"
+        )
+    }
+
+    /// FE-R35-132-01: 表現できない巨大入力はトラップせず nil になる
+    /// こと。表現できる上限（Int64.max）までは従来どおり変換できる
+    /// こと。Int64.min の書式化が落ちないこと。
+    func testTimeSpanOverflowSafety() {
+        // 時の要素自体は Int64 に収まるが、tick 換算で溢れる。
+        XCTAssertNil(
+            TimelineVerticalLine.ticks(fromTimeSpanString: "999999999999:00:00"))
+        // 日数の秒換算で溢れる。
+        XCTAssertNil(
+            TimelineVerticalLine.ticks(fromTimeSpanString: "200000000000000.00:00:00"))
+        // 要素自体が Int64 に収まらない。
+        XCTAssertNil(
+            TimelineVerticalLine.ticks(fromTimeSpanString: "99999999999999999999:00:00"))
+        // Int64.max ちょうどの tick は表現できる。
+        XCTAssertEqual(
+            TimelineVerticalLine.ticks(fromTimeSpanString: "10675199.02:48:05.4775807"),
+            Int64.max
+        )
+        // Int64.min の書式化（abs のトラップ回避）。
+        XCTAssertEqual(
+            TimelineVerticalLine.timeSpanString(fromTicks: Int64.min),
+            "-10675199.02:48:05.4775808"
+        )
+        // 通常範囲の往復は従来どおり。
+        XCTAssertEqual(
+            TimelineVerticalLine.ticks(
+                fromTimeSpanString: TimelineVerticalLine.timeSpanString(
+                    fromTicks: -15_000_000)),
+            -15_000_000
         )
     }
 
@@ -209,5 +262,30 @@ final class TimelineVerticalLineTests: XCTestCase {
             pxPerFrame: 0.5
         )
         XCTAssertTrue(display.isEmpty)
+    }
+
+    /// FE-R35-132-03: 広域表示（ズーム 0.01%、可視範囲 1,000 万
+    /// フレーム）でも、間引き後の線が可視範囲の右端まで生成される
+    /// こと。候補列挙の上限で打ち切られていた従来方式では、線は
+    /// 約300万フレーム付近までしか届かなかった。
+    /// 間隔 30 フレーム × 0.0001 px = 0.003px なので、間引きは
+    /// 4^6 = 4096 本ごと（実効間隔 122,880 フレーム）になる。
+    func testDisplayLinesReachEndOfWideRange() {
+        var line = TimelineVerticalLine()
+        line.isEnabled = true
+        line.lineType = .frame
+        line.frameInterval = 30
+        line.group = 4
+        let display = line.displayLines(
+            videoInfo: videoInfo, enumerateFrom: 0, throughFrame: 10_000_000,
+            pxPerFrame: 0.0001
+        )
+        // 件数は表示線数の桁（81 本）に収まり、最後の線は右端
+        // （10,000,000 フレーム）付近まで届く。
+        XCTAssertEqual(display.count, 81)
+        XCTAssertEqual(display.first?.frame, 122_880)
+        XCTAssertEqual(display.last?.frame, 9_953_280)
+        // 間引き後の線はすべて主線。
+        XCTAssertTrue(display.allSatisfy { !$0.isSubLine })
     }
 }

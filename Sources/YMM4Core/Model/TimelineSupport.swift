@@ -88,7 +88,10 @@ public final class LayerSettings {
 ///
 /// 線そのもの（`Line`）はインタフェース型のため生 JSON で保持する。
 /// `LineType` を変えると線は種類ごとの既定インスタンスへ差し替わる
-/// （本家の setter の挙動）。
+/// （本家の setter の挙動）。ただし差し替えは種別が実際に変わる場合
+/// だけに限る — 本家の setter は無条件に差し替えるが、同じ種別への
+/// 代入で差し替えると、読み込んだ線オブジェクトの未知フィールドが
+/// 失われるため、往復保全を優先する（FE-R35-132-02）。
 public struct TimelineVerticalLine: Sendable {
     /// 補助線が有効か。
     public var isEnabled: Bool = false
@@ -112,6 +115,8 @@ public struct TimelineVerticalLine: Sendable {
             return .bpm
         }
         set {
+            // 種別が変わる場合だけ差し替える（FE-R35-132-02）。
+            guard newValue != lineType else { return }
             line = Self.defaultLine(for: newValue)
         }
     }
@@ -308,8 +313,29 @@ extension TimelineVerticalLine {
             guard let s = intPart(secondsText) else { return nil }
             seconds = s
         }
-        let totalSeconds = days * 86_400 + hours * 3_600 + minutes * 60 + seconds
-        return sign * (totalSeconds * 10_000_000 + fractionTicks)
+        // 合成と tick 換算はオーバーフローを検査して行う。各要素が
+        // Int64 に収まっていても、合計や換算結果が収まらない入力が
+        // あり、通常の整数演算では実行時トラップになる（利用者の
+        // 任意入力からアプリが異常終了し得る。FE-R35-132-01）。
+        // 表現できない入力は nil を返し、シート側のエラー表示へ戻す。
+        func term(_ value: Int64, _ factor: Int64) -> Int64? {
+            let result = value.multipliedReportingOverflow(by: factor)
+            return result.overflow ? nil : result.partialValue
+        }
+        func sum(_ lhs: Int64, _ rhs: Int64) -> Int64? {
+            let result = lhs.addingReportingOverflow(rhs)
+            return result.overflow ? nil : result.partialValue
+        }
+        guard let daySeconds = term(days, 86_400),
+              let hourSeconds = term(hours, 3_600),
+              let minuteSeconds = term(minutes, 60),
+              let partial = sum(daySeconds, hourSeconds),
+              let partial2 = sum(partial, minuteSeconds),
+              let totalSeconds = sum(partial2, seconds),
+              let totalTicks = term(totalSeconds, 10_000_000),
+              let magnitude = sum(totalTicks, fractionTicks)
+        else { return nil }
+        return sign * magnitude
     }
 
     /// tick を .NET の TimeSpan 文字列（"c" 形式）へ変換する。
@@ -317,14 +343,16 @@ extension TimelineVerticalLine {
     /// "00:00:00.5000000" と同じ形）。
     public static func timeSpanString(fromTicks ticks: Int64) -> String {
         let sign = ticks < 0 ? "-" : ""
-        let absolute = abs(ticks)
+        // abs は Int64.min でトラップするため、符号なしの大きさ
+        // （magnitude）で割り算を行う（FE-R35-132-01）。
+        let absolute = ticks.magnitude
         let totalSeconds = absolute / 10_000_000
         let fraction = absolute % 10_000_000
         let days = totalSeconds / 86_400
         let hours = (totalSeconds / 3_600) % 24
         let minutes = (totalSeconds / 60) % 60
         let seconds = totalSeconds % 60
-        func two(_ v: Int64) -> String { v < 10 ? "0\(v)" : "\(v)" }
+        func two(_ v: UInt64) -> String { v < 10 ? "0\(v)" : "\(v)" }
         var result = sign
         if days > 0 { result += "\(days)." }
         result += "\(two(hours)):\(two(minutes)):\(two(seconds))"
@@ -338,6 +366,44 @@ extension TimelineVerticalLine {
 
     // MARK: - 線の位置計算（本家 GetLineFrames / UpdateLines）
 
+    /// 線の列挙パラメータ（列挙開始位置から導いた通し番号の起点と、
+    /// 通し番号→フレームの変換）。種別が無効・間隔不正なら nil。
+    private func lineSequence(
+        videoInfo: VideoInfo, enumerateFrom: Int
+    ) -> (startIndex: Int, frameAt: (Int) -> Int)? {
+        let fps = videoInfo.fps
+        switch lineType {
+        case .frame:
+            let interval = frameInterval
+            guard interval > 0 else { return nil }
+            return (
+                startIndex: (enumerateFrom - startFrame) / interval,
+                frameAt: { $0 * interval + startFrame }
+            )
+        case .bpm:
+            let value = bpm
+            guard value > 0, fps > 0 else { return nil }
+            let beats = FrameTime.time(fromFrame: enumerateFrom - startFrame, fps: fps)
+                * value / 60
+            return (
+                startIndex: Int(beats.rounded(.down)),
+                frameAt: { FrameTime.frame(from: Double($0) * 60 / value, fps: fps) + startFrame }
+            )
+        case .time:
+            let ticks = spanTicks
+            guard ticks > 0, fps > 0 else { return nil }
+            let spanSeconds = Double(ticks) / 10_000_000
+            let spans = FrameTime.time(fromFrame: enumerateFrom - startFrame, fps: fps)
+                / spanSeconds
+            return (
+                startIndex: Int(spans.rounded(.down)),
+                frameAt: { FrameTime.frame(from: spanSeconds * Double($0), fps: fps) + startFrame }
+            )
+        case .unknown:
+            return nil
+        }
+    }
+
     /// 線を引くフレームと、その通し番号（グループ判定用）。
     /// 本家 IVerticalLine.GetLineFrames の意味論: 列挙開始位置から
     /// 導いた通し番号を起点に無限に列挙し、フレーム 0 は除き、
@@ -345,40 +411,16 @@ extension TimelineVerticalLine {
     public func lineFrames(
         videoInfo: VideoInfo, enumerateFrom: Int, throughFrame: Int
     ) -> [(index: Int, frame: Int)] {
-        let fps = videoInfo.fps
-        let startIndex: Int
-        let frameAt: (Int) -> Int
-        switch lineType {
-        case .frame:
-            let interval = frameInterval
-            guard interval > 0 else { return [] }
-            startIndex = (enumerateFrom - startFrame) / interval
-            frameAt = { $0 * interval + startFrame }
-        case .bpm:
-            let value = bpm
-            guard value > 0, fps > 0 else { return [] }
-            let beats = FrameTime.time(fromFrame: enumerateFrom - startFrame, fps: fps)
-                * value / 60
-            startIndex = Int(beats.rounded(.down))
-            frameAt = { FrameTime.frame(from: Double($0) * 60 / value, fps: fps) + startFrame }
-        case .time:
-            let ticks = spanTicks
-            guard ticks > 0, fps > 0 else { return [] }
-            let spanSeconds = Double(ticks) / 10_000_000
-            let spans = FrameTime.time(fromFrame: enumerateFrom - startFrame, fps: fps)
-                / spanSeconds
-            startIndex = Int(spans.rounded(.down))
-            frameAt = { FrameTime.frame(from: spanSeconds * Double($0), fps: fps) + startFrame }
-        case .unknown:
-            return []
-        }
+        guard let sequence = lineSequence(
+            videoInfo: videoInfo, enumerateFrom: enumerateFrom
+        ) else { return [] }
         var result: [(index: Int, frame: Int)] = []
-        var index = startIndex
+        var index = sequence.startIndex
         // 本家は無限列挙だが、異常値で暴走しないよう上限を置く。
         // 丸めで同じフレームが続く場合は、本家では同じ位置へ重ねて
         // 描かれるだけなので、連続する重複は1本にまとめる。
         for _ in 0..<100_000 {
-            let frame = frameAt(index)
+            let frame = sequence.frameAt(index)
             if frame > throughFrame { break }
             if frame != 0, result.last?.frame != frame {
                 result.append((index: index, frame: frame))
@@ -392,34 +434,67 @@ extension TimelineVerticalLine {
     /// の間引きまで含む）。線の間隔が 10px 未満なら、グループ数の
     /// 冪で通し番号を間引く（グループが1以下なら全て消える）。
     /// サブ線はグループで割り切れない通し番号の線。
+    ///
+    /// 列挙方式（FE-R35-132-03）: 間引き後の表示間隔を先に決め、
+    /// 選ばれる通し番号だけを列挙する。以前は候補を最大100,000本
+    /// 列挙してから間引いていたため、広域表示（低倍率）では候補の
+    /// 列挙が可視範囲の途中で打ち切られ、右側に線が生成されなかった。
+    /// この方式では列挙量が実際の表示線数に見合う量になる。
     public func displayLines(
         videoInfo: VideoInfo, enumerateFrom: Int, throughFrame: Int,
         pxPerFrame: Double
     ) -> [(frame: Int, isSubLine: Bool)] {
         guard isEnabled else { return [] }
-        let lines = lineFrames(
-            videoInfo: videoInfo, enumerateFrom: enumerateFrom,
-            throughFrame: throughFrame
-        )
+        guard let sequence = lineSequence(
+            videoInfo: videoInfo, enumerateFrom: enumerateFrom
+        ) else { return [] }
         func isSub(_ index: Int) -> Bool {
             group != 0 && index % group != 0
         }
-        guard lines.count >= 2 else {
-            return lines.map { (frame: $0.frame, isSubLine: isSub($0.index)) }
+        // 間引き判定は先頭2本の実間隔で行う（従来どおり）。まず
+        // フレーム 0 と連続重複を除いた先頭2本を求める。丸めで同じ
+        // フレームが長く続く異常値に備え、探索は従来の列挙上限と
+        // 同じ回数で打ち切る（その場合は従来どおり1本以下を返す）。
+        var head: [(index: Int, frame: Int)] = []
+        var index = sequence.startIndex
+        for _ in 0..<100_000 {
+            if head.count >= 2 { break }
+            let frame = sequence.frameAt(index)
+            if frame > throughFrame { break }
+            if frame != 0, head.last?.frame != frame {
+                head.append((index: index, frame: frame))
+            }
+            index += 1
         }
-        let spacing = Double(lines[1].frame - lines[0].frame) * pxPerFrame
+        guard head.count >= 2 else {
+            return head.map { (frame: $0.frame, isSubLine: isSub($0.index)) }
+        }
+        let spacing = Double(head[1].frame - head[0].frame) * pxPerFrame
         guard spacing > 0 else { return [] }
-        var selected = lines
+        var divisor = 1
         if spacing < 10 {
             guard group > 1 else { return [] }
             let n = Int((log(10 / spacing) / log(Double(group))).rounded(.up))
             if n > 0 {
-                var divisor = 1
                 for _ in 0..<n { divisor *= group }
-                selected = lines.filter { $0.index % divisor == 0 }
             }
         }
-        return selected.map { (frame: $0.frame, isSubLine: isSub($0.index)) }
+        // 選ばれる通し番号（divisor で割り切れるもの）だけを、
+        // 列挙開始位置以降の最初の該当番号から列挙する。
+        var result: [(frame: Int, isSubLine: Bool)] = []
+        var selected = sequence.startIndex
+        if divisor > 1 {
+            selected += (divisor - selected % divisor) % divisor
+        }
+        while true {
+            let frame = sequence.frameAt(selected)
+            if frame > throughFrame { break }
+            if frame != 0, result.last?.frame != frame {
+                result.append((frame: frame, isSubLine: isSub(selected)))
+            }
+            selected += divisor
+        }
+        return result
     }
 }
 
