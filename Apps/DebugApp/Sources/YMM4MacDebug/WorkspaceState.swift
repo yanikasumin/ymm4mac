@@ -212,6 +212,12 @@ final class WorkspaceState: ObservableObject {
     /// 保存先は以後このプロジェクトの読み込み元（上書き先）になる
     /// （本家 MainModel.SaveProject が保存後に ProjectFilePath を
     /// 保存先へ更新するのと同じ）。
+    ///
+    /// 別のフォルダへ保存する場合は、アイテムの相対 FilePath を
+    /// 新しいフォルダ基準へ再計算する（FE-R32-131-04）。変換は
+    /// 保存用の写しに対して行い、保存が成功した後にだけライブ
+    /// モデルへ同じ変換を反映する。保存が失敗した場合はライブ
+    /// モデルのパスも読み込み元も変わらない。
     @discardableResult
     func saveAs() -> Bool {
         let panel = NSSavePanel()
@@ -219,7 +225,22 @@ final class WorkspaceState: ObservableObject {
         panel.nameFieldStringValue =
             (sourceURL?.deletingPathExtension().lastPathComponent ?? "新規プロジェクト") + ".ymmp"
         guard panel.runModal() == .OK, let url = panel.url else { return false }
-        guard writeProject(to: url) else { return false }
+        let oldBase = sourceURL?.deletingLastPathComponent()
+        let newBase = url.deletingLastPathComponent()
+        if let oldBase, oldBase != newBase {
+            // フォルダが変わる場合だけ相対パスの再計算が要る。
+            // 写しは encode → decode の往復で作る（書き出しスナップ
+            // ショットと同じ確立した方法）。
+            guard let copy = try? YmmpCodec.decode(YmmpCodec.encode(project)).project else {
+                loadError = "保存に失敗: プロジェクトの写しを作成できませんでした"
+                return false
+            }
+            Self.rebaseFilePaths(in: copy, from: oldBase, to: newBase)
+            guard writeProject(copy, to: url) else { return false }
+            Self.rebaseFilePaths(in: project, from: oldBase, to: newBase)
+        } else {
+            guard writeProject(to: url) else { return false }
+        }
         sourceURL = url
         return true
     }
@@ -231,8 +252,14 @@ final class WorkspaceState: ObservableObject {
     /// 置き換わり、失敗時は元のファイルが残る。未保存フラグは
     /// 成功した場合だけここで解除する（失敗時は立ったまま）。
     private func writeProject(to url: URL) -> Bool {
+        writeProject(project, to: url)
+    }
+
+    /// 書き出すプロジェクトを指定できる形（別フォルダへの保存で
+    /// 相対パスを再計算した写しを書き出すため。FE-R32-131-04）。
+    private func writeProject(_ projectToWrite: Project, to url: URL) -> Bool {
         do {
-            try YmmpCodec.save(project, toFile: url.path)
+            try YmmpCodec.save(projectToWrite, toFile: url.path)
             hasUnsavedChanges = false
             statusMessage = "保存しました: \(url.path)"
             loadError = nil
@@ -241,6 +268,62 @@ final class WorkspaceState: ObservableObject {
             loadError = "保存に失敗: \(error)"
             return false
         }
+    }
+
+    // MARK: - 相対パスの再計算（FE-R32-131-04）
+
+    /// プロジェクト内の全アイテム（動画・音声・画像）の FilePath を
+    /// 旧フォルダ基準から新フォルダ基準へ付け替える。
+    static func rebaseFilePaths(in project: Project, from oldBase: URL, to newBase: URL) {
+        for timeline in project.timelines {
+            for item in timeline.items {
+                switch item {
+                case let video as VideoItem:
+                    video.filePath = video.filePath.map {
+                        rebasedFilePath($0, from: oldBase, to: newBase)
+                    }
+                case let audio as AudioItem:
+                    audio.filePath = audio.filePath.map {
+                        rebasedFilePath($0, from: oldBase, to: newBase)
+                    }
+                case let image as ImageItem:
+                    image.filePath = image.filePath.map {
+                        rebasedFilePath($0, from: oldBase, to: newBase)
+                    }
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    /// 相対パスを新しい基準フォルダへ付け替える純関数。
+    /// 読み込み時の解決規則（MediaFileInfoFetcher.resolveURL）と
+    /// 対になる: file URL 形式・絶対パス・Windows 形式のパスは
+    /// 基準に依存しないためそのまま返し、相対パスだけを旧基準で
+    /// 絶対化してから新基準で相対化する。相対化の結果が空になる
+    /// 場合は絶対パスのまま返す。
+    static func rebasedFilePath(_ path: String, from oldBase: URL, to newBase: URL) -> String {
+        guard !path.isEmpty else { return path }
+        if let url = URL(string: path), url.isFileURL { return path }
+        if path.hasPrefix("/") || path.contains("\\") { return path }
+        let absolutePath = oldBase.appendingPathComponent(path)
+            .standardizedFileURL.path
+        let basePath = newBase.standardizedFileURL.path
+        let absoluteComponents = absolutePath
+            .split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        let baseComponents = basePath
+            .split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        var commonCount = 0
+        while commonCount < min(absoluteComponents.count, baseComponents.count),
+              absoluteComponents[commonCount] == baseComponents[commonCount] {
+            commonCount += 1
+        }
+        let relativeComponents =
+            Array(repeating: "..", count: baseComponents.count - commonCount)
+            + absoluteComponents[commonCount...]
+        let relativePath = relativeComponents.joined(separator: "/")
+        return relativePath.isEmpty ? absolutePath : relativePath
     }
 }
 
