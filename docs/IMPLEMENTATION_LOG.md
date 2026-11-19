@@ -2124,3 +2124,40 @@ PR #126 の Round 21 新規指摘「失効したセッショントークンが�
 - **残る論点（本処分の範囲外として明記）**: プロジェクト切り替え後の遅延イベントのうち、トークンを提示する経路は本契約で断たれる。トークンを持たない離散編集の遅延イベントはビューの破棄（プロジェクト切り替えで画面が作り直される既存構造）に依存しており、本処分では扱っていない。
 
 検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+#### FLOOD-ROLE — Flood 代替トークンのラベル依存の解消（IMPLEMENTED、Mac 検証済み）
+
+**何を実装したか。** クリッピング（IsClippingWithObjectAbove）で「直前の画像」が無い場合に合成器が渡す白 Flood の代替トークンについて、その識別がラベル文字列に依存していた設計残件を解消した。従来は Core の `TimelineComposer`（`Sources/YMM4Core/Rendering/TimelineSource.swift`）が `ImageReference(label: "flood")` を生成し、GPU 側の `MetalAlphaMaskEffect`（`Sources/YMM4GPU/Sources/Effect/MetalAlphaMask.swift`）が `input1.label == "flood"` の文字列比較（かつ実体が未登録）で識別して、全面不透明マスク＝恒等変換として本体画像をそのまま出力へ登録していた。ラベルは `ImageReference` の契約上「デバッグ用の識別ラベル。描画内容には影響しない」はずであり、意味論がラベルに依存すると、同名ラベルを持つ別参照の誤判定と、ラベル変更による静かな破壊の余地が残る。全コードベースでラベル比較による判定はこの1箇所だけだった（他は全てデバッグ用の命名のみ）。
+
+**変更箇所。** (1) `ImageReference`（`Sources/YMM4Core/Rendering/ImageReference.swift`）に型付きの役割 `Role`（`.normal` / `.floodSubstitute`）と不変プロパティ `role` を追加し、初期化子に既定値つき引数 `role:` を加えた（既存の呼び出しは無変更で `.normal`）。契約コメントへ「役割は生成時に決まり不変である。実体を持たない代替トークンの素性は役割で識別し、ラベルでは識別しない。ラベルはデバッグ専用であり意味論の判定に使ってはならない」を明記した。(2) 合成器のトークン生成を `ImageReference(label: "flood", role: .floodSubstitute)` へ変更した（ラベル値はデバッグ用に維持）。(3) `MetalAlphaMaskEffect` の判定を `input1.role == .floodSubstitute` へ置き換えた。「実体が未登録であること」の条件は従来どおり維持している — 役割はトークンの素性、未登録は実体が無いことの確認であり、役割が違う。
+
+**方式の理由。** 合成器（TimelineComposer）はプレビュー・書き出し・シーン・合成グループで複数生成され、それぞれが自分の floodOutput を持つ。インスタンス同一性（===）による識別では生成元ごとに照合先を用意しなければならず、合成器をまたいだ識別が成立しない。役割方式ならトークンの生成元によらず判定できるため、こちらを採った。恒等解決そのもの（全面不透明な白マスクによる AlphaMask は恒等変換であり、1×1 白テクスチャ経由はサンプラの境界処理で全面が減衰するため採らない、MAC-0035 の判断）は変更していない。
+
+**本家との差分。** ユーザーから見える差は無い（内部の識別方式のみの変更）。本家は実体の白 Flood 画像を用いる点も従来どおり（こちらはトークン＋恒等解決で等価）。
+
+**検証。** Mac（同期先 ~/ymm4-work/flood-role/YMM4Mac）で実施。ルートパッケージの `swift build` 成功、DebugApp の `swift build` 成功。新規テスト7件が全合格 — Core: `ImageReferenceRoleTests` 2件（既定の役割は `.normal`、ラベルと役割の独立性）、`TimelineComposerFloodTokenTests` 2件（先行画像なしのクリッピングで合成器が役割 `.floodSubstitute` のトークンを渡すこと、先行画像がある場合は通常の役割の出力が渡ること）。GPU: `AlphaMaskFloodRoleTests` 3件（ラベル "flood"・役割通常の未登録参照は恒等経路に入らず全面透明になること、役割を持つトークンはラベルが何でも恒等経路に入り出力が本体画像そのものになること、役割を持つトークンでも実体が登録されていれば恒等経路に入らずその実体をマスクとして使うこと）。回帰: ルートパッケージの `swift test`（`--skip AudioDrift --skip AudioResamplerQuality`）で 830件・失敗0。AudioDrift は本人の省略指示により除外、AudioResamplerQuality は本単位がリサンプラへ触れていないため除外した（除外はこの2スイートのみ）。画素ハーネス `Harnesses/mac0034-harness`（MAC-0035 の検証系）は 25件全て PASS で、B2「先行画像なしのクリッピング（白 Flood で全面表示）」も被覆 4096px（64×64 全面）で合格した。ARCHITECTURE.md は、Flood トークンの受け渡しと恒等解決の記述が従来どおり実態と一致する（識別方式には言及していない）ため未更新。
+
+**PR 本文の下書き。**
+
+> ## 概要
+> Flood 代替トークンの識別をラベル文字列比較から `ImageReference` の型付き役割（`role`）へ移し、ラベル依存（設計残件）を解消する。描画結果に変化は無い。
+>
+> ## 本家根拠
+> 本家 TimelineSource がコンストラクタで作る不透明な白の Flood 出力（B-2(i)）への対応は MAC-0035 の恒等解決のままで、本変更はその識別方式のみを対象とする。
+>
+> ## 変更したシンボル
+> - `YMM4Core.ImageReference`: `Role`（`.normal` / `.floodSubstitute`）と `role` を追加。契約コメントへ役割の不変性と「ラベルを意味論に使わない」を明記。
+> - `YMM4Core.TimelineComposer`（TimelineSource.swift）: `floodOutput` の生成へ `role: .floodSubstitute` を付与。
+> - `YMM4GPU.MetalAlphaMaskEffect.materialize()`: 判定を `input1.label == "flood"` から `input1.role == .floodSubstitute` へ（実体未登録の条件は維持）。
+>
+> ## 設計判断
+> 合成器はプレビュー・書き出し・シーン・合成グループで複数生成され、それぞれが自分のトークンを持つため、インスタンス同一性ではなく役割で識別する。
+>
+> ## 実行したテスト
+> - 新規: `ImageReferenceRoleTests` 2件、`TimelineComposerFloodTokenTests` 2件、`AlphaMaskFloodRoleTests` 3件 — 全合格。
+> - ルートパッケージ `swift test --skip AudioDrift --skip AudioResamplerQuality`: 830件・失敗0。
+> - 画素ハーネス mac0034-harness: 25件全 PASS（B2 の Flood 全面表示を含む）。
+> - `swift build`（ルート／DebugApp）成功。
+>
+> ## 実装記録
+> docs/IMPLEMENTATION_LOG.md の FLOOD-ROLE 節。
