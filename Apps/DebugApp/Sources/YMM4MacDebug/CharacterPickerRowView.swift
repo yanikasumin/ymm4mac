@@ -86,7 +86,10 @@ struct CharacterPickerRowView: View {
                    !characters.contains(where: { $0.name == currentName }) {
                     Text(currentName).tag(currentName)
                 }
-                ForEach(characters, id: \.name) { character in
+                // 行の同一性はインスタンス（ObjectIdentifier）で取る。
+                // 名前は読み込み由来の重複があり得てキーにできない
+                // （選択自体は名前ベースのまま。FE-R39-133-01）。
+                ForEach(characters) { character in
                     Text(character.name).tag(character.name)
                 }
             }

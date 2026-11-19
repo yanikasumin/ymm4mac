@@ -76,7 +76,10 @@ struct SerifInputView: View {
                     .lineLimit(1)
             } else {
                 Picker("", selection: $characterName) {
-                    ForEach(characters, id: \.name) { character in
+                    // 行の同一性はインスタンス（ObjectIdentifier）で
+                    // 取る。名前は重複があり得てキーにできない
+                    // （選択自体は名前ベースのまま。FE-R39-133-01）。
+                    ForEach(characters) { character in
                         Text(character.name).tag(character.name)
                     }
                 }

@@ -18,10 +18,15 @@ extension Character: @retroactive Identifiable {}
 /// モデル上の注意: Mac 版ではキャラクターはプロジェクトが保持し、
 /// アイテムからの参照は読み込み時に名前で解決される（MAC-0015。
 /// 本家はアプリ設定側が正本で、プロジェクト側は参照中キャラクター
-/// から再構築される点が異なる）。そのため同名キャラクターが複数
-/// あると解決は先頭一致になり、この画面では重複を警告する。
-/// 名前の変更は、解決済みアイテムについては保存時に参照先の現在名
-/// が書かれるため自動で追随する（本家の getter 規則と同じ）。
+/// から再構築される点が異なる）。名前は解決のキーであるため、
+/// 編集では重複と空名を不変条件として禁止する（検証は Core の
+/// `Project.isUsableCharacterName`。FE-R39-133-01）。読み込み由来の
+/// 重複が残っている場合は解決は先頭一致になり、この画面では
+/// 警告する。名前の変更は、解決済みアイテムについては保存時に
+/// 参照先の現在名が書かれるため自動で追随する（本家の getter
+/// 規則と同じ）。一覧の変更後は未解決参照を Core の再解決で
+/// 即座に結び直し、メモリ上の状態を保存・再読込後と一致させる
+/// （FE-R39-133-03）。
 struct CharacterEditorView: View {
     let project: Project
     /// 編集が確定するたびに呼ばれる（プレビュー再合成・未保存記録）。
@@ -29,6 +34,11 @@ struct CharacterEditorView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedID: ObjectIdentifier?
+    /// 名前欄の下書き。名前は確定時に検証してからモデルへ書く
+    /// （入力途中の文字列でモデルを汚さない。FE-R39-133-01）。
+    @State private var nameDraft: String = ""
+    /// 名前下書きの持ち主（選択移動時に前の下書きを確定するため）。
+    @State private var nameDraftCharacter: Character?
     /// 参照のあるキャラクターの削除確認の対象。
     @State private var pendingDeletion: Character?
     @State private var pendingDeletionReferenceCount = 0
@@ -56,6 +66,10 @@ struct CharacterEditorView: View {
 
                 if let character = selectedCharacter {
                     characterForm(character)
+                        .onAppear { syncNameDraft(to: character) }
+                        .onChange(of: ObjectIdentifier(character)) { _, _ in
+                            syncNameDraft(to: character)
+                        }
                 } else {
                     Text("キャラクターが登録されていません。「追加」から作成できます。")
                         .foregroundStyle(.secondary)
@@ -65,8 +79,16 @@ struct CharacterEditorView: View {
 
             HStack {
                 Spacer()
-                Button("閉じる") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
+                Button("閉じる") {
+                    // 未確定の名前下書きがあれば確定を試みてから閉じる。
+                    // 無効な下書きは適用されず破棄される（モデルは
+                    // 変更されない）。
+                    if let character = selectedCharacter {
+                        commitNameDraft(for: character)
+                    }
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(12)
@@ -85,6 +107,9 @@ struct CharacterEditorView: View {
             Text(
                 "「\(character.name)」は \(pendingDeletionReferenceCount) 件のアイテムから参照されています。"
                     + "削除すると、それらのアイテムはキャラクター名だけを保持し、キャラクター設定への参照を失います。"
+                    + (hasDuplicateName(character)
+                        ? "同名のキャラクターが残っているため、参照はそちらへ移ります。"
+                        : "")
             )
         }
     }
@@ -140,8 +165,13 @@ struct CharacterEditorView: View {
             GridRow {
                 Text("名前")
                 VStack(alignment: .leading, spacing: 2) {
-                    TextField("名前", text: binding(for: character, \.name))
-                    if hasDuplicateName(character) {
+                    TextField("名前", text: $nameDraft)
+                        .onSubmit { commitNameDraft(for: character) }
+                    if let error = nameDraftError(for: character) {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    } else if hasDuplicateName(character) {
                         Text("同名のキャラクターがあります。読み込み時の参照解決は先頭の一致が使われます。")
                             .font(.caption)
                             .foregroundStyle(.orange)
@@ -213,6 +243,45 @@ struct CharacterEditorView: View {
         project.characters.contains { $0 !== character && $0.name == character.name }
     }
 
+    // MARK: - 名前の下書きと確定
+
+    /// 選択先のキャラクターへ名前下書きを切り替える。前の持ち主に
+    /// 未確定の下書きがあれば、先に確定を試みる。
+    private func syncNameDraft(to character: Character) {
+        if let owner = nameDraftCharacter, owner !== character {
+            commitNameDraft(for: owner)
+        }
+        nameDraftCharacter = character
+        nameDraft = character.name
+    }
+
+    /// 名前下書きを検証してモデルへ反映する。無効な名前（空・重複）は
+    /// 適用しない（理由は欄の下に表示される）。確定できた場合は
+    /// 未解決参照の再解決まで行う（改名後の名前を保持する未解決
+    /// アイテムが即座に結び付く。FE-R39-133-03）。
+    private func commitNameDraft(for character: Character) {
+        guard nameDraft != character.name else { return }
+        guard project.isUsableCharacterName(nameDraft, excluding: character) else {
+            return
+        }
+        character.name = nameDraft
+        project.reresolveUnresolvedCharacterReferences()
+        onEdited()
+    }
+
+    /// 未確定の下書きが無効な場合の理由（有効・未編集なら nil）。
+    private func nameDraftError(for character: Character) -> String? {
+        guard nameDraftCharacter === character, nameDraft != character.name
+        else { return nil }
+        if nameDraft.isEmpty {
+            return "名前を空にはできません。"
+        }
+        if !project.isUsableCharacterName(nameDraft, excluding: character) {
+            return "同名のキャラクターが既にあります。名前は参照解決のキーになるため重複できません。"
+        }
+        return nil
+    }
+
     // MARK: - 一覧操作
 
     private func uniqueName(base: String) -> String {
@@ -228,6 +297,9 @@ struct CharacterEditorView: View {
         let character = Character()
         character.name = uniqueName(base: "キャラクター")
         project.characters.append(character)
+        // 登録した名前を保持する未解決アイテムを即座に結び付ける
+        // （FE-R39-133-03）。
+        project.reresolveUnresolvedCharacterReferences()
         selectedID = ObjectIdentifier(character)
         onEdited()
     }
@@ -238,6 +310,7 @@ struct CharacterEditorView: View {
         copy.name = uniqueName(base: source.name + " のコピー")
         let index = project.characters.firstIndex { $0 === source } ?? project.characters.count - 1
         project.characters.insert(copy, at: index + 1)
+        project.reresolveUnresolvedCharacterReferences()
         selectedID = ObjectIdentifier(copy)
         onEdited()
     }
@@ -269,19 +342,17 @@ struct CharacterEditorView: View {
         }
     }
 
-    /// 削除の実体。参照インスタンスを持つアイテムは参照だけを外し、
-    /// 名前は実効名（参照先の現在名。保存時に書かれていた名前）を
-    /// 残す（保存・再読込後と同じ状態に揃え、失われるのは
-    /// キャラクター定義だけにする）。
+    /// 削除の実体。参照の切り離し・実効名の保持・未解決参照の
+    /// 再解決は Core の `Project.removeCharacter` が担い、メモリ上の
+    /// 状態を保存・再読込後と一致させる（同名の残存キャラクターが
+    /// あれば切り離された参照はそちらへ再接続される。
+    /// FE-R39-133-01）。ここでは選択と下書きの後始末だけを行う。
     private func deleteCharacter(_ target: Character) {
-        for timeline in project.timelines {
-            for item in timeline.items where CharacterItemAccess.supports(item) {
-                if CharacterItemAccess.character(of: item) === target {
-                    CharacterItemAccess.setCharacter(nil, name: target.name, for: item)
-                }
-            }
+        project.removeCharacter(target)
+        if nameDraftCharacter === target {
+            nameDraftCharacter = nil
+            nameDraft = ""
         }
-        project.characters.removeAll { $0 === target }
         if selectedID == ObjectIdentifier(target) {
             selectedID = project.characters.first.map { ObjectIdentifier($0) }
         }
