@@ -15,8 +15,11 @@ import YMM4Core
 ///   移動は moveSelectedAndGroupedItems、トリムは
 ///   changeSelectedAndGroupedItemsLength、吸着は getSnappedDelta を使い、
 ///   ビュー内に移動計算を複製しない。
-/// - MouseUp で確定する。確定はセッションにつき最大1回、変更があった
-///   場合だけ onDragCommitted を呼ぶ（Undo 接続単位がここへ記録を差す）。
+/// - MouseUp で確定する。確定通知はセッションにつき1回、変更の有無に
+///   かかわらず onDragCommitted を呼ぶ（FE-R9-003: 開始通知と対にする
+///   ため、無変更でも必ず終了を通知する。空の履歴は接続側が破棄できる）。
+///   通知はセッション状態（スナップショット）を破棄する前に呼ぶ
+///   （FE-R9-002: 接続側が変更前状態を参照できる順序）。
 /// - Escape／ウィンドウの非アクティブ化／対象の削除はキャンセルとして
 ///   開始時状態へ復元する。本家はキャプチャ喪失でも確定経路へ進むため、
 ///   ここは Mac 側の安全性のための意図的な逸脱（FE-R2-DESIGN 記録済み）。
@@ -36,10 +39,15 @@ struct TimelineInteractionConfiguration {
     /// 背景クリックのシーク。
     var onSeek: (Int) -> Void
     /// セッション開始（変更可能なドラッグが始まったとき、1回だけ）。
+    /// アイテムへの最初のモデル変更（複製・衝突解決）より前に呼ばれる
+    /// （FE-R9-002）。選択の変更はセッション開始前のクリック処理として
+    /// この通知より前に済んでいる（スナップショットは選択変更より前に取る）。
     var onDragBegan: () -> Void
-    /// セッション確定（変更があった場合に MouseUp で1回だけ）。
+    /// セッション確定（MouseUp で1回だけ、変更の有無にかかわらず。
+    /// FE-R9-003）。セッション状態の破棄より前に呼ばれる（FE-R9-002）。
     var onDragCommitted: () -> Void
     /// セッションのキャンセル（復元が済んだ後に1回だけ）。
+    /// セッション状態の破棄より前に呼ばれる（FE-R9-002）。
     var onDragCancelled: () -> Void
 }
 
@@ -86,6 +94,10 @@ final class TimelineInteractionView: NSView {
     private var snapshot: [ItemState] = []
     private var snapshotSelection: [BaseItem] = []
     private var hasSnapshot = false
+    /// 複数選択中のアイテムを修飾キーなしでクリックした場合の、
+    /// MouseUp 時（移動が無かったとき）の単独選択への確定先（FE-R9-005。
+    /// 本家の SelectCommand2 相当）。
+    private var clickCollapseItem: BaseItem?
     private var marqueeRect: CGRect = .zero
     private var keyMonitor: Any?
     private var resignObserver: NSObjectProtocol?
@@ -151,13 +163,14 @@ final class TimelineInteractionView: NSView {
         marqueeRect = .zero
 
         guard let hit = hitItem(at: point, timeline: timeline) else {
-            // 背景: クリックはシーク（従来の Mac 版の挙動を維持）、
-            // ドラッグへ移行したら範囲選択（本家 BeginSelectRange）。
+            // 背景: クリックはシーク、ドラッグへ移行したら範囲選択
+            // （本家 BeginSelectRange）。シークは範囲選択へ移行しなかった
+            // 場合の MouseUp で確定する（FE-R9-004: ここで即時に
+            // 再生ヘッドを動かすと、範囲選択だけのつもりでもヘッドが
+            // 動いてしまう）。
             mode = .background
             snapshotSelection = timeline.selectedItems
             hasSnapshot = false
-            let frame = Int(point.x / pxPerFrame)
-            configuration.onSeek(min(max(frame, 0), timeline.length))
             beginMonitoring()
             return
         }
@@ -170,8 +183,25 @@ final class TimelineInteractionView: NSView {
         let decided = decideMode(for: hit, at: point)
         mode = decided
 
+        // キャンセル復元は「MouseDown 前」の状態へ戻す契約のため、
+        // スナップショットはクリック選択の処理より前に取る
+        // （FE-R9-006: 選択もアイテム列の順序もこの時点のものが正）。
+        // アイテムの値・メンバーシップはこの後しばらく変わらない。
+        takeSnapshot(timeline: timeline)
+
         switch decided {
         case .move:
+            // 複数選択中の選択済みアイテムを修飾キーなしでクリックした
+            // 場合は、MouseDown では複数選択を保ち（まとめて動かせる
+            // ように）、移動の無かった MouseUp で単独選択へ確定する
+            // （FE-R9-005。本家の SelectCommand / SelectCommand2 の
+            // 使い分け）。
+            let modifiers = event.modifierFlags
+            if !modifiers.contains(.command), !modifiers.contains(.shift),
+               timeline.selectedItems.count > 1,
+               timeline.selectedItems.contains(where: { $0 === item }) {
+                clickCollapseItem = item
+            }
             applyClickSelection(item: item, event: event, timeline: timeline)
         case .resizeHead, .resizeFoot:
             // 本家は Resize 系コマンドの冒頭で未選択なら単独選択にする。
@@ -187,9 +217,10 @@ final class TimelineInteractionView: NSView {
            !timeline.selectedItems.contains(where: { $0 === item }) {
             // Command トグルで選択から外れた場合、本家では MoveCommand が
             // 「選択中のみ」という条件でドラッグ自体が成立しない。
-            // 選択変更だけを残してセッションを開始しない。
-            mode = .none
-            grabbedItem = nil
+            // 選択変更だけを残してセッションを開始しない。開始通知は
+            // まだ送っていないため、対になる終了通知も不要で、
+            // スナップショットは黙って破棄する。
+            endSession()
             return
         }
 
@@ -198,11 +229,13 @@ final class TimelineInteractionView: NSView {
             startKeyFrame = item.keyFrames.frames[keyframeIndex]
         }
 
+        // セッション開始の通知は、アイテムへの最初のモデル変更
+        // （複製・衝突解決）より前に送る（FE-R9-002: 接続側が変更前
+        // 状態を記録できる順序）。
+        configuration.onDragBegan()
+
         // DragStart（本家 DragStartCommand）: Alt 単独なら複製し、
         // 開始値を押さえ、選択＋グループの衝突を解消する。
-        // キャンセル復元は複製より前の状態へ戻すため、スナップショットは
-        // この一連の変更より前に取る。
-        takeSnapshot(timeline: timeline)
         if decided == .move || decided == .resizeHead || decided == .resizeFoot {
             let modifiers = event.modifierFlags
             if modifiers.contains(.option),
@@ -214,7 +247,6 @@ final class TimelineInteractionView: NSView {
         } else {
             grabbedStart = (item.frame, item.length, item.layer)
         }
-        configuration.onDragBegan()
         beginMonitoring()
     }
 
@@ -418,20 +450,41 @@ final class TimelineInteractionView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         switch mode {
         case .move, .resizeHead, .resizeFoot, .keyframe:
-            let changed = modelDiffersFromSnapshot(timeline: timeline)
-            endSession()
-            if changed {
-                configuration.onDragCommitted()
+            // 本家はドラッグ完了時に RefreshTimelineLengthAndMaxLayer で
+            // 長さキャッシュを再計算する。Core の移動・トリムは Expand
+            // （広げるだけ）なので、短縮方向はここで再計算しないと
+            // キャッシュが実際の最終フレームより長いまま残る
+            // （FE-R9-001。出力尺は TimelineExporter がこの長さを使う）。
+            let lengthBefore = timeline.length
+            let maxLayerBefore = timeline.maxLayer
+            timeline.refreshTimelineLengthAndMaxLayer()
+            if timeline.length != lengthBefore
+                || timeline.maxLayer != maxLayerBefore {
+                configuration.onModelChanged()
             }
+            let changed = modelDiffersFromSnapshot(timeline: timeline)
+            // 移動の無かったクリックでは、MouseDown で保留した単独選択
+            // への確定を行う（FE-R9-005）。実際にドラッグが成立した
+            // 場合は複数選択を維持する。
+            if !changed, let target = clickCollapseItem,
+               timeline.items.contains(where: { $0 === target }) {
+                timeline.selectItem(target)
+                configuration.onSelectionChanged()
+            }
+            // 確定通知は変更の有無にかかわらず必ず送る（FE-R9-003）。
+            // スナップショットを破棄する endSession より前に呼ぶ
+            // （FE-R9-002）。
+            configuration.onDragCommitted()
+            endSession()
         case .lockButton:
             if let item = grabbedItem, isInLockRect(item: item, point: point) {
                 item.isLocked.toggle()
                 configuration.onModelChanged()
-                endSession()
-                configuration.onDragCommitted()
-            } else {
-                endSession()
             }
+            // 領域外で離した場合も、開始したセッションには必ず終了を
+            // 通知する（FE-R9-003）。
+            configuration.onDragCommitted()
+            endSession()
         case .marquee:
             // 本家 CompleteSelectRange: 矩形の角をフレーム／レイヤーへ
             // 切り捨て換算し、正規化してから範囲選択を1回で確定する。
@@ -449,6 +502,10 @@ final class TimelineInteractionView: NSView {
             endSession()
             configuration.onSelectionChanged()
         case .background:
+            // 範囲選択へ移行しなかったクリックとして、シークをここで
+            // 確定する（FE-R9-004）。
+            let frame = Int(point.x / pxPerFrame)
+            configuration.onSeek(min(max(frame, 0), timeline.length))
             endSession()
         case .none:
             break
@@ -477,8 +534,9 @@ final class TimelineInteractionView: NSView {
         }
         marqueeRect = .zero
         needsDisplay = true
-        endSession()
+        // キャンセル通知もセッション状態の破棄より前に呼ぶ（FE-R9-002）。
         configuration.onDragCancelled()
+        endSession()
     }
 
     private func takeSnapshot(timeline: Timeline) {
@@ -493,19 +551,6 @@ final class TimelineInteractionView: NSView {
     }
 
     private func restoreSnapshot(timeline: Timeline) {
-        let snapshotItems = snapshot.map { $0.item }
-        let extras = timeline.items.filter {
-            candidate in !snapshotItems.contains(where: { $0 === candidate })
-        }
-        if !extras.isEmpty {
-            timeline.deleteItemsWithoutCollisionValidation(extras)
-        }
-        let missing = snapshotItems.filter {
-            candidate in !timeline.items.contains(where: { $0 === candidate })
-        }
-        if !missing.isEmpty {
-            timeline.addItems(missing)
-        }
         for state in snapshot {
             state.item.frame = state.frame
             state.item.length = state.length
@@ -513,6 +558,13 @@ final class TimelineInteractionView: NSView {
             state.item.contentOffset = TimeSpanValue(ticks: state.contentOffsetTicks)
             state.item.setKeyFrames(KeyFrames(frames: state.keyFrameFrames))
         }
+        // メンバーシップと並び順は、スナップショットのアイテム列を
+        // そのまま代入して復元する（FE-R9-006）。欠落分を末尾へ
+        // 追加し直す方式では順序が変わり、重なったアイテムの当たり
+        // 判定（items の後方優先）まで変わってしまう。items の代入に
+        // 伴う選択の掃除（didSet）は、この後の selectItems で
+        // スナップショットの選択へ戻すため問題にならない。
+        timeline.items = snapshot.map { $0.item }
         timeline.selectItems(snapshotSelection)
         timeline.refreshTimelineLengthAndMaxLayer()
     }
@@ -560,6 +612,7 @@ final class TimelineInteractionView: NSView {
         mode = .none
         grabbedItem = nil
         keyframeIndex = -1
+        clickCollapseItem = nil
         snapshot = []
         snapshotSelection = []
         hasSnapshot = false

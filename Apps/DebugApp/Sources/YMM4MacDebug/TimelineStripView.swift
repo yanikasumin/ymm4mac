@@ -60,8 +60,8 @@ struct TimelineStripView: View {
     /// ドラッグセッションの開始通知（Undo 接続単位がここへ
     /// EditCoordinator のトランザクション開始を差す。現時点では未接続）。
     var onDragBegan: () -> Void = {}
-    /// ドラッグセッションの確定通知。変更があった場合に1回だけ呼ばれる
-    /// （Undo 接続単位の記録接続点）。
+    /// ドラッグセッションの確定通知。変更の有無にかかわらず1回だけ
+    /// 呼ばれる（FE-R9-003。Undo 接続単位の記録接続点）。
     var onDragCommitted: () -> Void = {}
     /// ドラッグセッションのキャンセル通知（復元済みの後に1回だけ）。
     var onDragCancelled: () -> Void = {}
@@ -93,6 +93,8 @@ struct TimelineStripView: View {
     private let rulerFillerWidth: CGFloat = 17
 
     var pxPerFrame: CGFloat { CGFloat(zoomPercent) / 100 }
+    /// タイムライン長由来のコンテンツ幅。実際に使うドキュメント幅は
+    /// body で表示幅との max を取る（FE-R9-007）。
     private var contentWidth: CGFloat {
         max(CGFloat(timeline.length) * pxPerFrame, 1)
     }
@@ -107,6 +109,12 @@ struct TimelineStripView: View {
             )
             let contentHeight = CGFloat(rowCount) * rowHeight
             let canvasViewportWidth = max(geometry.size.width - labelWidth, 1)
+            // ドキュメント幅はタイムライン長由来の幅と表示幅の大きい方
+            // （FE-R9-007）。タイムラインが表示幅より短い場合でも、
+            // 操作層が表示領域全体を覆い、右側の余白でクリックや
+            // 範囲選択を受けられるようにする。モデルの長さキャッシュ
+            // （timeline.length）自体は水増ししない。
+            let canvasWidth = max(contentWidth, canvasViewportWidth)
             // dragRevision を読むことで、ドラッグ中のモデル変更のたびに
             // body が再評価され、コンテンツが新しい位置で描かれる。
             let _ = dragRevision
@@ -117,6 +125,7 @@ struct TimelineStripView: View {
                     canvasContent: AnyView(canvasContent(
                         rowCount: rowCount,
                         contentHeight: contentHeight,
+                        canvasWidth: canvasWidth,
                         viewportWidth: canvasViewportWidth,
                         viewportHeight: rowsViewportHeight
                     )),
@@ -130,7 +139,7 @@ struct TimelineStripView: View {
                     ),
                     labelWidth: labelWidth,
                     rulerHeight: rulerHeight,
-                    contentWidth: contentWidth,
+                    contentWidth: canvasWidth,
                     contentHeight: contentHeight,
                     timeline: timeline,
                     currentFrame: currentFrame,
@@ -186,15 +195,17 @@ struct TimelineStripView: View {
     // MARK: - キャンバスのコンテンツ（描画専用。操作は AppKit 側）
 
     private func canvasContent(
-        rowCount: Int, contentHeight: CGFloat,
+        rowCount: Int, contentHeight: CGFloat, canvasWidth: CGFloat,
         viewportWidth: CGFloat, viewportHeight: CGFloat
     ) -> some View {
         ZStack(alignment: .topLeading) {
             // 背景。操作（シーク・範囲選択）は操作層が担い、ここは
-            // 右クリックメニューの受け口としてだけ残す。
+            // 右クリックメニューの受け口としてだけ残す。幅はドキュメント
+            // 幅（canvasWidth）に合わせ、表示幅より短いタイムラインでも
+            // 余白まで背景が届くようにする（FE-R9-007）。
             Rectangle()
                 .fill(Color(nsColor: .textBackgroundColor))
-                .frame(width: contentWidth, height: contentHeight)
+                .frame(width: canvasWidth, height: contentHeight)
                 .contentShape(Rectangle())
                 .contextMenu { canvasContextMenu() }
 
@@ -202,7 +213,7 @@ struct TimelineStripView: View {
             ForEach(0..<rowCount, id: \.self) { layer in
                 Rectangle()
                     .fill(Color.primary.opacity(0.12))
-                    .frame(width: contentWidth, height: 1)
+                    .frame(width: canvasWidth, height: 1)
                     .offset(y: CGFloat(layer + 1) * rowHeight - 1)
             }
             if showVerticalLines {
@@ -231,7 +242,7 @@ struct TimelineStripView: View {
                 .frame(width: 1, height: contentHeight)
                 .offset(x: CGFloat(currentFrame) * pxPerFrame)
         }
-        .frame(width: contentWidth, height: contentHeight, alignment: .topLeading)
+        .frame(width: canvasWidth, height: contentHeight, alignment: .topLeading)
     }
 
     /// 可視範囲（前後1画面分の余白つき）に入るアイテムと、その
