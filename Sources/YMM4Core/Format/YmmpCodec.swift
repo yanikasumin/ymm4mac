@@ -278,6 +278,12 @@ public enum YmmpCodec {
         let timeline = Timeline()
         var restoredLength: Int?
         var restoredMaxLayer: Int?
+        // アイテムはローカルへ集めてから一括で代入する。`Timeline.items`
+        // の didSet（選択の掃除）は代入のたびに旧配列と新配列の同一性を
+        // 全走査するため、1件ずつ append すると読み込みが件数の二乗
+        // オーダになる（FE-R1-031 の詳細計測で特定）。最終的な内容と
+        // 診断の記録順は従来と同一。
+        var decodedItems: [BaseItem] = []
         for (key, fieldValue) in fields {
             switch key {
             case "ID":
@@ -297,7 +303,7 @@ public enum YmmpCodec {
                             element, timelineIndex: timelineIndex, itemIndex: index,
                             diagnostics: &diagnostics
                         ) {
-                            timeline.items.append(item)
+                            decodedItems.append(item)
                         }
                     }
                 }
@@ -313,6 +319,7 @@ public enum YmmpCodec {
                 timeline.additionalFields.append((key: key, value: fieldValue))
             }
         }
+        timeline.items = decodedItems
         // 本家は private setter 経由でキャッシュも復元する。キーが無い
         // 場合は現在のアイテム集合から再計算した値を使う。復元値が
         // 負値の場合はフレーム数・レイヤー番号として成立しないため、
