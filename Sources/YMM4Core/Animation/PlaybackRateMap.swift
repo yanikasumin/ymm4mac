@@ -191,6 +191,47 @@ public struct PlaybackRateMap: Sendable {
         return nil
     }
 
+    /// 素材境界（ループの繰り返し境界）を横切る時刻を、アイテム
+    /// 時間軸の順に遅延列挙する（本家 `EnumerateContentBoundaryCrossings`）。
+    ///
+    /// 各フレーム区間について、その区間の両端での累積消費位置
+    /// （素材時刻）の間に素材長の整数倍があれば、その境界を横切る
+    /// 時刻を区間内の線形補間で求める。逆行（消費位置が減少する
+    /// 区間）でも境界を列挙する。横切時刻は本家どおりフレーム内
+    /// 位置を線形補間してティックへ切り捨てる
+    /// （`findContentExhaustedTime` の二次求解とは別方式で、本家も
+    /// この列挙では線形補間を使う）。
+    ///
+    /// 開始位置は、先頭レートが非負なら素材オフセット位置、負なら
+    /// 素材末尾からオフセットを引いた位置（逆再生では素材末尾側
+    /// から消費が始まる）。列挙は遅延であり、消費側が打ち切れば
+    /// 残りは計算されない（ループ素材では横切回数がアイテム長と
+    /// 素材長の比まで増えるため）。
+    ///
+    /// 素材長がゼロ以下なら空。
+    public func enumerateContentBoundaryCrossings(
+        itemLength: Int,
+        fps: Int,
+        contentOffset: TimeSpanValue,
+        contentLength: TimeSpanValue
+    ) -> AnySequence<TimeSpanValue> {
+        let contentTicks = contentLength.ticks
+        guard contentTicks > 0 else { return AnySequence([]) }
+        let table = table(itemLength: itemLength, fps: fps)
+        let start = table.rates[0] >= 0
+            ? Double(contentOffset.ticks)
+            : Double(contentTicks - contentOffset.ticks)
+        return AnySequence {
+            BoundaryCrossingIterator(
+                start: start,
+                contentSpan: Double(contentTicks),
+                frameDurationTicks: table.frameDurationTicks,
+                cumulativeTicks: table.cumulativeTicks,
+                frameCount: table.length
+            )
+        }
+    }
+
     /// 素材側の時刻。本家 `GetSourceTime`。
     ///
     /// 定数レートでは符号で向きを切り替える。非定数ではテーブルの積分を
@@ -218,5 +259,87 @@ public struct PlaybackRateMap: Sendable {
         let base = table.rates[0] >= 0 ? contentOffset : contentLength - contentOffset
         let consumed = table.getConsumedTicks(timeTicks: time.ticks)
         return base + TimeSpanValue(ticks: Int64(consumed.rounded(.awayFromZero)))
+    }
+}
+
+/// `PlaybackRateMap.enumerateContentBoundaryCrossings` の遅延列挙。
+/// フレーム区間ごとに、その区間で横切る境界をまとめて求めてから
+/// 1件ずつ返す。
+private struct BoundaryCrossingIterator: IteratorProtocol {
+    let start: Double
+    let contentSpan: Double
+    let frameDurationTicks: Double
+    let cumulativeTicks: [Double]
+    let frameCount: Int
+
+    private var frame = 1
+    private var previous: Double
+    private var pending: [TimeSpanValue] = []
+    private var pendingIndex = 0
+
+    init(
+        start: Double,
+        contentSpan: Double,
+        frameDurationTicks: Double,
+        cumulativeTicks: [Double],
+        frameCount: Int
+    ) {
+        self.start = start
+        self.contentSpan = contentSpan
+        self.frameDurationTicks = frameDurationTicks
+        self.cumulativeTicks = cumulativeTicks
+        self.frameCount = frameCount
+        self.previous = start
+    }
+
+    mutating func next() -> TimeSpanValue? {
+        while pendingIndex >= pending.count {
+            guard frame <= frameCount else { return nil }
+            let current = start + cumulativeTicks[frame]
+            pending = crossingsInFrame(frame, previous: previous, current: current)
+            pendingIndex = 0
+            previous = current
+            frame += 1
+        }
+        defer { pendingIndex += 1 }
+        return pending[pendingIndex]
+    }
+
+    /// 1フレーム区間の両端の消費位置の間にある素材境界を、すべて
+    /// 横切時刻へ変換する。本家の前進・後退の両ループに対応する。
+    private func crossingsInFrame(
+        _ frame: Int, previous: Double, current: Double
+    ) -> [TimeSpanValue] {
+        var result: [TimeSpanValue] = []
+        if current > previous {
+            var multiple = (previous / contentSpan).rounded(.down) + 1
+            while multiple * contentSpan <= current {
+                result.append(crossingTime(
+                    frame: frame, previous: previous, current: current,
+                    boundary: multiple * contentSpan
+                ))
+                multiple += 1
+            }
+        } else if current < previous {
+            var multiple = (previous / contentSpan).rounded(.up) - 1
+            while current <= multiple * contentSpan {
+                result.append(crossingTime(
+                    frame: frame, previous: previous, current: current,
+                    boundary: multiple * contentSpan
+                ))
+                multiple -= 1
+            }
+        }
+        return result
+    }
+
+    /// 境界を横切る時刻。フレーム内位置は線形補間で、本家の
+    /// `CrossingTime` どおりティックへ切り捨てる。
+    private func crossingTime(
+        frame: Int, previous: Double, current: Double, boundary: Double
+    ) -> TimeSpanValue {
+        let fraction = min(1, max(0, (boundary - previous) / (current - previous)))
+        let ticks = (Double(frame - 1) + fraction) * frameDurationTicks
+        return TimeSpanValue(ticks: Int64(ticks))
     }
 }
