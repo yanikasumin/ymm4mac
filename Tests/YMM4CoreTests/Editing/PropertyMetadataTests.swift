@@ -314,6 +314,270 @@ final class PropertyMetadataTests: XCTestCase {
         try assertAudioSliderSpecs(descriptors)
     }
 
+    // MARK: - VoiceItem の残り項目・再生速度変更方式・エコー（FE-VOICE-DESC）
+
+    /// VoiceItem の残り項目（波形・再生速度変更方式・セリフ後の余韻・
+    /// ボイスのフェードイン／アウト・エコー）が記述子で編集でき、
+    /// 表示名・グループ・値域が本家の属性どおりであること。
+    func testVoiceItemRemainingDescriptors() throws {
+        let item = VoiceItem()
+        let descriptors = ItemPropertyMetadata.descriptors(for: item)
+
+        // 波形は基本グループの末尾（本家は全般グループ Order 5、
+        // 具象型宣言のため BaseItem 宣言分の後ろ）。
+        let waveform = try descriptor(descriptors, "IsWaveformEnabled")
+        XCTAssertEqual(waveform.displayName, "波形")
+        XCTAssertEqual(waveform.group, "基本")
+        XCTAssertEqual(descriptors.filter { $0.group == "基本" }.last?.id, "IsWaveformEnabled")
+        XCTAssertTrue(waveform.setBoolValue(true))
+        XCTAssertTrue(item.isWaveformEnabled)
+        XCTAssertEqual(waveform.boolValue, true)
+
+        // 再生速度変更方式（本家 Order 161、EnumComboBox）。
+        let mode = try descriptor(descriptors, "PlaybackRateAudioProcessingMode")
+        XCTAssertEqual(mode.displayName, "再生速度変更方式")
+        XCTAssertEqual(mode.group, "音声")
+        guard case .enumeration(let options) = mode.kind else {
+            return XCTFail("PlaybackRateAudioProcessingMode は列挙のはず")
+        }
+        XCTAssertEqual(options.map(\.value), ["Resampling", "Sola"])
+        XCTAssertEqual(
+            options.map(\.displayName), ["リサンプリング / 音程変化", "SOLA / 音程維持"]
+        )
+        XCTAssertEqual(mode.stringValue, "Resampling")
+        XCTAssertTrue(mode.setStringValue("Sola"))
+        XCTAssertEqual(item.playbackRateAudioProcessingMode, .sola)
+        // 未知のメンバ名は unknown として保持され、そのまま往復する。
+        XCTAssertTrue(mode.setStringValue("FutureMode"))
+        XCTAssertEqual(item.playbackRateAudioProcessingMode, .unknown("FutureMode"))
+        XCTAssertEqual(mode.stringValue, "FutureMode")
+
+        // セリフ後の余韻（本家 Order 178、Range -100000〜100000）。
+        let additionalTime = try descriptor(descriptors, "AdditionalTime")
+        XCTAssertEqual(additionalTime.displayName, "セリフ後の余韻")
+        XCTAssertEqual(additionalTime.group, "音声")
+        guard case .number(let additionalRange) = additionalTime.kind else {
+            return XCTFail("AdditionalTime は数値のはず")
+        }
+        XCTAssertEqual(additionalRange, -100_000...100_000)
+        XCTAssertEqual(additionalTime.numberValue, 0.3)
+        XCTAssertTrue(additionalTime.setNumberValue(0.5))
+        XCTAssertEqual(item.additionalTime, 0.5)
+
+        // ボイスのフェードイン／アウト（本家 Order 180 / 190、
+        // Range 0〜100000）。
+        let fadeIn = try descriptor(descriptors, "VoiceFadeIn")
+        XCTAssertEqual(fadeIn.displayName, "フェードイン")
+        guard case .number(let fadeInRange) = fadeIn.kind else {
+            return XCTFail("VoiceFadeIn は数値のはず")
+        }
+        XCTAssertEqual(fadeInRange, 0...100_000)
+        XCTAssertTrue(fadeIn.setNumberValue(0.25))
+        XCTAssertEqual(item.voiceFadeIn, 0.25)
+
+        let fadeOut = try descriptor(descriptors, "VoiceFadeOut")
+        XCTAssertEqual(fadeOut.displayName, "フェードアウト")
+        guard case .number(let fadeOutRange) = fadeOut.kind else {
+            return XCTFail("VoiceFadeOut は数値のはず")
+        }
+        XCTAssertEqual(fadeOutRange, 0...100_000)
+        XCTAssertTrue(fadeOut.setNumberValue(0.75))
+        XCTAssertEqual(item.voiceFadeOut, 0.75)
+
+        // エコー（VoiceItem 分。値の往復のみ。素材長再計算は
+        // 動画・音声の経路で別途固定する）。
+        let echoEnabled = try descriptor(descriptors, "EchoIsEnabled")
+        XCTAssertEqual(echoEnabled.displayName, "有効")
+        XCTAssertEqual(echoEnabled.group, "エコー")
+        XCTAssertTrue(echoEnabled.setBoolValue(true))
+        XCTAssertTrue(item.echoIsEnabled)
+
+        let echoInterval = try descriptor(descriptors, "EchoInterval")
+        XCTAssertEqual(echoInterval.displayName, "間隔")
+        guard case .number(let intervalRange) = echoInterval.kind else {
+            return XCTFail("EchoInterval は数値のはず")
+        }
+        XCTAssertEqual(intervalRange, 0...2)
+        XCTAssertTrue(echoInterval.setNumberValue(0.2))
+        XCTAssertEqual(item.echoInterval, 0.2)
+
+        let echoAttenuation = try descriptor(descriptors, "EchoAttenuation")
+        XCTAssertEqual(echoAttenuation.displayName, "減衰")
+        guard case .number(let attenuationRange) = echoAttenuation.kind else {
+            return XCTFail("EchoAttenuation は数値のはず")
+        }
+        XCTAssertEqual(attenuationRange, 0...90)
+        XCTAssertTrue(echoAttenuation.setNumberValue(55))
+        XCTAssertEqual(item.echoAttenuation, 55)
+    }
+
+    /// VoiceItem のセクション順と音声グループ内の並びが本家の
+    /// Order（セリフ 120 → 音量 140 → パン 150 → 方式 161 →
+    /// 余韻 178 → フェードイン 180 → フェードアウト 190）を
+    /// 保つこと。Decorations はセリフ編集の一部としてセリフの直後。
+    func testVoiceItemDescriptorOrder() throws {
+        let item = VoiceItem()
+        let descriptors = ItemPropertyMetadata.descriptors(for: item)
+        let sections = PropertyMetadata.sections(from: descriptors)
+        XCTAssertEqual(sections.map(\.name), ["基本", "音声", "字幕", "エコー"])
+        let audio = try XCTUnwrap(sections.first { $0.name == "音声" })
+        XCTAssertEqual(
+            audio.descriptors.map(\.id),
+            ["Serif", "Decorations", "Volume", "Pan",
+             "PlaybackRateAudioProcessingMode", "AdditionalTime",
+             "VoiceFadeIn", "VoiceFadeOut"]
+        )
+        let echo = try XCTUnwrap(sections.first { $0.name == "エコー" })
+        XCTAssertEqual(
+            echo.descriptors.map(\.id),
+            ["EchoIsEnabled", "EchoInterval", "EchoAttenuation"]
+        )
+    }
+
+    /// VideoItem の再生速度変更方式（動画グループ、本家 Order 231）と
+    /// 波形・エコーの往復。
+    func testVideoItemModeWaveformEchoDescriptors() throws {
+        let item = VideoItem()
+        let descriptors = ItemPropertyMetadata.descriptors(for: item)
+
+        let waveform = try descriptor(descriptors, "IsWaveformEnabled")
+        XCTAssertEqual(waveform.group, "基本")
+        XCTAssertTrue(waveform.setBoolValue(true))
+        XCTAssertTrue(item.isWaveformEnabled)
+
+        let mode = try descriptor(descriptors, "PlaybackRateAudioProcessingMode")
+        XCTAssertEqual(mode.displayName, "再生速度変更方式")
+        XCTAssertEqual(mode.group, "動画")
+        XCTAssertTrue(mode.setStringValue("Sola"))
+        XCTAssertEqual(item.playbackRateAudioProcessingMode, .sola)
+
+        let echoEnabled = try descriptor(descriptors, "EchoIsEnabled")
+        XCTAssertEqual(echoEnabled.group, "エコー")
+        XCTAssertTrue(echoEnabled.setBoolValue(true))
+        XCTAssertTrue(item.echoIsEnabled)
+    }
+
+    /// AudioItem の再生速度変更方式（音声グループ、本家 Order 121。
+    /// 音量・パンの後ろ）と波形・エコーの往復。
+    func testAudioItemModeWaveformEchoDescriptors() throws {
+        let item = AudioItem()
+        let descriptors = ItemPropertyMetadata.descriptors(for: item)
+
+        let waveform = try descriptor(descriptors, "IsWaveformEnabled")
+        XCTAssertEqual(waveform.group, "基本")
+        XCTAssertTrue(waveform.setBoolValue(true))
+        XCTAssertTrue(item.isWaveformEnabled)
+
+        let audio = try XCTUnwrap(
+            PropertyMetadata.sections(from: descriptors).first { $0.name == "音声" }
+        )
+        XCTAssertEqual(
+            audio.descriptors.map(\.id),
+            ["FilePath", "Volume", "Pan", "PlaybackRateAudioProcessingMode"]
+        )
+        let mode = try descriptor(descriptors, "PlaybackRateAudioProcessingMode")
+        XCTAssertEqual(mode.displayName, "再生速度変更方式")
+        XCTAssertTrue(mode.setStringValue("Sola"))
+        XCTAssertEqual(item.playbackRateAudioProcessingMode, .sola)
+
+        let echoEnabled = try descriptor(descriptors, "EchoIsEnabled")
+        XCTAssertEqual(echoEnabled.group, "エコー")
+        XCTAssertTrue(echoEnabled.setBoolValue(true))
+        XCTAssertTrue(item.echoIsEnabled)
+    }
+
+    /// エコー記述子の書き込みがモデルのプロパティ経由であり、
+    /// didSet の素材長再計算（FE-R15-006）が追随すること。
+    /// 記述子を介さない直接代入と同じ再計算結果になる。
+    func testEchoDescriptorWritesRecalculateContentLength() throws {
+        for item in [AudioItem(), VideoItem()] as [BaseItem] {
+            item.recordMediaInfo(MediaFileInfo(duration: TimeSpanValue(seconds: 10)))
+            XCTAssertEqual(item.contentLength, TimeSpanValue(seconds: 10))
+
+            let descriptors = ItemPropertyMetadata.descriptors(for: item)
+            let enabled = try descriptor(descriptors, "EchoIsEnabled")
+            let interval = try descriptor(descriptors, "EchoInterval")
+            let attenuation = try descriptor(descriptors, "EchoAttenuation")
+
+            // 有効化: 間隔 0.1 秒・減衰 40% → 繰り返し 6 回、尾 0.6 秒。
+            XCTAssertTrue(enabled.setBoolValue(true))
+            XCTAssertEqual(item.contentLength, TimeSpanValue(seconds: 10.6))
+            // 間隔 0.2 秒 → 尾 1.2 秒。
+            XCTAssertTrue(interval.setNumberValue(0.2))
+            XCTAssertEqual(item.contentLength, TimeSpanValue(seconds: 11.2))
+            // 減衰 20% → 繰り返し 3 回、尾 0.6 秒。
+            XCTAssertTrue(attenuation.setNumberValue(20))
+            XCTAssertEqual(item.contentLength, TimeSpanValue(seconds: 10.6))
+            // 無効化で素材そのものの長さへ戻る（Undo で値が戻る際も
+            // 同じ経路で再計算される前提の固定）。
+            XCTAssertTrue(enabled.setBoolValue(false))
+            XCTAssertEqual(item.contentLength, TimeSpanValue(seconds: 10))
+        }
+    }
+
+    /// セリフの部分装飾（Decorations）のコレクション記述子:
+    /// 追加・削除と子記述子の項目別編集がモデルへ届き、
+    /// 子記述子へ出していないオプショナル項目（Foreground 等）は
+    /// 他項目の編集で消えず、保存形式へも往復すること。
+    func testVoiceItemDecorationsCollection() throws {
+        let item = VoiceItem()
+        item.decorations = [TextDecoration(start: 1, length: 2)]
+        item.decorations[0].foreground = Color(alpha: 255, red: 0, green: 0, blue: 255)
+        item.decorations[0].characterSpacing = 0.5
+
+        let decorations = try descriptor(
+            ItemPropertyMetadata.descriptors(for: item), "Decorations"
+        )
+        XCTAssertEqual(decorations.group, "音声")
+        guard case .collection = decorations.kind else {
+            return XCTFail("Decorations はコレクションのはず")
+        }
+        XCTAssertEqual(decorations.collectionCount, 1)
+
+        let children = try XCTUnwrap(decorations.collectionElements(at: 0))
+        func child(_ id: String) throws -> PropertyDescriptor {
+            try XCTUnwrap(children.first { $0.id == id }, "子記述子 \(id) が無い")
+        }
+        XCTAssertEqual(try child("Start").integerValue, 1)
+        XCTAssertTrue(try child("Start").setIntegerValue(3))
+        XCTAssertEqual(item.decorations[0].start, 3)
+        XCTAssertTrue(try child("Length").setIntegerValue(4))
+        XCTAssertEqual(item.decorations[0].length, 4)
+        XCTAssertTrue(try child("IsBold").setBoolValue(true))
+        XCTAssertTrue(item.decorations[0].isBold)
+        XCTAssertTrue(try child("Scale").setNumberValue(1.5))
+        XCTAssertEqual(item.decorations[0].scale, 1.5)
+        // Font は空文字列が未指定（nil）への橋渡し。
+        XCTAssertEqual(try child("Font").stringValue, "")
+        XCTAssertTrue(try child("Font").setStringValue("Hiragino Sans"))
+        XCTAssertEqual(item.decorations[0].font, "Hiragino Sans")
+        XCTAssertTrue(try child("Font").setStringValue(""))
+        XCTAssertNil(item.decorations[0].font)
+        // 子記述子へ出していない項目は、他項目の編集で保持される。
+        XCTAssertEqual(
+            item.decorations[0].foreground, Color(alpha: 255, red: 0, green: 0, blue: 255)
+        )
+        XCTAssertEqual(item.decorations[0].characterSpacing, 0.5)
+
+        // 追加は末尾へ既定値の要素（範囲 0・長さ 0）が付き、削除は
+        // 位置指定で効く。範囲外の削除は無変更で false。
+        XCTAssertTrue(decorations.insertCollectionElement())
+        XCTAssertEqual(decorations.collectionCount, 2)
+        XCTAssertEqual(item.decorations[1], TextDecoration(start: 0, length: 0))
+        XCTAssertFalse(decorations.removeCollectionElement(at: 5))
+        XCTAssertEqual(decorations.collectionCount, 2)
+        XCTAssertTrue(decorations.removeCollectionElement(at: 1))
+        XCTAssertEqual(item.decorations.count, 1)
+
+        // 保存 → 再読み込みで装飾が往復する。
+        let saved = YmmpCodec.encode(makeProject(with: item))
+        let (reloaded, _) = try YmmpCodec.decode(saved)
+        let reloadedItem = try XCTUnwrap(
+            reloaded.timelines.first?.items.first as? VoiceItem
+        )
+        XCTAssertEqual(reloadedItem.decorations, item.decorations)
+    }
+
     // MARK: - グループ化
 
     func testSectionsPreserveGroupOrder() {
