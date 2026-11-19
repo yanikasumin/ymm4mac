@@ -35,12 +35,17 @@ struct TimelineInteractionConfiguration {
     /// 左クリックで選択が変わったとき（表示の再描画とインデックス写し）。
     var onSelectionChanged: () -> Void
     /// モデルが変わったとき（表示の再描画＋プレビュー再合成要求）。
+    /// 「既に発生した変更」を伝える通知であり、セッションの開始を
+    /// 知らせる onDragBegan とは責務が別（FE-R11-001）。MouseDown 中の
+    /// 複製・衝突解決で変わった場合も、発生した時点でこれを呼ぶ。
     var onModelChanged: () -> Void
     /// 背景クリックのシーク。
     var onSeek: (Int) -> Void
     /// セッション開始（変更可能なドラッグが始まったとき、1回だけ）。
     /// アイテムへの最初のモデル変更（複製・衝突解決）より前に呼ばれる
-    /// （FE-R9-002）。選択の変更はセッション開始前のクリック処理として
+    /// （FE-R9-002）。これは「開始の通知」であり、発生済みの変更を
+    /// 再描画へ伝える通知ではない（そちらは onModelChanged の責務。
+    /// FE-R11-001）。選択の変更はセッション開始前のクリック処理として
     /// この通知より前に済んでいる（スナップショットは選択変更より前に取る）。
     var onDragBegan: () -> Void
     /// セッション確定（MouseUp で1回だけ、変更の有無にかかわらず。
@@ -98,13 +103,17 @@ final class TimelineInteractionView: NSView {
     /// MouseUp 時（移動が無かったとき）の単独選択への確定先（FE-R9-005。
     /// 本家の SelectCommand2 相当）。
     private var clickCollapseItem: BaseItem?
-    /// このセッションで編集コマンド（移動・トリム・キーフレーム移動）が
-    /// 実際に発行されたか。本家は MoveCommand の実行時点で
-    /// isSelectedCommandExecuted を立て、終了時の単独選択化
-    /// （SelectCommand2）を抑制する。最終モデルが開始時と等しいことと
-    /// ドラッグ操作が行われなかったことは同義ではない（往復ドラッグで
-    /// 差分はゼロになる）ため、単独選択への確定はこのフラグで判断する
-    /// （FE-R10-002）。
+    /// このセッションで編集コマンド（移動・トリム）が実行経路に入ったか。
+    /// 本家は MoveCommand / ResizeHeadCommand / ResizeFootCommand の
+    /// 冒頭（デルタ計算・吸着補正より前）で isSelectedCommandExecuted を
+    /// 立て、終了時の単独選択化（SelectCommand2）を抑制する。したがって
+    /// フラグは「ドラッグ中にポインタが実際に動いてコマンドの実行経路に
+    /// 入った時点」で立て、量子化・吸着補正後のデルタがゼロでも立つ
+    /// （FE-R10-002: 高ズームで1フレーム未満のドラッグでも複数選択を
+    /// 維持する。最終モデルが開始時と等しいこととドラッグ操作が行われ
+    /// なかったことは同義ではない）。mouseDown では立てない（通常の
+    /// クリックまでドラッグ扱いになるため）。キーフレーム移動は本家の
+    /// DragDeltaCommand がフラグを立てないため、ここでも立てない。
     private var didExecuteEditCommand = false
     private var marqueeRect: CGRect = .zero
     private var keyMonitor: Any?
@@ -255,6 +264,20 @@ final class TimelineInteractionView: NSView {
         } else {
             grabbedStart = (item.frame, item.length, item.layer)
         }
+
+        // MouseDown 中に発生したモデル変更（複製・衝突解決）の通知
+        // （FE-R11-001）。onDragBegan は「セッション開始の通知」で
+        // あって、既に発生した変更を再描画へ伝える通知ではない
+        // （責務が別）。複製でアイテムが増えたり衝突解決で位置・
+        // レイヤーが変わったりしたのに通知しないと、移動せず
+        // MouseUp した場合に変更が画面・プレビューへ反映されない。
+        // 変化の有無は、クリック選択より前に取ったスナップショット
+        // との比較（メンバーシップ＋値）で判定する。選択の変更は
+        // 比較対象に含まれないため、変化のない通常の MouseDown では
+        // 通知しない。
+        if modelDiffersFromSnapshot(timeline: timeline) {
+            configuration.onModelChanged()
+        }
         beginMonitoring()
     }
 
@@ -328,6 +351,11 @@ final class TimelineInteractionView: NSView {
     /// 移動（本家 MoveCommand）。デルタは適用済みを差し引いた残り量。
     private func applyMove(point: NSPoint, modifierFlags: NSEvent.ModifierFlags, timeline: Timeline) {
         guard let configuration, let item = grabbedItem else { return }
+        // 本家は MoveCommand の冒頭（デルタ計算より前）で
+        // isSelectedCommandExecuted を立てる。ポインタが実際に動いて
+        // この実行経路に入った時点で立てるのが本家の発火条件であり、
+        // 量子化・吸着補正の結果とは独立に立てる（FE-R10-002）。
+        didExecuteEditCommand = true
         let totalFrames = Int((point.x - startPoint.x) / pxPerFrame)
         var dframe = totalFrames - (item.frame - grabbedStart.frame)
         // レイヤー量は本家 GetDeltaFrameAndLayer の式（残り量形式）。
@@ -379,13 +407,6 @@ final class TimelineInteractionView: NSView {
                 frameDelta: dframe, frameDistance: snapFrameDistance,
                 layerDistance: snapLayerDistance, ignoreItems: targets)
         }
-        // 非ゼロのデルタで移動コマンドを発行したら「ドラッグ操作が
-        // 実行された」ことにする（FE-R10-002。結果として値が変わら
-        // なくても、本家の isSelectedCommandExecuted と同じく実行
-        // 自体を数える）。
-        if dframe != 0 || dlayer != 0 || extraDeltaFrame != 0 {
-            didExecuteEditCommand = true
-        }
         let before = (item.frame, item.layer)
         timeline.moveSelectedAndGroupedItems(
             deltaFrame: dframe, deltaLayer: dlayer,
@@ -401,6 +422,11 @@ final class TimelineInteractionView: NSView {
         timeline: Timeline
     ) {
         guard let configuration, let item = grabbedItem else { return }
+        // 本家は ResizeHeadCommand / ResizeFootCommand の冒頭
+        // （未選択なら選択した直後、デルタ計算・吸着補正より前）でも
+        // isSelectedCommandExecuted を立てる。移動と同じく、実行経路に
+        // 入った時点で立てる（FE-R10-002）。
+        didExecuteEditCommand = true
         let totalFrames = Int((point.x - startPoint.x) / pxPerFrame)
         let applied = head
             ? item.frame - grabbedStart.frame
@@ -421,9 +447,6 @@ final class TimelineInteractionView: NSView {
         // 設定画面が無いため既定は None 固定とし、Ctrl 中は Stretch。
         let neighborAffect: NeighborAffectMode =
             modifierFlags.contains(.control) ? .stretch : .none
-        if delta != 0 {
-            didExecuteEditCommand = true
-        }
         let before = (item.frame, item.length)
         timeline.changeSelectedAndGroupedItemsLength(
             deltaX: delta, head: head, neighborAffect: neighborAffect)
@@ -438,6 +461,10 @@ final class TimelineInteractionView: NSView {
         guard let configuration, let item = grabbedItem,
               item.keyFrames.frames.indices.contains(keyframeIndex)
         else { return }
+        // 本家のキーフレーム移動（TimelineItemKeyFrameViewModel の
+        // DragDeltaCommand）は isSelectedCommandExecuted を立てない
+        // （フラグは移動・トリム系コマンドの冒頭専用）。ここでも
+        // 立てない（FE-R10-002）。
         let current = item.keyFrames.frames[keyframeIndex]
         let totalFrames = Int((point.x - startPoint.x) / pxPerFrame)
         var delta = totalFrames - (current - startKeyFrame)
@@ -448,9 +475,6 @@ final class TimelineInteractionView: NSView {
                 frameDistance: snapFrameDistance,
                 layerDistance: snapLayerDistance,
                 ignoreItems: timeline.selectedAndGroupedItems)
-        }
-        if delta != 0 {
-            didExecuteEditCommand = true
         }
         if item.moveKeyFrame(from: current, to: current + delta) {
             configuration.onModelChanged()
