@@ -10,6 +10,9 @@ import XCTest
 /// - FE-R20-126-03: セッションには所有権トークンが結び付いており、
 ///   所有者でない経路の値変更はセッションへ取り込まれない。確定・
 ///   破棄もトークン一致の場合だけ作用する。
+/// - FE-R21-126-01: 終了・取消・プロジェクト切り替えで失効した
+///   トークンは再び編集を許可しない。復元処理中（巻き戻し中）の
+///   再入編集は入口確認で拒否される。
 final class EditRecorderTests: XCTestCase {
 
     /// 値変更の検証用の箱（アイテムの代わり）。
@@ -183,5 +186,127 @@ final class EditRecorderTests: XCTestCase {
         XCTAssertFalse(recorder.hasActiveSession)
         XCTAssertEqual(box.value, 0)
         XCTAssertFalse(recorder.coordinator.canUndo)
+    }
+
+    // MARK: - FE-R21-126-01 失効トークンと復元中の拒否
+
+    /// セッションを確定で閉じた後、その失効トークンを提示した
+    /// 書き込みは入口確認でも記録でも受理されない。トークンなしの
+    /// 離散編集は従来どおり可能（過剰な拒否になっていないこと）。
+    func testStaleTokenRejectedAfterCommit() {
+        let recorder = EditRecorder()
+        let box = ValueBox()
+
+        let token = recorder.beginSession()
+        XCTAssertNotNil(token)
+        guard let token else { return }
+        box.value = 10
+        recorder.recordValueChange(
+            target: EditTargetKey(box, key: "value"),
+            oldValue: 0, newValue: 10,
+            apply: { box.value = $0 },
+            sessionToken: token)
+        recorder.commitSession(token: token)
+        XCTAssertTrue(recorder.coordinator.canUndo)
+
+        // 失効トークンは再び編集を許可しない。
+        XCTAssertFalse(recorder.canRecordValueChange(sessionToken: token))
+        XCTAssertTrue(recorder.canRecordValueChange())
+
+        // 入口をすり抜けて記録を試みても受理されない（二重の防壁）。
+        // 履歴にはセッション分の1エントリだけが残る。
+        box.value = 20
+        recorder.recordValueChange(
+            target: EditTargetKey(box, key: "value"),
+            oldValue: 10, newValue: 20,
+            apply: { box.value = $0 },
+            sessionToken: token)
+        XCTAssertTrue(recorder.coordinator.undo())
+        XCTAssertEqual(box.value, 0)
+        XCTAssertFalse(recorder.coordinator.canUndo)
+    }
+
+    /// セッションを破棄で閉じた場合、およびプロジェクト切り替えで
+    /// 破棄された場合も、失効トークンは受理されない（切り替え後に
+    /// 旧 UI から届いた遅延イベントが新しい履歴へ紛れ込まない）。
+    func testStaleTokenRejectedAfterCancelAndProjectSwitchReset() {
+        let recorder = EditRecorder()
+        let box = ValueBox()
+
+        let token = recorder.beginSession()
+        XCTAssertNotNil(token)
+        guard let token else { return }
+        recorder.cancelSession(token: token)
+        XCTAssertFalse(recorder.canRecordValueChange(sessionToken: token))
+        box.value = 5
+        recorder.recordValueChange(
+            target: EditTargetKey(box, key: "value"),
+            oldValue: 0, newValue: 5,
+            apply: { box.value = $0 },
+            sessionToken: token)
+        XCTAssertFalse(recorder.coordinator.canUndo)
+
+        let nextToken = recorder.beginSession()
+        XCTAssertNotNil(nextToken)
+        guard let nextToken else { return }
+        box.value = 7
+        recorder.recordValueChange(
+            target: EditTargetKey(box, key: "value"),
+            oldValue: 5, newValue: 7,
+            apply: { box.value = $0 },
+            sessionToken: nextToken)
+        // 切り替え時の破棄で巻き戻され、履歴は消える。
+        recorder.resetForProjectSwitch()
+        XCTAssertEqual(box.value, 5)
+        XCTAssertFalse(recorder.coordinator.canUndo)
+        XCTAssertFalse(recorder.canRecordValueChange(sessionToken: nextToken))
+        box.value = 9
+        recorder.recordValueChange(
+            target: EditTargetKey(box, key: "value"),
+            oldValue: 5, newValue: 9,
+            apply: { box.value = $0 },
+            sessionToken: nextToken)
+        XCTAssertFalse(recorder.coordinator.canUndo)
+    }
+
+    /// 復元処理中（キャンセルの巻き戻し中）は、適用クロージャから
+    /// 再入した編集が入口確認で拒否され、記録も受理されない。
+    /// 巻き戻し前は `activeTransaction` が nil でも許可と判定される
+    /// 不整合があった（FE-R21-126-01）。
+    func testEditRejectedDuringRestoring() {
+        let recorder = EditRecorder()
+        let box = ValueBox()
+        let reentrantBox = ValueBox()
+        var gateDuringRestore: Bool?
+
+        let token = recorder.beginSession()
+        XCTAssertNotNil(token)
+        guard let token else { return }
+        box.value = 10
+        recorder.recordValueChange(
+            target: EditTargetKey(box, key: "value"),
+            oldValue: 0, newValue: 10,
+            apply: { value in
+                box.value = value
+                guard value == 0 else { return }
+                // 巻き戻し中の再入。入口確認の結果を捕捉し、記録も
+                // 試みる（どちらも拒否されることが契約）。
+                gateDuringRestore = recorder.canRecordValueChange()
+                reentrantBox.value = 99
+                recorder.recordValueChange(
+                    target: EditTargetKey(reentrantBox, key: "value"),
+                    oldValue: 0, newValue: 99,
+                    apply: { reentrantBox.value = $0 })
+            },
+            sessionToken: token)
+
+        recorder.cancelSession(token: token)
+        XCTAssertEqual(gateDuringRestore, false)
+        XCTAssertEqual(box.value, 0)
+        // 再入した変更は履歴に残らない（Undo で巻き戻せない）。
+        XCTAssertFalse(recorder.coordinator.canUndo)
+        XCTAssertEqual(reentrantBox.value, 99)
+        // 復元が終われば通常の離散編集は再び可能。
+        XCTAssertTrue(recorder.canRecordValueChange())
     }
 }

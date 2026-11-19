@@ -44,6 +44,17 @@ public struct EditSessionToken: Equatable, Sendable {
 /// `recordValueChange` 自身もトークンの照合を行い、入口確認を
 /// すり抜けた記録投入を二重に防ぐ。
 ///
+/// トークンの失効と Coordinator の状態（FE-R21-126-01）: 受け付け
+/// 可否の判定は `acceptsValueChange` の1か所に寄せ、入口確認と
+/// 記録側で共有する。セッションが無い間に非 nil のトークンを提示
+/// された場合は受理しない — そのトークンは終了・取消・プロジェ
+/// クト切り替えで失効したセッションのものであり、失効後に届いた
+/// 遅延イベントが新しい履歴へ紛れ込む経路を断つ。また、セッション
+/// が無い間の離散編集は Coordinator が本当に idle のときだけ許可
+/// する。復元処理中（キャンセルの巻き戻し中）は `activeTransaction`
+/// が nil でも新規編集を受け付けない（入口を通った後に記録だけが
+/// 拒否される不整合を防ぐ）。
+///
 /// 本家の自動監視（UndoRedoable）は模倣しない。ここを通らない編集は
 /// 記録されず、Undo 対応とはみなさない（未移行経路は実装ログに列挙）。
 ///
@@ -122,29 +133,39 @@ public final class EditRecorder {
 
     // MARK: - 値変更の記録
 
-    /// 値の書き込みが記録可能な状態か（書き込み経路の入口確認。
-    /// FE-R20-126-03）。
+    /// 値変更を受け付けるかの判定（FE-R21-126-01）。入口確認
+    /// （`canRecordValueChange`）と記録側（`recordValueChange`）で
+    /// 共有する唯一の判定であり、両者で結論がずれることはない。
     ///
     /// - セッションが有効な間は、その所有者（トークン一致）だけが
     ///   書き込める。
-    /// - セッションが無い場合は、他のトランザクションが有効でない
-    ///   場合に限り書き込める（離散編集として即時に記録される）。
-    ///
-    /// false の場合、呼び出し側はモデル変更自体を行わない。
-    public func canRecordValueChange(sessionToken: EditSessionToken? = nil) -> Bool {
+    /// - セッションが無い間は、トークンなしの離散編集だけを、
+    ///   Coordinator が本当に idle（有効なトランザクションが無く、
+    ///   復元処理中でもない）のときに許可する。非 nil のトークンは
+    ///   失効済みとして拒否する。
+    private func acceptsValueChange(sessionToken: EditSessionToken?) -> Bool {
         if let session {
             return sessionToken == session.token
         }
-        return coordinator.activeTransaction == nil
+        guard sessionToken == nil else { return false }
+        return coordinator.isIdle
+    }
+
+    /// 値の書き込みが記録可能な状態か（書き込み経路の入口確認。
+    /// FE-R20-126-03、FE-R21-126-01）。
+    ///
+    /// false の場合、呼び出し側はモデル変更自体を行わない。
+    public func canRecordValueChange(sessionToken: EditSessionToken? = nil) -> Bool {
+        acceptsValueChange(sessionToken: sessionToken)
     }
 
     /// 適用済みの値変更を記録する。セッションが有効ならそこへ蓄積し、
     /// そうでなければその変更だけのトランザクションとして即時に
     /// 確定する。
     ///
-    /// セッションが有効な間は、所有者のトークンを提示した記録だけを
-    /// 受け付ける。それ以外（トークン無し・不一致）の記録は混入を
-    /// 防ぐため破棄する。モデル変更の防止は入口確認
+    /// 受け付け可否は入口確認と同じ判定（`acceptsValueChange`）を
+    /// 通す。所有者でない記録、失効トークンによる記録、復元処理中の
+    /// 記録は混入を防ぐため破棄する。モデル変更の防止は入口確認
     /// （`canRecordValueChange`）の責務であり、ここの照合は入口を
     /// すり抜けた投入への二重の防壁である。
     public func recordValueChange<Value: Equatable>(
@@ -155,15 +176,14 @@ public final class EditRecorder {
         sessionToken: EditSessionToken? = nil
     ) {
         guard oldValue != newValue else { return }
+        guard acceptsValueChange(sessionToken: sessionToken) else { return }
         if let session {
-            guard sessionToken == session.token else { return }
             session.transaction.addValueChange(
                 target: target, oldValue: oldValue, newValue: newValue,
                 apply: apply)
             return
         }
-        guard coordinator.activeTransaction == nil,
-              let transaction = coordinator.beginTransaction()
+        guard let transaction = coordinator.beginTransaction()
         else { return }
         transaction.addValueChange(
             target: target, oldValue: oldValue, newValue: newValue,
