@@ -24,6 +24,14 @@ public struct PropertyEnumOption: Equatable, Sendable {
     }
 }
 
+/// ファイル参照の対象種別。本家 `FileSelector` 属性の
+/// `FileGroupType` に対応し、選択ダイアログの絞り込みに使う。
+public enum PropertyFileGroup: Equatable, Sendable {
+    case video
+    case audio
+    case image
+}
+
 /// プロパティの値の型と、編集 UI が必要とする付随情報。
 public enum PropertyKind: Equatable, Sendable {
     /// 実数。範囲は編集時のクランプとスライダ表示に使う（nil は無制限）。
@@ -46,6 +54,12 @@ public enum PropertyKind: Equatable, Sendable {
     /// nil のままにし、絶対制限全域のスライダへフォールバックしない
     /// （UI 側は数値入力のみ＋診断表示とする）。
     case animation(spec: AnimationSliderSpec?)
+    /// ファイル参照。値はパス文字列だが、`.text` の変種にはしない:
+    /// 選択ダイアログの対象種別とサムネイル表示の有無が編集 UI の
+    /// 契約に含まれるため、独立した種別として持つ（FE-R1-043）。
+    /// パスの読み書きは文字列として行い、ファイルを開く処理は
+    /// ここでは行わない（情報取得は供給層、長さの調整は編集操作層）。
+    case filePath(group: PropertyFileGroup, showsThumbnail: Bool)
     /// 複合オブジェクト（ブラシ等の入れ子）。子記述子の列は
     /// `PropertyAccess.object` 側が持つ（種別自体は関連値を持たない）。
     case object
@@ -61,6 +75,10 @@ public enum PropertyAccess {
     case integer(get: () -> Int, set: (Int) -> Void)
     case boolean(get: () -> Bool, set: (Bool) -> Void)
     case text(get: () -> String, set: (String) -> Void)
+    /// ファイル参照。パス文字列の読み書きだけを持ち、setter は
+    /// ファイルを開かない（本家でも FilePath の setter は値の保持と
+    /// 変更通知のみで、長さ調整は編集終了時に編集層が行う）。
+    case filePath(get: () -> String, set: (String) -> Void)
     case enumeration(get: () -> String, set: (String) -> Void)
     case color(get: () -> Color, set: (Color) -> Void)
     /// アニメーション付き数値。定数値の編集は2経路を持つ:
@@ -157,9 +175,10 @@ public struct PropertyDescriptor {
     }
 
     /// 文字列値（テキストと列挙の現在値。列挙では本家メンバ名を返す）。
+    /// ファイル参照ではパス文字列を返す。
     public var stringValue: String? {
         switch access {
-        case .text(let get, _), .enumeration(let get, _):
+        case .text(let get, _), .enumeration(let get, _), .filePath(let get, _):
             return get()
         default:
             return nil
@@ -169,12 +188,18 @@ public struct PropertyDescriptor {
     @discardableResult
     public func setStringValue(_ value: String) -> Bool {
         switch access {
-        case .text(_, let set), .enumeration(_, let set):
+        case .text(_, let set), .enumeration(_, let set), .filePath(_, let set):
             set(value)
             return true
         default:
             return false
         }
+    }
+
+    /// ファイル参照の表示仕様（filePath 種別でなければ nil）。
+    public var filePathSpec: (group: PropertyFileGroup, showsThumbnail: Bool)? {
+        guard case .filePath(let group, let showsThumbnail) = kind else { return nil }
+        return (group: group, showsThumbnail: showsThumbnail)
     }
 
     public var colorValue: Color? {
@@ -338,6 +363,21 @@ extension PropertyDescriptor {
                 get: { get().honkeName },
                 set: { set(E(honkeName: $0)) }
             )
+        )
+    }
+
+    /// ファイル参照。値はパス文字列として読み書きし、相対パスも
+    /// そのまま保持する（解決は供給層がプロジェクト位置を基準に
+    /// 行う。常に絶対パスへ置換しない）。
+    public static func filePath(
+        id: String, displayName: String, group: String,
+        fileGroup: PropertyFileGroup, showsThumbnail: Bool = false,
+        get: @escaping () -> String, set: @escaping (String) -> Void
+    ) -> PropertyDescriptor {
+        PropertyDescriptor(
+            id: id, displayName: displayName, group: group,
+            kind: .filePath(group: fileGroup, showsThumbnail: showsThumbnail),
+            access: .filePath(get: get, set: set)
         )
     }
 

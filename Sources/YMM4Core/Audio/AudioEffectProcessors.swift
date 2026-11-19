@@ -211,14 +211,29 @@ public final class EchoAudioStream: AudioEffectProcessorBase {
     public init(interval: TimeSpanValue, attenuation: Double) {
         self.interval = interval
         self.attenuation = attenuation
-        if attenuation <= 0 {
-            repeatCount = 0
-        } else if attenuation >= 1 {
-            repeatCount = 50
-        } else {
-            repeatCount = min(50, Int(ceil(log(0.01) / log(attenuation))))
-        }
+        repeatCount = Self.repeatCount(attenuation: attenuation)
         super.init()
+    }
+
+    /// 繰り返し回数。本家 `EchoEffect` のコンストラクタの式。
+    /// 減衰 0 以下では繰り返さず、1 以上では上限へ倒す（本家の式は
+    /// 対数の定義域外で不定になるため、境界はこの形で確定させている）。
+    public static func repeatCount(attenuation: Double) -> Int {
+        if attenuation <= 0 {
+            return 0
+        } else if attenuation >= 1 {
+            return 50
+        }
+        return min(50, Int(ceil(log(0.01) / log(attenuation))))
+    }
+
+    /// エコーで延びる時間。本家 `EchoEffect.AdditionalDuration`
+    /// （間隔 × 繰り返し回数）。素材の長さ（ContentLength）の尾の
+    /// 計算でも使う。
+    public static func additionalDuration(
+        interval: TimeSpanValue, attenuation: Double
+    ) -> TimeSpanValue {
+        TimeSpanValue(ticks: interval.ticks * Int64(repeatCount(attenuation: attenuation)))
     }
 
     /// 間隔分のサンプル数。本家 `BufferLength`（遅延評価）。

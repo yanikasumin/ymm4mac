@@ -198,6 +198,11 @@ final class EffectPropertyMetadataTests: XCTestCase {
         case .text:
             XCTAssertTrue(descriptor.setStringValue("fxmeta-test"), label)
             XCTAssertEqual(descriptor.stringValue, "fxmeta-test", label)
+        case .filePath:
+            // 文字列として往復することだけを確認する（ファイルの
+            // 実在は記述子では扱わない）。
+            XCTAssertTrue(descriptor.setStringValue("fxmeta-test"), label)
+            XCTAssertEqual(descriptor.stringValue, "fxmeta-test", label)
         case .enumeration(let options):
             let current = descriptor.stringValue
             guard let target = options.first(where: { $0.value != current }) else {

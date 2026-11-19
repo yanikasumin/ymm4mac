@@ -21,10 +21,15 @@ public enum ItemPropertyMetadata {
             result += videoDescriptors(group: "描画", idPrefix: "", accesses: videoAccesses(of: visual))
         }
         if let video = item as? VideoItem {
+            result += videoItemDescriptors(for: video)
             result += audioDescriptors(volume: access(video, \.volume), pan: access(video, \.pan))
         }
         if let audio = item as? AudioItem {
+            result += audioItemDescriptors(for: audio)
             result += audioDescriptors(volume: access(audio, \.volume), pan: access(audio, \.pan))
+        }
+        if let image = item as? ImageItem {
+            result += imageItemDescriptors(for: image)
         }
         if let voice = item as? VoiceItem {
             result += voiceDescriptors(for: voice)
@@ -204,6 +209,55 @@ public enum ItemPropertyMetadata {
             .boolean(
                 id: idPrefix + "IsZOrderEnabled", displayName: "Z値順に表示", group: group,
                 get: a.isZOrderEnabled.get, set: a.isZOrderEnabled.set
+            ),
+        ]
+    }
+
+    // MARK: - メディアアイテム固有（ファイル参照）
+
+    /// ファイルパスの読み書き。モデルの値は `String?`（未指定は
+    /// nil / 空文字列）だが、記述子は空文字列へ寄せて受け渡す。
+    /// setter はパスの保持だけで、ファイルは開かない（FE-R1-043）。
+    private static func filePathAccess(
+        get: @escaping () -> String?, set: @escaping (String) -> Void
+    ) -> (get: () -> String, set: (String) -> Void) {
+        (get: { get() ?? "" }, set: set)
+    }
+
+    /// 本家では FilePath は各アイテム種のグループ（VideoGroupName /
+    /// AudioGroupName / ImageGroupName）に属し、`FileSelector` 属性を
+    /// 持つ（動画・画像は ShowThumbnail = true、音声は指定なし）。
+    /// 表示名は `Texts` の実文字列が確認できないためプロパティ名
+    /// そのままにする（従来方針）。
+    private static func videoItemDescriptors(for video: VideoItem) -> [PropertyDescriptor] {
+        let access = filePathAccess(get: { video.filePath }, set: { video.filePath = $0 })
+        return [
+            .filePath(
+                id: "FilePath", displayName: "FilePath", group: "動画",
+                fileGroup: .video, showsThumbnail: true,
+                get: access.get, set: access.set
+            ),
+        ]
+    }
+
+    private static func audioItemDescriptors(for audio: AudioItem) -> [PropertyDescriptor] {
+        let access = filePathAccess(get: { audio.filePath }, set: { audio.filePath = $0 })
+        return [
+            .filePath(
+                id: "FilePath", displayName: "FilePath", group: "音声",
+                fileGroup: .audio, showsThumbnail: false,
+                get: access.get, set: access.set
+            ),
+        ]
+    }
+
+    private static func imageItemDescriptors(for image: ImageItem) -> [PropertyDescriptor] {
+        let access = filePathAccess(get: { image.filePath }, set: { image.filePath = $0 })
+        return [
+            .filePath(
+                id: "FilePath", displayName: "FilePath", group: "画像",
+                fileGroup: .image, showsThumbnail: true,
+                get: access.get, set: access.set
             ),
         ]
     }

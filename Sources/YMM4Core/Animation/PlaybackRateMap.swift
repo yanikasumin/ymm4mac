@@ -88,6 +88,109 @@ public struct PlaybackRateMap: Sendable {
         return TimeSpanValue(ticks: Int64(consumed.rounded(.awayFromZero)))
     }
 
+    /// 素材が尽きる時刻（アイテム内時刻）。本家 `FindContentExhaustedTime`。
+    ///
+    /// テーブル範囲内では、累積消費が素材範囲 [0, contentLength] の
+    /// 境界へ達するフレーム内位置を、レートの線形変化に対する二次式で
+    /// 解く（本家の SolveCrossingTau）。範囲内で尽きない場合は末尾の
+    /// レートで外挿し、末尾レートが 0 のときだけ nil を返す。
+    /// `contentStart` は消費の起点（通常は開始レートの符号で
+    /// `contentOffset` か `contentLength - contentOffset`）。
+    public func findContentExhaustedTime(
+        itemLength: Int, fps: Int,
+        contentOffset: TimeSpanValue, contentLength: TimeSpanValue,
+        contentStart: TimeSpanValue? = nil
+    ) -> TimeSpanValue? {
+        let contentTicks = contentLength.ticks
+        let table = table(itemLength: itemLength, fps: fps)
+        let frameDuration = table.frameDurationTicks
+        let start = contentStart.map { Double($0.ticks) }
+            ?? (table.rates[0] >= 0
+                ? Double(contentOffset.ticks)
+                : Double(contentTicks - contentOffset.ticks))
+        if start < 0 || Double(contentTicks) < start {
+            return .zero
+        }
+        var previous = start
+        for i in 1...table.length {
+            let current = start + table.cumulativeTicks[i]
+            let rate0 = table.rates[i - 1]
+            let rate1 = table.rates[i]
+            let slope = (rate1 - rate0) / frameDuration
+            if rate0 * rate1 < 0 {
+                // フレーム内でレートの符号が変わる場合はゼロ交点を先に見る。
+                let tauZero = (0 - rate0) / slope
+                let atZero = previous + (rate0 + slope * tauZero / 2) / 100 * tauZero
+                if atZero < 0 || Double(contentTicks) < atZero {
+                    let boundary = atZero < 0 ? 0.0 : Double(contentTicks)
+                    let tau = Self.solveCrossingTau(
+                        previous: previous, rate0: rate0, slopePerTick: slope,
+                        boundary: boundary, tauLimit: tauZero
+                    ) ?? tauZero
+                    return TimeSpanValue(
+                        ticks: Int64(Double(i - 1) * frameDuration + tau)
+                    )
+                }
+            }
+            if current < 0 || Double(contentTicks) < current {
+                let boundary = current < 0 ? 0.0 : Double(contentTicks)
+                let fallback = min(max((boundary - previous) / (current - previous), 0), 1)
+                    * frameDuration
+                let tau = Self.solveCrossingTau(
+                    previous: previous, rate0: rate0, slopePerTick: slope,
+                    boundary: boundary, tauLimit: frameDuration
+                ) ?? fallback
+                return TimeSpanValue(
+                    ticks: Int64(Double(i - 1) * frameDuration + tau)
+                )
+            }
+            previous = current
+        }
+        // テーブルの末尾までに尽きなければ、末尾レートで外挿する。
+        let endRate = table.rates[table.length] / 100
+        let consumedAtEnd = start + table.cumulativeTicks[table.length]
+        let itemEndTicks = Double(table.length) * frameDuration
+        if endRate > 0 {
+            return TimeSpanValue(
+                ticks: Int64(itemEndTicks + (Double(contentTicks) - consumedAtEnd) / endRate)
+            )
+        }
+        if endRate < 0 {
+            return TimeSpanValue(
+                ticks: Int64(itemEndTicks + consumedAtEnd / (0 - endRate))
+            )
+        }
+        return nil
+    }
+
+    /// 境界へ達するフレーム内位置（tick）を二次式で解く。
+    /// 本家 `SolveCrossingTau`。(0, tauLimit] に入る小さい方の解を返す。
+    private static func solveCrossingTau(
+        previous: Double, rate0: Double, slopePerTick: Double,
+        boundary: Double, tauLimit: Double
+    ) -> Double? {
+        let a = slopePerTick / 200
+        let b = rate0 / 100
+        let c = previous - boundary
+        var root1: Double
+        var root2: Double
+        if abs(a) < 1e-18 {
+            if b == 0 { return nil }
+            root1 = -c / b
+            root2 = root1
+        } else {
+            let discriminant = b * b - 4 * a * c
+            if discriminant < 0 { return nil }
+            let sqrtD = discriminant.squareRoot()
+            root1 = (-b - sqrtD) / (2 * a)
+            root2 = (-b + sqrtD) / (2 * a)
+            if root2 < root1 { swap(&root1, &root2) }
+        }
+        if 0 < root1 && root1 <= tauLimit { return root1 }
+        if 0 < root2 && root2 <= tauLimit { return root2 }
+        return nil
+    }
+
     /// 素材側の時刻。本家 `GetSourceTime`。
     ///
     /// 定数レートでは符号で向きを切り替える。非定数ではテーブルの積分を
