@@ -231,23 +231,23 @@ enum AddItemKind: String, CaseIterable {
         }
     }
 
-    /// ツールバー用の SF Symbol（本家は MaterialDesign アイコン。
-    /// 対応する近似シンボルを使う）。
-    var systemImage: String {
+    /// ツールバー用の MDI アイコン名。本家の割り当て（IconKeys.YMM4、
+    /// 実測で確定）そのものを使う（ICON-MDI）。
+    var mdiIcon: String {
         switch self {
-        case .voice: return "text.bubble"
-        case .text: return "textformat"
+        case .voice: return "message-text-outline"
+        case .text: return "format-text"
         case .video: return "video"
-        case .audio: return "music.note"
-        case .image: return "photo"
-        case .shape: return "square.on.circle"
-        case .tachie: return "person"
-        case .face: return "face.smiling"
-        case .effect: return "wand.and.stars"
-        case .transition: return "arrow.left.and.right.square"
-        case .scene: return "chart.bar.xaxis"
-        case .frameBuffer: return "photo.on.rectangle.angled"
-        case .group: return "square.stack.3d.up"
+        case .audio: return "music"
+        case .image: return "image"
+        case .shape: return "shape-plus"
+        case .tachie: return "account"
+        case .face: return "emoticon-outline"
+        case .effect: return "image-auto-adjust"
+        case .transition: return "gradient-horizontal"
+        case .scene: return "chart-timeline"
+        case .frameBuffer: return "image-multiple"
+        case .group: return "select-group"
         }
     }
 }

@@ -1,3 +1,4 @@
+import AppIcons
 import AppKit
 import SwiftUI
 import YMM4Core
@@ -30,7 +31,7 @@ struct EffectInspectorView: View {
                     Button {
                         isAddPopupPresented = true
                     } label: {
-                        Image(systemName: "plus")
+                        MDIIcon("plus", size: 14)
                     }
                     .buttonStyle(.borderless)
                     .help(UIStrings.Inspector.addEffect)
@@ -111,7 +112,7 @@ private struct EffectInspectorRow: View {
                 Button {
                     onRemove()
                 } label: {
-                    Image(systemName: "minus.circle")
+                    MDIIcon("minus-circle", size: 14)
                 }
                 .buttonStyle(.borderless)
                 .help(UIStrings.Inspector.removeEffect)

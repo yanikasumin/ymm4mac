@@ -1,3 +1,4 @@
+import AppIcons
 import SwiftUI
 import YMM4Core
 
@@ -37,8 +38,7 @@ extension TimelineStripView {
                 mutateLayerSetting(layer) { $0.isHidden.toggle() }
                 onEdited()
             } label: {
-                Image(systemName: setting.isHidden ? "eye.slash" : "eye")
-                    .font(.system(size: 10))
+                MDIIcon(setting.isHidden ? "eye-off" : "eye", size: 12)
             }
             .buttonStyle(.borderless)
             .foregroundStyle(setting.isHidden ? .primary : .secondary)
@@ -69,8 +69,7 @@ extension TimelineStripView {
                     onEdited()
                 }
             } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 10))
+                MDIIcon("dots-vertical", size: 12)
             }
             .menuStyle(.borderlessButton)
             .frame(width: 14)

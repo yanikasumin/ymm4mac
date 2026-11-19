@@ -1,3 +1,4 @@
+import AppIcons
 import AppKit
 import SwiftUI
 import YMM4Core
@@ -337,8 +338,7 @@ struct TimelineStripView: View {
                 .offset(x: 3, y: 6)
 
             if item.isLocked {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 8))
+                MDIIcon("lock", size: 10)
                     .foregroundStyle(.white)
                     .frame(width: max(width - 4, 0), alignment: .trailing)
                     .offset(y: 6)

@@ -1,3 +1,4 @@
+import AppIcons
 import SwiftUI
 import YMM4Core
 
@@ -36,8 +37,7 @@ struct SerifInputView: View {
                 Menu {
                     Toggle(UIStrings.Serif.addAndSeek, isOn: $seeksAfterAdd)
                 } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9))
+                    MDIIcon("chevron-down", size: 11)
                 }
                 .menuStyle(.borderlessButton)
                 .frame(width: 18)
@@ -75,7 +75,7 @@ struct SerifInputView: View {
             // するが、設定画面は未接続）。
             Button {
             } label: {
-                Image(systemName: "person.crop.circle.badge.gearshape")
+                MDIIcon("account-edit", size: 18)
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.borderless)

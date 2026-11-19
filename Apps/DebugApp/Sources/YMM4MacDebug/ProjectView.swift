@@ -1,3 +1,4 @@
+import AppIcons
 import AppKit
 import PreviewCore
 import SwiftUI
@@ -533,8 +534,7 @@ struct ProjectView: View {
                 isDebugDrawerExpanded.toggle()
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: isDebugDrawerExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9))
+                    MDIIcon(isDebugDrawerExpanded ? "chevron-down" : "chevron-right", size: 11)
                     Text("デバッグ（書き出し・診断・往復チェック）")
                         .font(.caption)
                     Spacer()
@@ -1143,7 +1143,7 @@ struct ProjectView: View {
     private func transportBar(timeline: Timeline) -> some View {
         HStack(spacing: 2) {
             transportButton(
-                isPlayingForm ? "pause.fill" : "play.fill",
+                isPlayingForm ? "pause" : "play",
                 help: isPlayingForm ? UIStrings.Transport.pause : UIStrings.Transport.play
             ) {
                 if let playbackEngine {
@@ -1152,7 +1152,7 @@ struct ProjectView: View {
                     isPlayingForm.toggle()
                 }
             }
-            transportButton("stop.fill", help: UIStrings.Transport.stop) {
+            transportButton("stop", help: UIStrings.Transport.stop) {
                 if let playbackEngine {
                     playbackEngine.stop()
                 } else {
@@ -1198,7 +1198,7 @@ struct ProjectView: View {
                     }
                 }
             } label: {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
+                MDIIcon("vector-bezier", size: 20)
                     .frame(width: 24, height: 24)
             }
             .menuStyle(.borderlessButton)
@@ -1218,17 +1218,17 @@ struct ProjectView: View {
             .pickerStyle(.menu)
             .frame(width: 80)
             .help(UIStrings.Transport.previewZoom)
-            transportButton("aspectratio", help: UIStrings.Transport.fit) {
+            transportButton("fit-to-page", help: UIStrings.Transport.fit) {
                 previewDisplayZoom = 1.0
             }
 
-            transportButton("backward.end.fill", help: UIStrings.Transport.seekToStart) {
+            transportButton("skip-previous", help: UIStrings.Transport.seekToStart) {
                 seek(to: 0, timeline: timeline)
             }
-            transportButton("chevron.backward.2", help: UIStrings.Transport.seekToPrevEditPoint) {
+            transportButton("step-backward-2", help: UIStrings.Transport.seekToPrevEditPoint) {
                 seekToPreviousEditPoint(timeline: timeline)
             }
-            transportButton("chevron.backward", help: UIStrings.Transport.seekToPrevFrame) {
+            transportButton("step-backward", help: UIStrings.Transport.seekToPrevFrame) {
                 seek(to: Int(previewFrame) - 1, timeline: timeline)
             }
 
@@ -1251,13 +1251,13 @@ struct ProjectView: View {
             }
             .padding(.horizontal, 6)
 
-            transportButton("chevron.forward", help: UIStrings.Transport.seekToNextFrame) {
+            transportButton("step-forward", help: UIStrings.Transport.seekToNextFrame) {
                 seek(to: Int(previewFrame) + 1, timeline: timeline)
             }
-            transportButton("chevron.forward.2", help: UIStrings.Transport.seekToNextEditPoint) {
+            transportButton("step-forward-2", help: UIStrings.Transport.seekToNextEditPoint) {
                 seekToNextEditPoint(timeline: timeline)
             }
-            transportButton("forward.end.fill", help: UIStrings.Transport.seekToEnd) {
+            transportButton("skip-next", help: UIStrings.Transport.seekToEnd) {
                 seek(to: timeline.length, timeline: timeline)
             }
 
@@ -1265,7 +1265,7 @@ struct ProjectView: View {
             // 音量は幅150の TextBoxSlider（スライダ＋数値欄）、
             // 0–100% を F1 表示。
             transportToggle(
-                isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                isMuted ? "volume-off" : "volume-high",
                 help: UIStrings.Transport.mute, isOn: $isMuted
             )
             .onChange(of: isMuted) { _, newValue in
@@ -1293,13 +1293,14 @@ struct ProjectView: View {
     ]
 
     /// 状態を持つトグルボタン（トランスポート用）。
+    /// アイコンは MDI 名で指定する（ICON-MDI）。
     private func transportToggle(
-        _ systemImage: String, help: String, isOn: Binding<Bool>
+        _ mdiIcon: String, help: String, isOn: Binding<Bool>
     ) -> some View {
         Button {
             isOn.wrappedValue.toggle()
         } label: {
-            Image(systemName: systemImage)
+            MDIIcon(mdiIcon, size: 20)
                 .frame(width: 24, height: 24)
                 .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.primary)
                 .background(
@@ -1312,10 +1313,10 @@ struct ProjectView: View {
     }
 
     private func transportButton(
-        _ systemImage: String, help: String, action: @escaping () -> Void
+        _ mdiIcon: String, help: String, action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
+            MDIIcon(mdiIcon, size: 20)
                 .frame(width: 24, height: 24)
         }
         .buttonStyle(.borderless)
@@ -2000,7 +2001,7 @@ struct ProjectView: View {
 
     private func zoomToolbar(timeline: Timeline) -> some View {
         HStack(spacing: 2) {
-            Image(systemName: "magnifyingglass")
+            MDIIcon("magnify", size: 16)
                 .frame(width: 18, height: 22)
                 .foregroundStyle(.secondary)
             // 本家 TextBoxSlider（TimelineView.xaml 572）: 全幅120、
@@ -2017,7 +2018,7 @@ struct ProjectView: View {
                 .monospacedDigit()
                 .frame(width: 41, alignment: .trailing)
             // 全体フィットは本家のズームツールバーには無い独自ボタン。
-            toolbarButton("arrow.up.left.and.arrow.down.right", help: UIStrings.Toolbar.fitAll) {
+            toolbarButton("fit-to-screen", help: UIStrings.Toolbar.fitAll) {
                 let fit = Double(canvasViewportWidth)
                     / Double(max(timeline.length, 1)) * 100
                 timelineZoomPercent = min(max(fit, 0.01), 4000)
@@ -2045,7 +2046,7 @@ struct ProjectView: View {
         HStack(spacing: 2) {
             ForEach(AddItemKind.allCases, id: \.self) { kind in
                 toolbarButton(
-                    kind.systemImage,
+                    kind.mdiIcon,
                     help: UIStrings.Toolbar.tip(kind.displayName)
                 ) {
                     addItem(kind: kind, timeline: timeline)
@@ -2056,7 +2057,7 @@ struct ProjectView: View {
             Menu {
                 Text(UIStrings.Menu.noHistory)
             } label: {
-                Image(systemName: "book")
+                MDIIcon("book", size: 18)
                     .frame(width: 22, height: 22)
             }
             .menuStyle(.borderlessButton)
@@ -2065,7 +2066,7 @@ struct ProjectView: View {
             Menu {
                 Text(UIStrings.Menu.noHistory)
             } label: {
-                Image(systemName: "clock")
+                MDIIcon("history", size: 18)
                     .frame(width: 22, height: 22)
             }
             .menuStyle(.borderlessButton)
@@ -2081,49 +2082,51 @@ struct ProjectView: View {
             // Undo/Redo は Core の EditCoordinator へ接続済み
             // （FE-UNDO-WIRING）。有効条件は履歴の有無に加えて
             // 操作状態（編集中は不可）も見る（WorkspaceState 側）。
-            toolbarButton("arrow.uturn.backward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.undo, shortcut: UIStrings.Toolbar.shortcutUndo)) {
+            toolbarButton("undo", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.undo, shortcut: UIStrings.Toolbar.shortcutUndo)) {
                 performUndo(timeline: timeline)
             }
             .disabled(!workspace.canPerformUndo)
-            toolbarButton("arrow.uturn.forward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.redo, shortcut: UIStrings.Toolbar.shortcutRedo)) {
+            toolbarButton("redo", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.redo, shortcut: UIStrings.Toolbar.shortcutRedo)) {
                 performRedo(timeline: timeline)
             }
             .disabled(!workspace.canPerformRedo)
             toolbarDivider
             // 切り取り／コピー／貼り付けはアイテム用クリップボードが
             // 無いため未接続（無効表示）。
-            toolbarButton("scissors", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.cut, shortcut: UIStrings.Toolbar.shortcutCut)) {}
+            toolbarButton("content-cut", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.cut, shortcut: UIStrings.Toolbar.shortcutCut)) {}
                 .disabled(true)
-            toolbarButton("doc.on.doc", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.copy, shortcut: UIStrings.Toolbar.shortcutCopy)) {}
+            toolbarButton("content-copy", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.copy, shortcut: UIStrings.Toolbar.shortcutCopy)) {}
                 .disabled(true)
-            toolbarButton("doc.on.clipboard", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.paste, shortcut: UIStrings.Toolbar.shortcutPaste)) {}
+            toolbarButton("content-paste", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.paste, shortcut: UIStrings.Toolbar.shortcutPaste)) {}
                 .disabled(true)
-            toolbarButton("square.split.1x2", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.split, shortcut: UIStrings.Toolbar.shortcutSplit)) {
+            toolbarButton("paper-cut-vertical", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.split, shortcut: UIStrings.Toolbar.shortcutSplit)) {
                 splitAtPlayhead(timeline: timeline)
             }
             toolbarDivider
             // グループ化／グループ解除は本家ではトグル対（一方のみ表示）。
             if let item = selectedItem, item.group != 0 {
-                toolbarButton("square.stack.3d.up.slash", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.ungroup)) {
+                toolbarButton("ungroup", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.ungroup)) {
                     executeWorkspaceAction(.ungroupSelection, timeline: timeline)
                 }
             } else {
-                toolbarButton("square.stack.3d.up", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.group)) {
+                toolbarButton("group", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.group)) {
                     executeWorkspaceAction(.groupSelection, timeline: timeline)
                 }
             }
             // クリッピング／ロックも本家ではトグル対。
             if isSelectedItemClipping {
-                toolbarButton("square.dashed.inset.filled", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.clippingOff)) {
+                // クリッピング OFF の描き分けは本家で未確認（対応なし）
+                // のため SF Symbol のまま残す（ICON-MDI 台帳参照）。
+                toolbarSFButton("square.dashed.inset.filled", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.clippingOff)) {
                     executeWorkspaceAction(.toggleClipping, timeline: timeline)
                 }
             } else {
-                toolbarButton("square.dashed", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.clippingOn)) {
+                toolbarButton("vector-clipping", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.clippingOn)) {
                     executeWorkspaceAction(.toggleClipping, timeline: timeline)
                 }
             }
             if selectedItem?.isLocked == true {
-                toolbarButton("lock.open", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.unlock)) {
+                toolbarButton("lock-open-outline", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.unlock)) {
                     executeWorkspaceAction(.toggleLock, timeline: timeline)
                 }
             } else {
@@ -2135,20 +2138,20 @@ struct ProjectView: View {
             gridSplitButton
             meterMenuButton
             toolbarDivider
-            toolbarButton("trash", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.delete, shortcut: UIStrings.Toolbar.shortcutDelete)) {
+            toolbarButton("delete", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.delete, shortcut: UIStrings.Toolbar.shortcutDelete)) {
                 executeWorkspaceAction(.deleteSelection, timeline: timeline)
             }
-            toolbarButton("trash.slash", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.deleteAndMove)) {
+            toolbarButton("delete-sweep", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.deleteAndMove)) {
                 executeWorkspaceAction(.deleteAndMoveAll, timeline: timeline)
             }
             toolbarDivider
-            toolbarButton("arrow.left.to.line", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.selectLeft)) {
+            toolbarButton("contain-start", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.selectLeft)) {
                 executeWorkspaceAction(.selectLeftItems, timeline: timeline)
             }
-            toolbarButton("arrow.right.to.line", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.selectRight)) {
+            toolbarButton("contain-end", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.selectRight)) {
                 executeWorkspaceAction(.selectRightItems, timeline: timeline)
             }
-            toolbarButton("selection.pin.in.out", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.selectAll, shortcut: UIStrings.Toolbar.shortcutSelectAll)) {
+            toolbarButton("select-all", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.selectAll, shortcut: UIStrings.Toolbar.shortcutSelectAll)) {
                 executeWorkspaceAction(.selectAll, timeline: timeline)
             }
         }
@@ -2170,7 +2173,7 @@ struct ProjectView: View {
     private var waveformSplitButton: some View {
         HStack(spacing: 0) {
             toolbarButton(
-                waveformVisibility == .hidden ? "waveform.slash" : "waveform",
+                waveformVisibility == .hidden ? "waveform-off" : "waveform",
                 help: UIStrings.Toolbar.tip(UIStrings.Toolbar.waveform)
             ) {
                 waveformVisibility = waveformVisibility == .hidden ? .always : .hidden
@@ -2180,8 +2183,7 @@ struct ProjectView: View {
                 waveformModeButton(.onMouseOver, name: UIStrings.Toolbar.waveformOnMouseOver)
                 waveformModeButton(.hidden, name: UIStrings.Toolbar.waveformHidden)
             } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8))
+                MDIIcon("chevron-down", size: 9)
                     .frame(width: 10, height: 22)
             }
             .menuStyle(.borderlessButton)
@@ -2208,7 +2210,7 @@ struct ProjectView: View {
     private var gridSplitButton: some View {
         HStack(spacing: 0) {
             toolbarButton(
-                "square.grid.3x3",
+                "grid",
                 help: UIStrings.Toolbar.tip(UIStrings.Toolbar.gridLine)
             ) {
                 showVerticalLines.toggle()
@@ -2226,8 +2228,7 @@ struct ProjectView: View {
                 Button(UIStrings.Toolbar.gridLineSettings) {}
                     .disabled(true)
             } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8))
+                MDIIcon("chevron-down", size: 9)
                     .frame(width: 10, height: 22)
             }
             .menuStyle(.borderlessButton)
@@ -2241,7 +2242,7 @@ struct ProjectView: View {
             Toggle(UIStrings.Toolbar.peakMeter, isOn: $isPeakMeterEnabled)
             Toggle(UIStrings.Toolbar.loudnessMeter, isOn: $isLoudnessMeterEnabled)
         } label: {
-            Image(systemName: "gauge.with.needle")
+            MDIIcon("altimeter", size: 18)
                 .frame(width: 22, height: 22)
         }
         .menuStyle(.borderlessButton)
@@ -2253,23 +2254,25 @@ struct ProjectView: View {
 
     private func projectToolbar(timeline: Timeline) -> some View {
         HStack(spacing: 2) {
-            toolbarButton("doc.badge.plus", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.newProject, shortcut: UIStrings.Toolbar.shortcutNew)) {
+            toolbarButton("file-plus", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.newProject, shortcut: UIStrings.Toolbar.shortcutNew)) {
                 workspace.newProject()
             }
-            toolbarButton("folder", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.openProject, shortcut: UIStrings.Toolbar.shortcutOpen)) {
+            toolbarButton("folder-open", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.openProject, shortcut: UIStrings.Toolbar.shortcutOpen)) {
                 workspace.isImporterPresented = true
             }
-            toolbarButton("square.and.arrow.down", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.saveProject, shortcut: UIStrings.Toolbar.shortcutSave)) {
+            toolbarButton("content-save", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.saveProject, shortcut: UIStrings.Toolbar.shortcutSave)) {
                 workspace.saveCopy()
             }
             toolbarDivider
-            toolbarButton("tuningfork", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.videoInfo)) {
+            // 動画情報に対応する本家アイコンは未確認（対応なし）の
+            // ため SF Symbol のまま残す（ICON-MDI 台帳参照）。
+            toolbarSFButton("tuningfork", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.videoInfo)) {
                 isVideoSettingsPresented = true
             }
             toolbarDivider
-            toolbarButton("film", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputExo)) {}
+            toolbarButton("file-filmstrip-outline", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputExo)) {}
                 .disabled(true)
-            toolbarButton("play.rectangle", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputVideo)) {
+            toolbarButton("animation-play", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputVideo)) {
                 isExportDialogPresented = true
             }
             .disabled(exportState.isRunning)
@@ -2291,8 +2294,7 @@ struct ProjectView: View {
                         saveThumbnail(format: .jpeg, timeline: timeline)
                     }
                 } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 8))
+                    MDIIcon("chevron-down", size: 9)
                         .frame(width: 10, height: 22)
                 }
                 .menuStyle(.borderlessButton)
@@ -2310,8 +2312,11 @@ struct ProjectView: View {
             workspace.statusMessage =
                 "フィードバック送信は未接続です（問い合わせはヘルプメニューから開けます）"
         } label: {
-            Label(UIStrings.Toolbar.feedback, systemImage: "exclamationmark.bubble")
-                .font(.callout)
+            HStack(spacing: 4) {
+                MDIIcon("message-alert-outline", size: 16)
+                Text(UIStrings.Toolbar.feedback)
+            }
+            .font(.callout)
         }
         .buttonStyle(.borderless)
         .help(UIStrings.Toolbar.tip(UIStrings.Toolbar.feedback))
@@ -2324,7 +2329,21 @@ struct ProjectView: View {
             .padding(.horizontal, 4)
     }
 
+    /// ツールバーボタン。アイコンは MDI 名で指定する（ICON-MDI）。
     private func toolbarButton(
+        _ mdiIcon: String, help: String, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            MDIIcon(mdiIcon, size: 18)
+                .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.borderless)
+        .help(help)
+    }
+
+    /// MDI に対応が無い箇所だけに残す SF Symbol 版ツールバーボタン。
+    /// 残置箇所と理由は台帳（ICON-MDI）に記録する。
+    private func toolbarSFButton(
         _ systemImage: String, help: String, action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
