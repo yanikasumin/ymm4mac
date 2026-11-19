@@ -282,7 +282,8 @@ struct ProjectView: View {
                         // project.filePath は .ymmp 内に保存された値で、
                         // 開いたファイルと一致するとは限らない（R10-02）。
                         defaultPngWavFileName: sourceURL?
-                            .deletingPathExtension().lastPathComponent ?? "untitled"
+                            .deletingPathExtension().lastPathComponent ?? "untitled",
+                        isExportRunning: exportState.isRunning
                     ) { request in
                         runExport(timeline: timeline, request: request)
                     }
@@ -730,7 +731,7 @@ struct ProjectView: View {
 
     /// ハンドルのドラッグ。四隅は中心からの距離の比で拡大率を、
     /// 辺の中点は中心まわりの角度差で回転角を変える。書き込みは
-    /// 移動ドラッグと同じ規則（定数なら定数化、それ以外は先頭値のみ）。
+    /// 移動ドラッグと同じ規則（writeAnimationValue の振り分け）。
     private func handleDragGesture(
         kind: HandleKind, item: BaseItem, bounds: CGRect,
         scale: CGFloat, timeline: Timeline
@@ -770,7 +771,7 @@ struct ProjectView: View {
                     let factor = Double(hypot(dx, dy) / drag.startDistance)
                     let newZoom = drag.startZoom * factor
                     guard abs(newZoom - drag.lastWritten) >= 0.5 else { return }
-                    writeAnimationProperty(item: target, displayName: "拡大率", value: newZoom)
+                    writeAnimationProperty(item: target, displayName: "拡大率", value: newZoom, timeline: timeline)
                     updated.lastWritten = newZoom
                 case .rotation:
                     let angle = atan2(Double(dy), Double(dx)) * 180 / .pi
@@ -779,7 +780,7 @@ struct ProjectView: View {
                     while delta < -180 { delta += 360 }
                     let newRotation = drag.startRotation + delta
                     guard abs(newRotation - drag.lastWritten) >= 0.5 else { return }
-                    writeAnimationProperty(item: target, displayName: "回転角", value: newRotation)
+                    writeAnimationProperty(item: target, displayName: "回転角", value: newRotation, timeline: timeline)
                     updated.lastWritten = newRotation
                 }
                 handleDrag = updated
@@ -794,16 +795,36 @@ struct ProjectView: View {
     }
 
     /// アニメーション付きプロパティへの書き込み（表示名で引く）。
-    /// ドラッグ移動と同じ規則: 定数なら定数化、それ以外は先頭値のみ。
-    private func writeAnimationProperty(item: BaseItem, displayName: String, value: Double) {
+    /// ドラッグ移動と同じ規則（writeAnimationValue に集約）。
+    private func writeAnimationProperty(
+        item: BaseItem, displayName: String, value: Double, timeline: Timeline
+    ) {
         for descriptor in ItemPropertyMetadata.descriptors(for: item)
         where descriptor.kind == .animation && descriptor.displayName == displayName {
-            guard let animation = descriptor.animationValue else { continue }
-            if animation.animationType == .none {
-                descriptor.setAnimationConstantValue(value)
-            } else {
-                descriptor.setAnimationFirstValue(value)
-            }
+            writeAnimationValue(
+                descriptor: descriptor, item: item, timeline: timeline, value: value)
+        }
+    }
+
+    /// プレビュー操作からのアニメーション値の書き込み経路。
+    /// インスペクタ（AnimationRowView.writeValue）と同一の振り分け:
+    /// 定数は定数化、キーフレームがある場合は再生ヘッドが属する
+    /// 区間の開始値、それ以外は先頭値（FE-R1-006。先頭値への固定
+    /// 書き換えでは、表示中の区間と無関係な値が変わる）。
+    private func writeAnimationValue(
+        descriptor: PropertyDescriptor, item: BaseItem, timeline: Timeline,
+        value: Double
+    ) {
+        guard let animation = descriptor.animationValue else { return }
+        if animation.animationType == .none {
+            descriptor.setAnimationConstantValue(value)
+        } else if animation.animationType.isKeyFrameSupported,
+                  !animation.keyFrames.frames.isEmpty {
+            let context = animationContext(for: item, timeline: timeline)
+            descriptor.setAnimationValue(
+                value, atSegment: animation.segmentIndex(atFrame: context.frame))
+        } else {
+            descriptor.setAnimationFirstValue(value)
         }
     }
 
@@ -822,7 +843,7 @@ struct ProjectView: View {
                     // 0.5px 以上動いたときだけ行う。
                     guard abs(newX - drag.lastWrittenX) >= 0.5
                         || abs(newY - drag.lastWrittenY) >= 0.5 else { return }
-                    writeItemPosition(item: item, x: newX, y: newY)
+                    writeItemPosition(item: item, x: newX, y: newY, timeline: timeline)
                     drag.lastWrittenX = newX
                     drag.lastWrittenY = newY
                     previewDrag = drag
@@ -937,9 +958,11 @@ struct ProjectView: View {
     }
 
     /// ドラッグ移動の書き込み。インスペクタの数値確定と同じ規則
-    /// （定数なら定数化、それ以外は先頭値のみ書き換え）で、既存の
-    /// 記述子経路を通して X/Y へ書き込む。
-    private func writeItemPosition(item: BaseItem, x: Double, y: Double) {
+    /// （writeAnimationValue の振り分け）で、既存の記述子経路を
+    /// 通して X/Y へ書き込む。
+    private func writeItemPosition(
+        item: BaseItem, x: Double, y: Double, timeline: Timeline
+    ) {
         for descriptor in ItemPropertyMetadata.descriptors(for: item)
         where descriptor.kind == .animation {
             let value: Double
@@ -948,12 +971,8 @@ struct ProjectView: View {
             case "Y": value = y
             default: continue
             }
-            guard let animation = descriptor.animationValue else { continue }
-            if animation.animationType == .none {
-                descriptor.setAnimationConstantValue(value)
-            } else {
-                descriptor.setAnimationFirstValue(value)
-            }
+            writeAnimationValue(
+                descriptor: descriptor, item: item, timeline: timeline, value: value)
         }
     }
 
@@ -1322,16 +1341,18 @@ struct ProjectView: View {
 
     /// アイテムを現在フレーム・表示最上段レイヤーへ追加し、選択する
     /// （配置は本家 GetCurrentLayer() の規則。MainViewModel.cs 4493）。
+    /// 追加は Core の衝突解決つき追加（tryAddItems）を経由する
+    /// （FE-R1-009）。配置位置は引数で渡し、アイテム側へ事前に
+    /// 書き込まない（tryAddItems が差分で配置する）。選択の確定も
+    /// tryAddItems 側が行うため、UI 側はインデックスを引き直す。
     private func addItem(kind: AddItemKind, timeline: Timeline) {
         let item = makeItem(kind: kind)
-        item.frame = Int(previewFrame)
-        item.layer = topVisibleLayer
         item.length = placeholderItemLength(timeline: timeline)
-        timeline.addItems([item])
-        timeline.refreshTimelineLengthAndMaxLayer()
+        guard timeline.tryAddItems(
+            [item], frame: Int(previewFrame), layer: topVisibleLayer)
+        else { return }
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
-            timeline.selectItems([item])
         }
         requestPreviewRender(modelChanged: true)
     }
@@ -1348,14 +1369,14 @@ struct ProjectView: View {
         item.character = project.characters.first { $0.name == characterName }
         item.characterName = characterName ?? ""
         item.serif = serif
-        item.frame = Int(previewFrame)
-        item.layer = topVisibleLayer
         item.length = placeholderItemLength(timeline: timeline)
-        timeline.addItems([item])
-        timeline.refreshTimelineLengthAndMaxLayer()
+        // 追加は衝突解決つきの tryAddItems を経由する（FE-R1-009）。
+        // 配置後の item.frame がシーク先になる。
+        guard timeline.tryAddItems(
+            [item], frame: Int(previewFrame), layer: topVisibleLayer)
+        else { return }
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
-            timeline.selectItems([item])
         }
         if seeksAfterAdd {
             seek(to: item.frame + item.length, timeline: timeline)
@@ -1429,14 +1450,15 @@ struct ProjectView: View {
             workspace.load(url: urls[0])
             return
         }
-        var added = false
+        // 素材アイテムを全て組み立ててから、衝突解決つきの
+        // tryAddItems で一括確定する（FE-R1-009。個別の addItems は
+        // 衝突解決を迂回し、途中まで追加された状態も残し得る）。
+        var newItems: [BaseItem] = []
         for url in urls {
             guard let kind = Self.itemKind(forFileExtension: url.pathExtension) else {
                 continue
             }
             let item = makeItem(kind: kind)
-            item.frame = Int(previewFrame)
-            item.layer = topVisibleLayer
             item.length = placeholderItemLength(timeline: timeline)
             switch item {
             case let video as VideoItem: video.filePath = url.path
@@ -1444,13 +1466,14 @@ struct ProjectView: View {
             case let image as ImageItem: image.filePath = url.path
             default: break
             }
-            timeline.addItems([item])
-            added = true
+            newItems.append(item)
         }
-        if added {
-            timeline.refreshTimelineLengthAndMaxLayer()
-            requestPreviewRender(modelChanged: true)
-        }
+        guard !newItems.isEmpty,
+              timeline.tryAddItems(
+                  newItems, frame: Int(previewFrame), layer: topVisibleLayer)
+        else { return }
+        reflectCoreSelection(timeline)
+        requestPreviewRender(modelChanged: true)
     }
 
     /// 拡張子からアイテム種別を決める（本家 FileExtensions の既定分類。
@@ -1779,6 +1802,7 @@ struct ProjectView: View {
             toolbarButton("play.rectangle", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputVideo)) {
                 isExportDialogPresented = true
             }
+            .disabled(exportState.isRunning)
             toolbarDivider
             // サムネイル保存 SplitButton（本体 = PNG 保存、
             // ドロップダウン = 形式選択。本家 §3.6(d)(e)）。
@@ -2152,15 +2176,25 @@ struct ProjectView: View {
     }
 
     /// `hh:mm:ss.ff` / `mm:ss.ff` / 秒数 のいずれかをフレームへ変換する。
+    /// Double は "nan" / "inf" も受理するため、有限でない値は各段階で
+    /// 弾く（FE-R1-005。NaN や無限大の Int 変換は trap する）。有限でも
+    /// Int の範囲を超える結果は nil を返す。
     private func parseTimeText(_ text: String, fps: Int) -> Int? {
         let parts = text.split(separator: ":")
         guard !parts.isEmpty, parts.count <= 3 else { return nil }
         var seconds = 0.0
         for part in parts {
-            guard let value = Double(part) else { return nil }
+            guard let value = Double(part), value.isFinite else { return nil }
             seconds = seconds * 60 + value
+            guard seconds.isFinite else { return nil }
         }
-        return Int((seconds * Double(max(fps, 1))).rounded())
+        let frames = (seconds * Double(max(fps, 1))).rounded()
+        guard frames.isFinite else { return nil }
+        // 範囲判定を Double の上限比較で行わない。Double(Int.max) は
+        // 2^63 へ丸められるため、2^63 ちょうどの値が比較をすり抜けて
+        // Int 変換で trap する（FE-R3-118-01）。変換はこの1か所のみで、
+        // 失敗は nil として扱う。
+        return Int(exactly: frames)
     }
 
     private var statusDivider: some View {
@@ -2573,6 +2607,11 @@ struct ProjectView: View {
     /// スナップショットを作れない場合は、編集中のモデルを共有する形へ
     /// フォールバックせず、書き出し自体を中止する。
     private func runExport(timeline: Timeline, request: ExportRequest) {
+        // 書き出し中の再入を関数側でも弾く（FE-R1-007）。開始ボタンの
+        // 無効化だけでは、シート再表示などの経路から二重に開始でき、
+        // 取消トークンの上書きと供給側（スレッド安全性なし）の
+        // 同時実行を招く。
+        guard !exportState.isRunning else { return }
         let snapshot: (timelines: [Timeline], timeline: Timeline)
         do {
             snapshot = try project.makeExportSnapshot(of: timeline)

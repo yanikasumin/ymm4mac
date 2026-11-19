@@ -16,6 +16,9 @@ struct ExportDialogView: View {
     let timeline: Timeline
     /// PngWav のファイル名接頭辞の初期値（プロジェクト名）。
     let defaultPngWavFileName: String
+    /// 書き出し実行中か。実行中は「出力」を開始できない
+    /// （FE-R1-007。開始関数側のガードと対で置く）。
+    var isExportRunning: Bool = false
     /// 「出力」確定時に、選択された形式と出力先で呼ばれる。
     var onExport: ((ExportRequest) -> Void)?
 
@@ -42,10 +45,12 @@ struct ExportDialogView: View {
     init(
         timeline: Timeline,
         defaultPngWavFileName: String = "untitled",
+        isExportRunning: Bool = false,
         onExport: ((ExportRequest) -> Void)? = nil
     ) {
         self.timeline = timeline
         self.defaultPngWavFileName = defaultPngWavFileName
+        self.isExportRunning = isExportRunning
         self.onExport = onExport
         _pngWavFileName = State(initialValue: defaultPngWavFileName)
     }
@@ -55,6 +60,7 @@ struct ExportDialogView: View {
     }
 
     private var canExport: Bool {
+        guard !isExportRunning else { return false }
         guard outputURL != nil else { return false }
         if format == .pngWav {
             // 本家 PngWav は PNG / WAV のどちらか一方でも出力できる。

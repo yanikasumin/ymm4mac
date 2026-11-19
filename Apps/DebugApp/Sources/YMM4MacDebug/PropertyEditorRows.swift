@@ -8,12 +8,19 @@ struct NumberRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
     @State private var text: String
+    /// 未編集とみなすテキスト（初期表示・フォーカス取得時点・
+    /// プログラム側の同期直後の文字列）。確定時に text がこれと
+    /// 一致すれば書き戻さない（FE-R1-019。表示は %.4g へ丸まるため、
+    /// 無編集の確定でも丸めた値がモデルへ戻り精度が失われていた）。
+    @State private var uneditedText: String
     @FocusState private var isFocused: Bool
 
     init(descriptor: PropertyDescriptor, onEdited: @escaping () -> Void) {
         self.descriptor = descriptor
         self.onEdited = onEdited
-        _text = State(initialValue: formatNumber(descriptor.numberValue ?? 0))
+        let initial = formatNumber(descriptor.numberValue ?? 0)
+        _text = State(initialValue: initial)
+        _uneditedText = State(initialValue: initial)
     }
 
     var body: some View {
@@ -27,7 +34,11 @@ struct NumberRowView: View {
                 // 確定経路が Enter のみだと、入力後に他所をクリックした編集が
                 // モデルへ届かず、行が作り直されたときに旧値へ戻って見える。
                 .onChange(of: isFocused) { _, focused in
-                    if !focused { commit() }
+                    if focused {
+                        uneditedText = text
+                    } else {
+                        commit()
+                    }
                 }
             if let range {
                 Slider(value: sliderBinding, in: range)
@@ -52,18 +63,28 @@ struct NumberRowView: View {
             set: { newValue in
                 descriptor.setNumberValue(newValue)
                 text = formatNumber(descriptor.numberValue ?? newValue)
+                uneditedText = text
                 onEdited()
             }
         )
     }
 
     private func commit() {
-        guard let value = Double(text) else {
+        // 未編集（フォーカス時点のテキストのまま）なら書き戻さない。
+        // 表示桁への丸めをモデルへ戻すと小数の精度が失われる
+        // （FE-R1-019）。
+        guard text != uneditedText else { return }
+        // 非有限値（"nan" / "inf" は Double として解釈できてしまう）も
+        // 確定しない。モデルへ入れると保存時に 0.0 へ化ける
+        // （FE-R3-118-02）。解釈できない入力と同じく表示を現在値へ戻す。
+        guard let value = Double(text), value.isFinite else {
             text = formatNumber(descriptor.numberValue ?? 0)
+            uneditedText = text
             return
         }
         descriptor.setNumberValue(value)
         text = formatNumber(descriptor.numberValue ?? value)
+        uneditedText = text
         onEdited()
     }
 }
@@ -237,6 +258,8 @@ struct AnimationRowView: View {
     /// 固定し、確定まで保持する。再生ヘッドが別区間へ移っても、
     /// 未確定の入力が別区間へ書き込まれることはない（R20-114-01）。
     @State private var focusedSegment: Int?
+    /// 未編集とみなすテキスト（数値行と同じ FE-R1-019 対策）。
+    @State private var uneditedText: String
 
     init(
         descriptor: PropertyDescriptor, animationContext: AnimationEvaluationContext,
@@ -259,7 +282,9 @@ struct AnimationRowView: View {
         } else {
             value = animation.map { animationContext.value(of: $0) } ?? 0
         }
-        _text = State(initialValue: formatNumber(value))
+        let initial = formatNumber(value)
+        _text = State(initialValue: initial)
+        _uneditedText = State(initialValue: initial)
     }
 
     /// キーフレーム編集の対象区間。キーフレーム対応型でキーフレーム
@@ -296,6 +321,7 @@ struct AnimationRowView: View {
                 .onChange(of: editingSegment) { _, _ in
                     if !isFocused {
                         text = formatNumber(displayedValue)
+                        uneditedText = text
                     }
                 }
                 // 数値行と同じく、フォーカスを外した時点でも確定する。
@@ -304,6 +330,7 @@ struct AnimationRowView: View {
                 .onChange(of: isFocused) { _, focused in
                     if focused {
                         focusedSegment = editingSegment
+                        uneditedText = text
                     } else {
                         commit()
                         focusedSegment = nil
@@ -340,6 +367,7 @@ struct AnimationRowView: View {
                 guard descriptor.animationValue != nil else { return }
                 writeValue(newValue)
                 text = formatNumber(displayedValue)
+                uneditedText = text
                 onEdited()
             }
         )
@@ -377,16 +405,23 @@ struct AnimationRowView: View {
 
     private func commit() {
         guard descriptor.animationValue != nil else { return }
-        guard let value = Double(text) else {
-            // 解釈できない入力（全角数字など）は確定せず、表示を
-            // モデルの現在値へ戻す（未確定の入力が残って見えないように）。
+        // 未編集（フォーカス時点のテキストのまま）なら書き戻さない
+        // （FE-R1-019。表示桁への丸めが区間の値へ戻ると精度が失われる）。
+        guard text != uneditedText else { return }
+        guard let value = Double(text), value.isFinite else {
+            // 解釈できない入力（全角数字など）と非有限値（"nan" /
+            // "inf"）は確定せず、表示をモデルの現在値へ戻す
+            // （未確定の入力が残って見えないように。非有限値をモデルへ
+            // 入れると保存時に 0.0 へ化ける。FE-R3-118-02）。
             text = formatNumber(displayedValue)
+            uneditedText = text
             return
         }
         // 確定先はセッションが所有する区間（フォーカス取得時点）。
         // 現在の再生ヘッド位置の区間ではない（R20-114-01）。
         writeValue(value, segment: focusedSegment ?? editingSegment)
         text = formatNumber(displayedValue)
+        uneditedText = text
         onEdited()
     }
 }
