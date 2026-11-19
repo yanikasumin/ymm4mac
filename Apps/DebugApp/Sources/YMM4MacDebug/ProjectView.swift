@@ -539,7 +539,7 @@ struct ProjectView: View {
             // 表示枠・描画寸法・座標変換は PreviewLayout が正本
             // （本家 PreviewViewModel の表示枠の式 + 均一倍率での
             // 描画と中心切り抜き。FE-R1-022）。
-            let layout = PreviewLayout(
+            let layout = PreviewCore.PreviewLayout(
                 areaSize: geometry.size,
                 videoSize: CGSize(width: info.width, height: info.height),
                 displayZoom: previewDisplayZoom
@@ -640,7 +640,7 @@ struct ProjectView: View {
     }
 
     private func previewInteractionLayer(
-        timeline: Timeline, layout: PreviewLayout
+        timeline: Timeline, layout: PreviewCore.PreviewLayout
     ) -> some View {
         let scale = layout.uniformScale
         return ZStack(alignment: .topLeading) {
@@ -703,7 +703,7 @@ struct ProjectView: View {
 
     /// 選択アイテムの操作ハンドル群（表示は 9px、当たり判定は 18px）。
     private func selectionHandles(
-        item: BaseItem, bounds: CGRect, layout: PreviewLayout, timeline: Timeline
+        item: BaseItem, bounds: CGRect, layout: PreviewCore.PreviewLayout, timeline: Timeline
     ) -> some View {
         let corners: [(CGFloat, CGFloat)] = [
             (bounds.minX, bounds.minY), (bounds.maxX, bounds.minY),
@@ -731,7 +731,7 @@ struct ProjectView: View {
 
     private func handleView(
         isCorner: Bool, item: BaseItem, bounds: CGRect,
-        point: (CGFloat, CGFloat), layout: PreviewLayout, timeline: Timeline
+        point: (CGFloat, CGFloat), layout: PreviewCore.PreviewLayout, timeline: Timeline
     ) -> some View {
         let visualSize = 9.0
         let hitSize = 18.0
@@ -772,7 +772,7 @@ struct ProjectView: View {
     /// 移動ドラッグと同じ規則（writeAnimationValue の振り分け）。
     private func handleDragGesture(
         kind: HandleKind, item: BaseItem, bounds: CGRect,
-        layout: PreviewLayout, timeline: Timeline
+        layout: PreviewCore.PreviewLayout, timeline: Timeline
     ) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named("previewArea"))
             .onChanged { value in
@@ -868,7 +868,7 @@ struct ProjectView: View {
     }
 
     private func previewDragGesture(
-        timeline: Timeline, layout: PreviewLayout
+        timeline: Timeline, layout: PreviewCore.PreviewLayout
     ) -> some Gesture {
         let scale = layout.uniformScale
         return DragGesture(minimumDistance: 0)
