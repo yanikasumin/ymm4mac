@@ -92,6 +92,9 @@ struct ProjectView: View {
     @State private var isRepeatOn = false
     /// コントロールポイント表示モード（本家の3択）。
     @State private var controlPointVisibility: ControlPointVisibility = .selectedOnly
+    /// プレビュー領域へのマウスホバー（「マウスオーバー時」モードの
+    /// 表示条件。本家 isMouseOverPreviewArea に対応）。
+    @State private var isPreviewHovering = false
     /// プレビュー表示倍率（フィット倍率への乗数。1.0 = フィット）。
     @State private var previewDisplayZoom: Double = 1.0
     /// 音量（0–100%）とミュート。エンジンへ即時反映される。
@@ -602,6 +605,21 @@ struct ProjectView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onHover { isPreviewHovering = $0 }
+    }
+
+    /// 操作ハンドル（コントロールポイント）を出すかどうか。
+    /// 本家 TimelineVideoPlayer の描画条件どおり: 「選択中のアイテム
+    /// のみ」なら選択時に常時、「プレビューにマウスオーバー時」なら
+    /// 領域へホバー中のみ、「常に表示しない」なら出さない（FE-R1-015）。
+    /// ハンドル自体がジェスチャを持つため、非表示は操作不可も兼ねる
+    /// （本家も Never ではコントローラの当たり判定を行わない）。
+    private var showsControlPoints: Bool {
+        switch controlPointVisibility {
+        case .selectedOnly: return true
+        case .onMouseOver: return isPreviewHovering
+        case .never: return false
+        }
     }
 
     // MARK: - プレビュー上の選択と移動
@@ -639,8 +657,9 @@ struct ProjectView: View {
 
             // 操作ハンドル（本家: 四隅▢ = 拡大率、辺の中点◯ = 回転角）。
             // 移動ジェスチャの層より上に置き、ハンドル上では拡大率／
-            // 回転角のドラッグが優先される。
-            if let item = selectedItem,
+            // 回転角のドラッグが優先される。表示はコントロールポイント
+            // 表示モードに従う（FE-R1-015）。
+            if showsControlPoints, let item = selectedItem,
                let bounds = previewItemBounds(item: item, timeline: timeline) {
                 selectionHandles(item: item, bounds: bounds, scale: scale, timeline: timeline)
             }
