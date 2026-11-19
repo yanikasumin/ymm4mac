@@ -82,6 +82,12 @@ struct ProjectView: View {
     /// 直近の描画で効果の失敗があったか（R6-06 の現在の失敗状態）。
     /// 正常な描画が完了すると解消する。
     @State private var previewCurrentFailure = false
+    /// 素材の利用可否の表示用写し（Issue #70 段階4）。正本は
+    /// ワークスペースの台帳であり、ここは描画結果の到着・再生
+    /// 位置の進行・セッション初期化の時点で取り直す写し。
+    /// アイテム同一性→通知（読み込み中・失敗）の対応。
+    @State private var materialNotices:
+        [ObjectIdentifier: MediaAvailabilityPresentation.Notice] = [:]
     /// 描画セッション中に発生した失敗の集約履歴（R6-06）。正常な
     /// 描画では消えず、セッションの作り直しでリセットする。
     @State private var previewDiagnostics: [RenderDiagnosticsCollector.Entry] = []
@@ -265,7 +271,8 @@ struct ProjectView: View {
                                         cancelTimelineDragUndo()
                                     },
                                     editRecorder: workspace.editRecorder,
-                                    displayRevision: timelineDisplayRevision
+                                    displayRevision: timelineDisplayRevision,
+                                    materialNotices: materialNotices
                                 )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .clipped()
@@ -616,20 +623,37 @@ struct ProjectView: View {
                     // する（切り抜き時は原点が負になる）。
                     previewInteractionLayer(timeline: timeline, layout: layout)
 
-                    // 描画診断の通知（R6-06）。直近の描画で効果の失敗が
-                    // あった場合だけ出す。詳細は診断タブの履歴を見る。
-                    // 操作の邪魔をしないようヒットテストは無効にする。
-                    if previewCurrentFailure {
+                    // 失敗の通知帯（下端）。素材の読み込み失敗
+                    // （Issue #70 段階4）と描画診断（R6-06）を重ねて
+                    // 出す。どちらも表示だけであり、レンダリング
+                    // 結果（テクスチャ）には描き込まない。操作の
+                    // 邪魔をしないようヒットテストは無効にする。
+                    if previewMaterialBanner != nil || previewCurrentFailure {
                         VStack {
                             Spacer()
-                            HStack {
-                                Text("描画診断: 一部の効果の描画に失敗しました（詳細は下部の診断タブ）")
-                                    .font(.caption)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.yellow.opacity(0.9))
-                                    .foregroundStyle(.black)
-                                Spacer()
+                            VStack(alignment: .leading, spacing: 4) {
+                                if let previewMaterialBanner {
+                                    HStack {
+                                        Text(previewMaterialBanner)
+                                            .font(.caption)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.orange.opacity(0.95))
+                                            .foregroundStyle(.black)
+                                        Spacer()
+                                    }
+                                }
+                                if previewCurrentFailure {
+                                    HStack {
+                                        Text("描画診断: 一部の効果の描画に失敗しました（詳細は下部の診断タブ）")
+                                            .font(.caption)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.yellow.opacity(0.9))
+                                            .foregroundStyle(.black)
+                                        Spacer()
+                                    }
+                                }
                             }
                         }
                         .frame(width: fittedWidth, height: fittedHeight)
@@ -2689,9 +2713,45 @@ struct ProjectView: View {
         )
     }
 
+    /// 素材の利用可否を表示用の写しへ取り直す（Issue #70 段階4）。
+    /// 台帳は ObservableObject ではないため、描画結果の到着・再生
+    /// 位置の進行・セッション初期化の時点で取り直す。走査は全
+    /// タイムラインのアイテム（シーン経由で参照される素材も
+    /// プレビューへ影響するため）。内容が変わった場合だけ差し
+    /// 替え、再生中の毎フレームの再描画を招かない。
+    private func refreshMaterialNotices() {
+        var keys: [ObjectIdentifier: MediaMaterialKey] = [:]
+        for timeline in project.timelines {
+            for item in timeline.items {
+                guard let path = MediaAvailabilityPresentation
+                        .materialPath(for: item),
+                      let url = MediaFileInfoFetcher.resolveURL(
+                          path: path, baseDirectory: baseDirectory
+                      )
+                else { continue }
+                keys[ObjectIdentifier(item)] = MediaMaterialKey(
+                    filePath: url.path
+                )
+            }
+        }
+        let updated = MediaAvailabilityPresentation.notices(
+            materialKeys: keys,
+            registry: workspace.mediaSupport.registry
+        )
+        if updated != materialNotices {
+            materialNotices = updated
+        }
+    }
+
+    /// プレビューの重ね表示に出す素材失敗の集約文（なければ nil）。
+    private var previewMaterialBanner: String? {
+        MediaAvailabilityPresentation.previewBanner(notices: materialNotices)
+    }
+
     /// セッション（ファイル＋タイムライン）が変わったときの初期化。
     /// フレームはタイムラインの現在フレームへ合わせる。
     private func resetPreview() {
+        refreshMaterialNotices()
         previewWorker.invalidate(generation: previewSessionGeneration)
         previewSessionGeneration += 1
         pendingModelRefreshItem?.cancel()
@@ -2745,6 +2805,7 @@ struct ProjectView: View {
             // セッションの集約で置き換える（R6-06）。
             previewCurrentFailure = !failures.isEmpty
             previewDiagnostics = history
+            refreshMaterialNotices()
             // サムネイル保存が対応画像を待っている場合はここで進める
             // （R11-08）。発火条件は「現在のモデルの画像であり、作り
             // 直し保留中でなく、フレームが一致すること」。旧モデルの
@@ -2788,6 +2849,7 @@ struct ProjectView: View {
             }
             previewCurrentFailure = !failures.isEmpty
             previewDiagnostics = history
+            refreshMaterialNotices()
         }
         previewWorker.onModelFailed = { message, identity in
             // 識別子が現在のモデルと一致する場合だけ表示する
@@ -2965,6 +3027,9 @@ struct ProjectView: View {
                 usage: engine.isPlaying ? .playing : .paused
             )
             syncMeterValues()
+            // 再生中の途中失敗をプレビューの警告へ反映する
+            // （Issue #70 段階4）。
+            refreshMaterialNotices()
         }
         playbackEngine = engine
     }
