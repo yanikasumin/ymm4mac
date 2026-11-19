@@ -10,6 +10,13 @@ import Foundation
 /// 限る。グループ番号は対象外（複製時の再発行は追加された要素の
 /// 側の状態であり、メンバーシップの差分で往復できる）。
 ///
+/// レイヤー設定（`layerSettings.items`）も変更前後を丸ごと保持する
+/// （FE-R20-126-04）。レイヤー削除はアイテムの削除・レイヤー番号の
+/// 付け替えと一体の操作であり、設定側（表示名・色・表示状態と
+/// 付け替え）を含めて同じトランザクションで復元しないと、Undo が
+/// 操作全体を戻したことにならない。`LayerSetting` は値型で
+/// `Equatable` のため、列全体を1件の値変更コマンドとして記録できる。
+///
 /// キャッシュの不変条件（FE-R20-126-01）: 差分コマンドの適用は、
 /// どの経路（Undo / Redo / キャンセルの巻き戻し）でも、適用後に
 /// 対象タイムラインの長さ・最大レイヤーのキャッシュを再計算する。
@@ -31,6 +38,9 @@ public struct TimelineEditSnapshot {
 
     let states: [ItemState]
 
+    /// 変更前のレイヤー設定列（値型のため代入時点で写しになる）。
+    let layerSettingsBefore: [LayerSetting]
+
     public init(timeline: Timeline) {
         states = timeline.items.map {
             ItemState(
@@ -38,6 +48,7 @@ public struct TimelineEditSnapshot {
                 length: $0.length, contentOffset: $0.contentOffset,
                 keyFrames: $0.keyFrames, isLocked: $0.isLocked)
         }
+        layerSettingsBefore = timeline.layerSettings.items
     }
 
     /// 現在のタイムラインとの差分をコマンドとしてトランザクションへ
@@ -100,6 +111,19 @@ public struct TimelineEditSnapshot {
             record("IsLocked", old: state.isLocked, new: item.isLocked) {
                 item.isLocked = $0
             }
+        }
+
+        // レイヤー設定列の変化（レイヤー削除に伴う付け替え等）は、
+        // 列全体を1件の値変更として記録し、アイテム側の復元と同じ
+        // トランザクションで往復させる（FE-R20-126-04）。レイヤー
+        // 設定は長さ・最大レイヤーのキャッシュへ影響しないため、
+        // 適用クロージャに再計算は含めない。
+        let layerSettingsAfter = timeline.layerSettings.items
+        if layerSettingsAfter != layerSettingsBefore {
+            transaction.addValueChange(
+                target: EditTargetKey(timeline, key: "LayerSettings"),
+                oldValue: layerSettingsBefore, newValue: layerSettingsAfter,
+                apply: { timeline.layerSettings.items = $0 })
         }
     }
 }

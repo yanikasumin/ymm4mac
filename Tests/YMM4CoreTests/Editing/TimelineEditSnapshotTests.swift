@@ -142,6 +142,63 @@ final class TimelineEditSnapshotTests: XCTestCase {
         assertCacheConsistent(timeline)
     }
 
+    /// FE-R20-126-04: レイヤー削除の Undo が操作全体（アイテム列・
+    /// レイヤー番号の付け替え・レイヤー設定）を復元する。変更の実行は
+    /// アプリ層 `deleteLayer` と同じ手順（対象レイヤーのアイテム削除、
+    /// 上のレイヤーを詰める、設定の除去と付け替え）を再現する。
+    func testLayerDeletionUndoRestoresLayerSettings() {
+        let timeline = Timeline()
+        let onLayer1 = makeItem(frame: 0, layer: 1, length: 30)
+        let onLayer2 = makeItem(frame: 0, layer: 2, length: 30)
+        timeline.items = [onLayer1, onLayer2]
+        let originalSettings = [
+            LayerSetting(layer: 0, label: "土台"),
+            LayerSetting(
+                layer: 1, label: "消える層",
+                color: Color(alpha: 255, red: 10, green: 20, blue: 30),
+                isHidden: true),
+            LayerSetting(layer: 2, label: "上の層"),
+        ]
+        timeline.layerSettings.items = originalSettings
+        timeline.refreshTimelineLengthAndMaxLayer()
+
+        let recorder = EditRecorder()
+        recorder.recordTimelineChange(timeline: timeline) {
+            // TimelineContextMenus.deleteLayer と同じ手順。
+            timeline.deleteItems([onLayer1])
+            for item in timeline.items where item.layer > 1 {
+                item.layer -= 1
+            }
+            timeline.layerSettings.items.removeAll { $0.layer == 1 }
+            for index in timeline.layerSettings.items.indices
+            where timeline.layerSettings.items[index].layer > 1 {
+                timeline.layerSettings.items[index].layer -= 1
+            }
+            timeline.refreshTimelineLengthAndMaxLayer()
+        }
+        XCTAssertEqual(timeline.items.count, 1)
+        XCTAssertEqual(onLayer2.layer, 1)
+        XCTAssertEqual(
+            timeline.layerSettings.items.map { $0.label }, ["土台", "上の層"])
+        XCTAssertEqual(
+            timeline.layerSettings.items.map { $0.layer }, [0, 1])
+
+        XCTAssertTrue(recorder.coordinator.undo())
+        XCTAssertEqual(timeline.items.count, 2)
+        XCTAssertTrue(timeline.items.contains { $0 === onLayer1 })
+        XCTAssertEqual(onLayer1.layer, 1)
+        XCTAssertEqual(onLayer2.layer, 2)
+        XCTAssertEqual(timeline.layerSettings.items, originalSettings)
+        assertCacheConsistent(timeline)
+
+        XCTAssertTrue(recorder.coordinator.redo())
+        XCTAssertEqual(timeline.items.count, 1)
+        XCTAssertEqual(onLayer2.layer, 1)
+        XCTAssertEqual(
+            timeline.layerSettings.items.map { $0.label }, ["土台", "上の層"])
+        assertCacheConsistent(timeline)
+    }
+
     /// 削除＋後続アイテムの移動（削除して詰める相当）: メンバーシップと
     /// 配置値が混在する往復で、順序・値・キャッシュが全て戻る。
     func testDeleteAndMoveUndoRedoKeepsCacheConsistent() {

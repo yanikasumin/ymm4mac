@@ -328,8 +328,9 @@ extension TimelineStripView {
     func deleteLayer(at target: Int) {
         let captured = captureSelectedItem()
         // アイテムの削除とレイヤーの詰めは Undo 記録の対象とする。
-        // レイヤー設定（layerSettings）の付け替えは差分捕捉の対象外
-        // のため、Undo で設定側は戻らない（制約として実装ログに明記）。
+        // レイヤー設定（layerSettings）の付け替えも差分捕捉に含まれる
+        // ため、Undo で設定側（表示名・色・表示状態）も含めて操作全体
+        // が復元される（FE-R20-126-04）。
         recordTimelineEdit {
             let doomed = timeline.items.filter { $0.layer == target }
             if !doomed.isEmpty {
