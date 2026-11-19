@@ -26,6 +26,20 @@ struct ProjectView: View {
     /// ファイル差し替えの非同期適用の世代（アイテムごと）。
     /// 古い取得結果が新しい変更を上書きしないための照合用（FE-R1-043）。
     @State private var fileChangeGenerations: [ObjectIdentifier: Int] = [:]
+    /// Undo/Redo を適用するたびに増える版数。インスペクタの行は
+    /// 入力途中の状態を持つため、履歴の適用後は作り直してモデルへ
+    /// 追随させる（FE-UNDO-WIRING）。
+    @State private var historyApplyRevision = 0
+    /// タイムライン帯の再評価の契機（Undo/Redo 適用時）。帯はモデルを
+    /// 直接読むため、版数を渡して body の再評価を促す。
+    @State private var timelineDisplayRevision = 0
+    /// タイムラインドラッグについて、この接続側が所有するセッション
+    /// のトークン（監査 Round 10 の接続条件＋FE-R20-126-03）。開始して
+    /// いないセッション（背景・範囲選択）の終了通知では Undo 処理を
+    /// しない。
+    @State private var dragUndoToken: EditSessionToken?
+    /// ドラッグ開始時点のタイムライン写し（Undo 記録用）。
+    @State private var dragUndoSnapshot: TimelineEditSnapshot?
     @State private var roundTripResult: String?
     @State private var saveResult: String?
     @State private var previewFrame: Double = 0
@@ -92,6 +106,9 @@ struct ProjectView: View {
     @State private var isRepeatOn = false
     /// コントロールポイント表示モード（本家の3択）。
     @State private var controlPointVisibility: ControlPointVisibility = .selectedOnly
+    /// プレビュー領域へのマウスホバー（「マウスオーバー時」モードの
+    /// 表示条件。本家 isMouseOverPreviewArea に対応）。
+    @State private var isPreviewHovering = false
     /// プレビュー表示倍率（フィット倍率への乗数。1.0 = フィット）。
     @State private var previewDisplayZoom: Double = 1.0
     /// 音量（0–100%）とミュート。エンジンへ即時反映される。
@@ -237,7 +254,18 @@ struct ProjectView: View {
                                     showVerticalLines: $showVerticalLines,
                                     reportedCanvasWidth: $canvasViewportWidth,
                                     reportedTopLayer: $topVisibleLayer,
-                                    onEdited: { requestPreviewRender(modelChanged: true) }
+                                    onEdited: { requestPreviewRender(modelChanged: true) },
+                                    onDragBegan: {
+                                        beginTimelineDragUndo(timeline: timeline)
+                                    },
+                                    onDragCommitted: {
+                                        commitTimelineDragUndo(timeline: timeline)
+                                    },
+                                    onDragCancelled: {
+                                        cancelTimelineDragUndo()
+                                    },
+                                    editRecorder: workspace.editRecorder,
+                                    displayRevision: timelineDisplayRevision
                                 )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .clipped()
@@ -533,23 +561,16 @@ struct ProjectView: View {
     private func previewView(timeline: Timeline) -> some View {
         GeometryReader { geometry in
             let info = timeline.videoInfo
-            // 本家 PreviewViewModel の式そのまま:
-            // AreaZoom = min(領域幅/映像幅, 領域高/映像高)、
-            // 表示幅 = min(領域幅, 映像幅 × AreaZoom × 表示倍率)。
-            let areaScale = min(
-                geometry.size.width / Double(max(info.width, 1)),
-                geometry.size.height / Double(max(info.height, 1))
+            // 表示枠・描画寸法・座標変換は PreviewLayout が正本
+            // （本家 PreviewViewModel の表示枠の式 + 均一倍率での
+            // 描画と中心切り抜き。FE-R1-022）。
+            let layout = PreviewCore.PreviewLayout(
+                areaSize: geometry.size,
+                videoSize: CGSize(width: info.width, height: info.height),
+                displayZoom: previewDisplayZoom
             )
-            let fittedWidth = min(
-                geometry.size.width,
-                Double(max(info.width, 1)) * areaScale * previewDisplayZoom
-            )
-            let fittedHeight = min(
-                geometry.size.height,
-                Double(max(info.height, 1)) * areaScale * previewDisplayZoom
-            )
-            // ヒットレイヤの逆変換に使う実効倍率（表示幅基準）。
-            let scale = fittedWidth / Double(max(info.width, 1))
+            let fittedWidth = layout.boxSize.width
+            let fittedHeight = layout.boxSize.height
 
             ZStack {
                 Rectangle()
@@ -557,51 +578,88 @@ struct ProjectView: View {
                     .frame(width: fittedWidth, height: fittedHeight)
                     .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 0)
 
-                if let previewImage {
-                    Image(previewImage, scale: 1, label: Text("合成プレビュー"))
-                        .resizable()
+                // 映像・操作層・診断通知は表示枠の中で重ね、映像が
+                // 枠からはみ出す分は切り抜く。配置の原点は表示枠の
+                // 左上（PreviewLayout の座標系の前提）であり、枠側の
+                // frame で確定させる。frame の配置を .topLeading に
+                // 明示するのは、拡大で映像が枠より大きくなっても
+                // 内容の寸法が原点を動かさないため（既定の中央揃え
+                // だと、枠より大きい内容が中心合わせでずれて画像・
+                // 輪郭・ハンドル・当たり判定が互いにずれる。
+                // FE-R18-001）。
+                ZStack(alignment: .topLeading) {
+                    if let previewImage {
+                        Image(previewImage, scale: 1, label: Text("合成プレビュー"))
+                            .resizable()
+                            .frame(
+                                width: layout.imageSize.width,
+                                height: layout.imageSize.height
+                            )
+                            .offset(
+                                x: layout.imageOrigin.x, y: layout.imageOrigin.y
+                            )
+                    } else {
+                        Rectangle()
+                            .fill(.black)
+                            .frame(width: fittedWidth, height: fittedHeight)
+                        Text(
+                            previewError
+                                ?? (timeline.items.isEmpty ? "空のタイムライン" : "合成結果なし")
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.white)
                         .frame(width: fittedWidth, height: fittedHeight)
-                } else {
-                    Rectangle()
-                        .fill(.black)
-                        .frame(width: fittedWidth, height: fittedHeight)
-                    Text(
-                        previewError
-                            ?? (timeline.items.isEmpty ? "空のタイムライン" : "合成結果なし")
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.white)
-                }
-
-                // 選択輪郭とクリック選択／ドラッグ移動のヒットレイヤ。
-                // 映像の表示矩形とぴったり重ね、座標は表示倍率で
-                // 映像座標へ逆変換する（レターボックス分は含まない）。
-                previewInteractionLayer(timeline: timeline, scale: scale)
-                    .frame(width: fittedWidth, height: fittedHeight)
-
-                // 描画診断の通知（R6-06）。直近の描画で効果の失敗が
-                // あった場合だけ出す。詳細は診断タブの履歴を見る。
-                // 操作の邪魔をしないようヒットテストは無効にする。
-                if previewCurrentFailure {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Text("描画診断: 一部の効果の描画に失敗しました（詳細は下部の診断タブ）")
-                                .font(.caption)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.yellow.opacity(0.9))
-                                .foregroundStyle(.black)
-                            Spacer()
-                        }
                     }
-                    .frame(width: fittedWidth, height: fittedHeight)
-                    .allowsHitTesting(false)
+
+                    // 選択輪郭とクリック選択／ドラッグ移動のヒット
+                    // レイヤ。座標は PreviewLayout で映像座標へ変換
+                    // する（切り抜き時は原点が負になる）。
+                    previewInteractionLayer(timeline: timeline, layout: layout)
+
+                    // 描画診断の通知（R6-06）。直近の描画で効果の失敗が
+                    // あった場合だけ出す。詳細は診断タブの履歴を見る。
+                    // 操作の邪魔をしないようヒットテストは無効にする。
+                    if previewCurrentFailure {
+                        VStack {
+                            Spacer()
+                            HStack {
+                                Text("描画診断: 一部の効果の描画に失敗しました（詳細は下部の診断タブ）")
+                                    .font(.caption)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.yellow.opacity(0.9))
+                                    .foregroundStyle(.black)
+                                Spacer()
+                            }
+                        }
+                        .frame(width: fittedWidth, height: fittedHeight)
+                        .allowsHitTesting(false)
+                    }
                 }
+                .frame(
+                    width: fittedWidth, height: fittedHeight,
+                    alignment: .topLeading
+                )
+                .clipped()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onHover { isPreviewHovering = $0 }
+    }
+
+    /// 操作ハンドル（コントロールポイント）を出すかどうか。
+    /// 本家 TimelineVideoPlayer の描画条件どおり: 「選択中のアイテム
+    /// のみ」なら選択時に常時、「プレビューにマウスオーバー時」なら
+    /// 領域へホバー中のみ、「常に表示しない」なら出さない（FE-R1-015）。
+    /// ハンドル自体がジェスチャを持つため、非表示は操作不可も兼ねる
+    /// （本家も Never ではコントローラの当たり判定を行わない）。
+    private var showsControlPoints: Bool {
+        switch controlPointVisibility {
+        case .selectedOnly: return true
+        case .onMouseOver: return isPreviewHovering
+        case .never: return false
+        }
     }
 
     // MARK: - プレビュー上の選択と移動
@@ -616,35 +674,55 @@ struct ProjectView: View {
         var lastWrittenY: Double
     }
 
-    private func previewInteractionLayer(timeline: Timeline, scale: Double) -> some View {
-        ZStack(alignment: .topLeading) {
+    private func previewInteractionLayer(
+        timeline: Timeline, layout: PreviewCore.PreviewLayout
+    ) -> some View {
+        let scale = layout.uniformScale
+        return ZStack(alignment: .topLeading) {
             if let item = selectedItem,
                let bounds = previewItemBounds(item: item, timeline: timeline) {
                 // 選択輪郭（白背景でも見えるよう黒と白の二重破線）。
+                let origin = layout.viewPoint(
+                    fromVideoPoint: CGPoint(x: bounds.minX, y: bounds.minY)
+                )
                 Rectangle()
                     .strokeBorder(style: StrokeStyle(lineWidth: 3, dash: [5, 4]))
                     .foregroundStyle(.black.opacity(0.55))
                     .frame(width: bounds.width * scale, height: bounds.height * scale)
-                    .offset(x: bounds.minX * scale, y: bounds.minY * scale)
+                    .offset(x: origin.x, y: origin.y)
                 Rectangle()
                     .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
                     .foregroundStyle(.white)
                     .frame(width: bounds.width * scale, height: bounds.height * scale)
-                    .offset(x: bounds.minX * scale, y: bounds.minY * scale)
+                    .offset(x: origin.x, y: origin.y)
             }
 
             Color.clear
                 .contentShape(Rectangle())
-                .gesture(previewDragGesture(timeline: timeline, scale: scale))
+                .gesture(previewDragGesture(timeline: timeline, layout: layout))
 
             // 操作ハンドル（本家: 四隅▢ = 拡大率、辺の中点◯ = 回転角）。
             // 移動ジェスチャの層より上に置き、ハンドル上では拡大率／
-            // 回転角のドラッグが優先される。
-            if let item = selectedItem,
+            // 回転角のドラッグが優先される。表示はコントロールポイント
+            // 表示モードに従う（FE-R1-015）。
+            if showsControlPoints, let item = selectedItem, !item.isLocked,
                let bounds = previewItemBounds(item: item, timeline: timeline) {
-                selectionHandles(item: item, bounds: bounds, scale: scale, timeline: timeline)
+                selectionHandles(
+                    item: item, bounds: bounds, layout: layout, timeline: timeline
+                )
             }
         }
+        // この frame の左上が名前付き座標空間 previewArea の原点で、
+        // 輪郭・ハンドルは PreviewLayout の表示枠座標（左上原点）で
+        // 配置される。選択アイテムの描画寸法が表示枠を超える場合
+        // （全画面アイテムの拡大表示など）でも内容の寸法が原点を
+        // 動かさないよう、配置は .topLeading に明示する（既定の
+        // 中央揃えだと輪郭・ハンドルだけがジェスチャ座標から
+        // ずれる。FE-R18-001）。
+        .frame(
+            width: layout.boxSize.width, height: layout.boxSize.height,
+            alignment: .topLeading
+        )
         .coordinateSpace(name: "previewArea")
     }
 
@@ -667,12 +745,16 @@ struct ProjectView: View {
     }
 
     @State private var handleDrag: HandleDragState?
+    /// プレビュー上の移動ドラッグ／ハンドルドラッグについての
+    /// Undo セッションの状態（開始前・所有中・開始拒否。
+    /// FE-R20-126-03、FE-R21-126-01）。
+    @State private var previewDragSession: EditDragSession = .idle
+    @State private var handleDragSession: EditDragSession = .idle
 
     /// 選択アイテムの操作ハンドル群（表示は 9px、当たり判定は 18px）。
     private func selectionHandles(
-        item: BaseItem, bounds: CGRect, scale: Double, timeline: Timeline
+        item: BaseItem, bounds: CGRect, layout: PreviewCore.PreviewLayout, timeline: Timeline
     ) -> some View {
-        let scale = CGFloat(scale)
         let corners: [(CGFloat, CGFloat)] = [
             (bounds.minX, bounds.minY), (bounds.maxX, bounds.minY),
             (bounds.minX, bounds.maxY), (bounds.maxX, bounds.maxY),
@@ -685,13 +767,13 @@ struct ProjectView: View {
             ForEach(Array(corners.enumerated()), id: \.offset) { _, point in
                 handleView(
                     isCorner: true, item: item, bounds: bounds,
-                    point: point, scale: scale, timeline: timeline
+                    point: point, layout: layout, timeline: timeline
                 )
             }
             ForEach(Array(edges.enumerated()), id: \.offset) { _, point in
                 handleView(
                     isCorner: false, item: item, bounds: bounds,
-                    point: point, scale: scale, timeline: timeline
+                    point: point, layout: layout, timeline: timeline
                 )
             }
         }
@@ -699,10 +781,13 @@ struct ProjectView: View {
 
     private func handleView(
         isCorner: Bool, item: BaseItem, bounds: CGRect,
-        point: (CGFloat, CGFloat), scale: CGFloat, timeline: Timeline
+        point: (CGFloat, CGFloat), layout: PreviewCore.PreviewLayout, timeline: Timeline
     ) -> some View {
         let visualSize = 9.0
         let hitSize = 18.0
+        let viewPoint = layout.viewPoint(
+            fromVideoPoint: CGPoint(x: point.0, y: point.1)
+        )
         return ZStack {
             Color.clear
                 .frame(width: hitSize, height: hitSize)
@@ -720,13 +805,13 @@ struct ProjectView: View {
             .frame(width: visualSize, height: visualSize)
         }
         .offset(
-            x: point.0 * scale - hitSize / 2,
-            y: point.1 * scale - hitSize / 2
+            x: viewPoint.x - hitSize / 2,
+            y: viewPoint.y - hitSize / 2
         )
         .gesture(
             handleDragGesture(
                 kind: isCorner ? .zoom : .rotation,
-                item: item, bounds: bounds, scale: scale, timeline: timeline
+                item: item, bounds: bounds, layout: layout, timeline: timeline
             )
         )
         .help(isCorner ? "拡大率" : "回転角")
@@ -737,16 +822,23 @@ struct ProjectView: View {
     /// 移動ドラッグと同じ規則（writeAnimationValue の振り分け）。
     private func handleDragGesture(
         kind: HandleKind, item: BaseItem, bounds: CGRect,
-        scale: CGFloat, timeline: Timeline
+        layout: PreviewCore.PreviewLayout, timeline: Timeline
     ) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named("previewArea"))
             .onChanged { value in
                 if handleDrag == nil {
                     guard let index = timeline.items.firstIndex(where: { $0 === item }),
                           let props = item as? VideoItemProperties else { return }
+                    // ドラッグの書き込みを1履歴エントリへまとめる
+                    // セッションを開く（FE-UNDO-WIRING）。開始でき
+                    // なかった場合、そのドラッグは終了まで書き込み
+                    // 禁止のままになり、書き込みは writeAnimationValue
+                    // の入口確認で拒否され、モデルは変更されない
+                    // （FE-R20-126-03、FE-R21-126-01）。
+                    handleDragSession.begin(using: workspace.editRecorder)
                     let context = animationContext(for: item, timeline: timeline)
-                    let center = CGPoint(
-                        x: bounds.midX * scale, y: bounds.midY * scale
+                    let center = layout.viewPoint(
+                        fromVideoPoint: CGPoint(x: bounds.midX, y: bounds.midY)
                     )
                     let dx = value.location.x - center.x
                     let dy = value.location.y - center.y
@@ -774,7 +866,7 @@ struct ProjectView: View {
                     let factor = Double(hypot(dx, dy) / drag.startDistance)
                     let newZoom = drag.startZoom * factor
                     guard abs(newZoom - drag.lastWritten) >= 0.5 else { return }
-                    writeAnimationProperty(item: target, displayName: "拡大率", value: newZoom, timeline: timeline)
+                    writeAnimationProperty(item: target, displayName: "拡大率", value: newZoom, timeline: timeline, session: handleDragSession)
                     updated.lastWritten = newZoom
                 case .rotation:
                     let angle = atan2(Double(dy), Double(dx)) * 180 / .pi
@@ -783,7 +875,7 @@ struct ProjectView: View {
                     while delta < -180 { delta += 360 }
                     let newRotation = drag.startRotation + delta
                     guard abs(newRotation - drag.lastWritten) >= 0.5 else { return }
-                    writeAnimationProperty(item: target, displayName: "回転角", value: newRotation, timeline: timeline)
+                    writeAnimationProperty(item: target, displayName: "回転角", value: newRotation, timeline: timeline, session: handleDragSession)
                     updated.lastWritten = newRotation
                 }
                 handleDrag = updated
@@ -791,6 +883,7 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 handleDrag = nil
+                handleDragSession.endCommitting(to: workspace.editRecorder)
                 // ドラッグ中の間引きで残った未反映分を確定させる
                 // （再生中なら単一入口の規則で dirty に保留される）。
                 requestPreviewRender(modelChanged: true, forceModelRefresh: true)
@@ -800,13 +893,15 @@ struct ProjectView: View {
     /// アニメーション付きプロパティへの書き込み（表示名で引く）。
     /// ドラッグ移動と同じ規則（writeAnimationValue に集約）。
     private func writeAnimationProperty(
-        item: BaseItem, displayName: String, value: Double, timeline: Timeline
+        item: BaseItem, displayName: String, value: Double, timeline: Timeline,
+        session: EditDragSession
     ) {
         for descriptor in ItemPropertyMetadata.descriptors(for: item)
         where descriptor.displayName == displayName {
             guard case .animation = descriptor.kind else { continue }
             writeAnimationValue(
-                descriptor: descriptor, item: item, timeline: timeline, value: value)
+                descriptor: descriptor, item: item, timeline: timeline,
+                value: value, session: session)
         }
     }
 
@@ -815,25 +910,66 @@ struct ProjectView: View {
     /// 定数は定数化、キーフレームがある場合は再生ヘッドが属する
     /// 区間の開始値、それ以外は先頭値（FE-R1-006。先頭値への固定
     /// 書き換えでは、表示中の区間と無関係な値が変わる）。
+    /// 書き込みは Undo 記録の対象とし、ドラッグ中は呼び出し側が
+    /// 開いたセッションへ蓄積される（FE-UNDO-WIRING）。書き込みの
+    /// 入口で記録可否を確認し、セッションの所有者でない場合は
+    /// モデルを変更しない（FE-R20-126-03）。開始を拒否された
+    /// ドラッグ（`EditDragSession.refused`）は、他のセッションが
+    /// 終了してもそのドラッグの間は書き込みできない
+    /// （FE-R21-126-01）。
     private func writeAnimationValue(
         descriptor: PropertyDescriptor, item: BaseItem, timeline: Timeline,
-        value: Double
+        value: Double, session: EditDragSession
     ) {
         guard let animation = descriptor.animationValue else { return }
+        let recorder = workspace.editRecorder
+        guard session.writeAllowed(recorder: recorder)
+        else { return }
         if animation.animationType == .none {
+            let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationConstantValue(value)
+            let new = descriptor.animationValue.map {
+                AnimationSliderScale.editValue(of: $0, valueIndex: 0)
+            } ?? value
+            recorder.recordValueChange(
+                target: EditTargetKey(item, key: "\(descriptor.id)#const"),
+                oldValue: old, newValue: new,
+                apply: { descriptor.setAnimationConstantValue($0) },
+                sessionToken: session.token)
         } else if animation.animationType.isKeyFrameSupported,
                   !animation.keyFrames.frames.isEmpty {
             let context = animationContext(for: item, timeline: timeline)
-            descriptor.setAnimationValue(
-                value, atSegment: animation.segmentIndex(atFrame: context.frame))
+            let segment = animation.segmentIndex(atFrame: context.frame)
+            let old = AnimationSliderScale.editValue(
+                of: animation, valueIndex: segment)
+            descriptor.setAnimationValue(value, atSegment: segment)
+            let new = descriptor.animationValue.map {
+                AnimationSliderScale.editValue(of: $0, valueIndex: segment)
+            } ?? value
+            recorder.recordValueChange(
+                target: EditTargetKey(item, key: "\(descriptor.id)#seg\(segment)"),
+                oldValue: old, newValue: new,
+                apply: { descriptor.setAnimationValue($0, atSegment: segment) },
+                sessionToken: session.token)
         } else {
+            let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationFirstValue(value)
+            let new = descriptor.animationValue.map {
+                AnimationSliderScale.editValue(of: $0, valueIndex: 0)
+            } ?? value
+            recorder.recordValueChange(
+                target: EditTargetKey(item, key: "\(descriptor.id)#first"),
+                oldValue: old, newValue: new,
+                apply: { descriptor.setAnimationFirstValue($0) },
+                sessionToken: session.token)
         }
     }
 
-    private func previewDragGesture(timeline: Timeline, scale: Double) -> some Gesture {
-        DragGesture(minimumDistance: 0)
+    private func previewDragGesture(
+        timeline: Timeline, layout: PreviewCore.PreviewLayout
+    ) -> some Gesture {
+        let scale = layout.uniformScale
+        return DragGesture(minimumDistance: 0)
             .onChanged { value in
                 if var drag = previewDrag {
                     guard drag.itemIndex >= 0,
@@ -847,7 +983,7 @@ struct ProjectView: View {
                     // 0.5px 以上動いたときだけ行う。
                     guard abs(newX - drag.lastWrittenX) >= 0.5
                         || abs(newY - drag.lastWrittenY) >= 0.5 else { return }
-                    writeItemPosition(item: item, x: newX, y: newY, timeline: timeline)
+                    writeItemPosition(item: item, x: newX, y: newY, timeline: timeline, session: previewDragSession)
                     drag.lastWrittenX = newX
                     drag.lastWrittenY = newY
                     previewDrag = drag
@@ -856,14 +992,21 @@ struct ProjectView: View {
                 }
 
                 // 押し始め: 現在フレームで描画されているアイテムから
-                // 当たり判定し、選択とドラッグ基準を決める。
-                let startVideoPoint = CGPoint(
-                    x: value.startLocation.x / scale,
-                    y: value.startLocation.y / scale
+                // 当たり判定し、選択とドラッグ基準を決める。開始点は
+                // 切り抜きの原点を含む変換で映像座標へ戻す。
+                let startVideoPoint = layout.videoPoint(
+                    fromViewPoint: value.startLocation
                 )
                 if let index = hitTestPreviewItem(
                     timeline: timeline, videoPoint: startVideoPoint
                 ), let props = timeline.items[index] as? VideoItemProperties {
+                    // 移動ドラッグの書き込みを1履歴エントリへまとめる
+                    // セッションを開く（FE-UNDO-WIRING）。開始でき
+                    // なかった場合、そのドラッグは終了まで書き込み
+                    // 禁止のままになり、書き込みは writeAnimationValue
+                    // の入口確認で拒否され、モデルは変更されない
+                    // （FE-R20-126-03、FE-R21-126-01）。
+                    previewDragSession.begin(using: workspace.editRecorder)
                     selectedItemIndex = index
                     let item = timeline.items[index]
                     let context = animationContext(for: item, timeline: timeline)
@@ -887,6 +1030,7 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 previewDrag = nil
+                previewDragSession.endCommitting(to: workspace.editRecorder)
                 // ドラッグ中の間引きで残った未反映分を確定させる
                 // （再生中なら単一入口の規則で dirty に保留される）。
                 requestPreviewRender(modelChanged: true, forceModelRefresh: true)
@@ -902,7 +1046,11 @@ struct ProjectView: View {
         var bestIndex: Int?
         var bestKey: (Int, Double, Int)?
         for (index, item) in timeline.items.enumerated() {
-            guard let bounds = previewItemBounds(item: item, timeline: timeline),
+            // ロックしたアイテムはプレビューで掴めない（本家の当たり
+            // 判定はコントローラ経路・本体経路とも !IsLocked で除外
+            // する。FE-R1-020）。
+            guard !item.isLocked,
+                  let bounds = previewItemBounds(item: item, timeline: timeline),
                   bounds.contains(videoPoint),
                   let props = item as? VideoItemProperties else { continue }
             let context = animationContext(for: item, timeline: timeline)
@@ -965,7 +1113,8 @@ struct ProjectView: View {
     /// （writeAnimationValue の振り分け）で、既存の記述子経路を
     /// 通して X/Y へ書き込む。
     private func writeItemPosition(
-        item: BaseItem, x: Double, y: Double, timeline: Timeline
+        item: BaseItem, x: Double, y: Double, timeline: Timeline,
+        session: EditDragSession
     ) {
         for descriptor in ItemPropertyMetadata.descriptors(for: item) {
             guard case .animation = descriptor.kind else { continue }
@@ -976,7 +1125,8 @@ struct ProjectView: View {
             default: continue
             }
             writeAnimationValue(
-                descriptor: descriptor, item: item, timeline: timeline, value: value)
+                descriptor: descriptor, item: item, timeline: timeline,
+                value: value, session: session)
         }
     }
 
@@ -1237,11 +1387,75 @@ struct ProjectView: View {
         }
     }
 
+    // MARK: - Undo/Redo の接続（FE-UNDO-WIRING）
+
+    /// タイムラインドラッグの開始通知。トランザクションを開始し、
+    /// 開始時点の写しを取る。開始可否を戻り値で操作層へ返し、拒否
+    /// された場合は操作層がモデル変更セッション自体を開始しない
+    /// （FE-R20-126-02。無記録のドラッグ変更を残さない）。開始して
+    /// いないセッションの終了通知では何もしない（所有の追跡は
+    /// 監査 Round 10 の接続条件）。
+    @discardableResult
+    private func beginTimelineDragUndo(timeline: Timeline) -> Bool {
+        dragUndoToken = workspace.editRecorder.beginSession()
+        dragUndoSnapshot = dragUndoToken != nil
+            ? TimelineEditSnapshot(timeline: timeline) : nil
+        return dragUndoToken != nil
+    }
+
+    /// タイムラインドラッグの確定通知。自分が開始したセッションに
+    /// ついてだけ、開始時点との差分を記録して確定する。
+    private func commitTimelineDragUndo(timeline: Timeline) {
+        if let token = dragUndoToken, let snapshot = dragUndoSnapshot,
+           let transaction = workspace.editRecorder.sessionTransaction(for: token) {
+            snapshot.recordDiff(into: transaction, timeline: timeline)
+            workspace.editRecorder.commitSession(token: token)
+        }
+        dragUndoToken = nil
+        dragUndoSnapshot = nil
+    }
+
+    /// タイムラインドラッグのキャンセル通知。モデルは操作層が
+    /// 開始時点へ復元済みであり、こちらは自分が開始したセッション
+    /// のトランザクションを破棄するだけである。開始していない
+    /// セッション（背景・範囲選択の Escape 等）の通知は対象外。
+    private func cancelTimelineDragUndo() {
+        if let token = dragUndoToken {
+            workspace.editRecorder.cancelSession(token: token)
+        }
+        dragUndoToken = nil
+        dragUndoSnapshot = nil
+    }
+
+    /// Undo を実行し、表示（選択・インスペクタ・タイムライン・
+    /// プレビュー）をモデルへ追随させる。
+    private func performUndo(timeline: Timeline) {
+        guard workspace.editCoordinator.undo() else { return }
+        afterHistoryApplied(timeline: timeline)
+    }
+
+    /// Redo を実行し、表示をモデルへ追随させる。
+    private func performRedo(timeline: Timeline) {
+        guard workspace.editCoordinator.redo() else { return }
+        afterHistoryApplied(timeline: timeline)
+    }
+
+    private func afterHistoryApplied(timeline: Timeline) {
+        historyApplyRevision += 1
+        timelineDisplayRevision += 1
+        reflectCoreSelection(timeline)
+        requestPreviewRender(modelChanged: true)
+    }
+
     /// メニュー／ツールバーからの編集アクションを実行する。
     /// いずれも Core の既存編集操作への接続であり、構造を変える操作の
     /// 後はプレビューを再合成する。
     private func executeWorkspaceAction(_ action: WorkspaceAction, timeline: Timeline) {
         switch action {
+        case .undo:
+            performUndo(timeline: timeline)
+        case .redo:
+            performRedo(timeline: timeline)
         case .addItem(let kind):
             addItem(kind: kind, timeline: timeline)
         case .splitAtCurrentPosition:
@@ -1249,13 +1463,19 @@ struct ProjectView: View {
         case .deleteSelection:
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
-            timeline.deleteSelectedAndGroupedItems()
+            // 記録を開始できない間は削除自体を実行しない
+            // （FE-R20-126-02。無記録の構造変更を残さない）。
+            guard workspace.editRecorder.recordTimelineChange(timeline: timeline, {
+                timeline.deleteSelectedAndGroupedItems()
+            }) else { return }
             selectedItemIndex = nil
             requestPreviewRender(modelChanged: true)
         case .deleteAndMoveAll:
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
-            _ = timeline.deleteAndMoveAll()
+            guard workspace.editRecorder.recordTimelineChange(timeline: timeline, {
+                _ = timeline.deleteAndMoveAll()
+            }) else { return }
             reflectCoreSelection(timeline)
             requestPreviewRender(modelChanged: true)
         case .groupSelection:
@@ -1367,9 +1587,12 @@ struct ProjectView: View {
         }
         let item = makeItem(kind: kind)
         item.length = placeholderItemLength(timeline: timeline)
-        guard timeline.tryAddItems(
-            [item], frame: Int(previewFrame), layer: topVisibleLayer)
-        else { return }
+        var added = false
+        workspace.editRecorder.recordTimelineChange(timeline: timeline) {
+            added = timeline.tryAddItems(
+                [item], frame: Int(previewFrame), layer: topVisibleLayer)
+        }
+        guard added else { return }
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
         }
@@ -1434,9 +1657,15 @@ struct ProjectView: View {
             newItems.append(item)
         }
         guard !newItems.isEmpty,
-              project.timelines.contains(where: { $0 === timeline }),
-              timeline.tryAddItems(newItems, frame: frame, layer: layer)
+              project.timelines.contains(where: { $0 === timeline })
         else { return }
+        // 記録のスナップショットは確定の直前に取る（取得の非同期の
+        // 間に起きた他の変更を差分へ含めないため）。
+        var added = false
+        workspace.editRecorder.recordTimelineChange(timeline: timeline) {
+            added = timeline.tryAddItems(newItems, frame: frame, layer: layer)
+        }
+        guard added else { return }
         if self.timeline === timeline {
             reflectCoreSelection(timeline)
         }
@@ -1563,9 +1792,12 @@ struct ProjectView: View {
         item.length = placeholderItemLength(timeline: timeline)
         // 追加は衝突解決つきの tryAddItems を経由する（FE-R1-009）。
         // 配置後の item.frame がシーク先になる。
-        guard timeline.tryAddItems(
-            [item], frame: Int(previewFrame), layer: topVisibleLayer)
-        else { return }
+        var added = false
+        workspace.editRecorder.recordTimelineChange(timeline: timeline) {
+            added = timeline.tryAddItems(
+                [item], frame: Int(previewFrame), layer: topVisibleLayer)
+        }
+        guard added else { return }
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
         }
@@ -1780,11 +2012,17 @@ struct ProjectView: View {
 
     private func editToolbar(timeline: Timeline) -> some View {
         HStack(spacing: 2) {
-            // Undo/Redo は Core に履歴基盤が無いため未接続（無効表示）。
-            toolbarButton("arrow.uturn.backward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.undo, shortcut: UIStrings.Toolbar.shortcutUndo)) {}
-                .disabled(true)
-            toolbarButton("arrow.uturn.forward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.redo, shortcut: UIStrings.Toolbar.shortcutRedo)) {}
-                .disabled(true)
+            // Undo/Redo は Core の EditCoordinator へ接続済み
+            // （FE-UNDO-WIRING）。有効条件は履歴の有無に加えて
+            // 操作状態（編集中は不可）も見る（WorkspaceState 側）。
+            toolbarButton("arrow.uturn.backward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.undo, shortcut: UIStrings.Toolbar.shortcutUndo)) {
+                performUndo(timeline: timeline)
+            }
+            .disabled(!workspace.canPerformUndo)
+            toolbarButton("arrow.uturn.forward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.redo, shortcut: UIStrings.Toolbar.shortcutRedo)) {
+                performRedo(timeline: timeline)
+            }
+            .disabled(!workspace.canPerformRedo)
             toolbarDivider
             // 切り取り／コピー／貼り付けはアイテム用クリップボードが
             // 無いため未接続（無効表示）。
@@ -2465,9 +2703,17 @@ struct ProjectView: View {
             displayedPreviewFrame = nil
             // アイテム0件の空タイムラインで合成結果が得られない場合は
             // エラー表示にせず、プレースホルダ文言に任せる。
-            previewError = (timeline?.items.isEmpty ?? true)
-                ? nil
-                : "合成に失敗しました（例外または出力なし）"
+            // 合成例外の理由が診断に残っている場合はそれを表示する
+            // （FE-R1-037）。
+            if (timeline?.items.isEmpty ?? true) {
+                previewError = nil
+            } else if let composition = failures.first(
+                where: { $0.kind == PreviewBox.compositionFailureKind }
+            ) {
+                previewError = "合成に失敗しました: \(composition.message)"
+            } else {
+                previewError = "合成に失敗しました（例外または出力なし）"
+            }
             previewCurrentFailure = !failures.isEmpty
             previewDiagnostics = history
         }
@@ -2479,6 +2725,12 @@ struct ProjectView: View {
                   identity.version == previewModelVersion
             else { return }
             // 初期化失敗の理由をそのまま表示する（Issue #50）。
+            // 旧モデルの画像が残ると理由文より画像が優先表示され、
+            // 失敗が見えなくなるため、描画失敗時と同じく画像を消す
+            // （FE-R1-024）。
+            previewImage = nil
+            displayedPreviewIdentity = nil
+            displayedPreviewFrame = nil
             previewError = message
         }
     }
@@ -2685,7 +2937,9 @@ struct ProjectView: View {
                     onEdited: { requestPreviewRender(modelChanged: true) },
                     onFilePathChanged: { _, newPath in
                         applyFileChange(item: item, newPath: newPath, timeline: timeline)
-                    }
+                    },
+                    editRecorder: workspace.editRecorder,
+                    editTargetOwner: item
                 )
                 EffectInspectorView(
                     item: item,
@@ -2695,7 +2949,9 @@ struct ProjectView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             // 選択が変わったら各行の入力途中の状態を破棄する。
-            .id(selectedItemIndex)
+            // Undo/Redo の適用後も同様に作り直し、表示値をモデルへ
+            // 追随させる（FE-UNDO-WIRING）。
+            .id("\(selectedItemIndex ?? -1)-\(historyApplyRevision)")
         } else {
             Text(UIStrings.Inspector.noSelection)
                 .foregroundStyle(.secondary)
