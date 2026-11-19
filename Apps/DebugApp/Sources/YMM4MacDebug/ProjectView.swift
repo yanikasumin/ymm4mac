@@ -499,8 +499,29 @@ struct ProjectView: View {
     private func deleteTimeline(at index: Int) {
         guard project.timelines.count > 1,
               project.timelines.indices.contains(index) else { return }
+        // アイテムのあるシーンは、本家 DeleteSceneAsync と同じく
+        // 確認を出してから削除する（空のシーンは確認なし。文言は
+        // 本家 Texts.ConfirmDeleteMessage「{0}を削除しますか？」に
+        // タブ表示名を当てたもの）。キャンセルでは削除しない。
+        // 確認の要否と削除の成立は Core の規則へ寄せる
+        // （Project.timelineDeletionRequiresConfirmation /
+        // removeTimeline(at:confirmed:)）。
+        var confirmed = false
+        if project.timelineDeletionRequiresConfirmation(at: index) {
+            let name = project.timelines[index].name.isEmpty
+                ? "タイムライン \(index + 1)"
+                : project.timelines[index].name
+            let alert = NSAlert()
+            alert.messageText = "\(name)を削除しますか？"
+            alert.addButton(withTitle: "削除")
+            alert.addButton(withTitle: "キャンセル")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            confirmed = true
+        }
         let wasDisplayed = index == timelineIndex
-        project.timelines.remove(at: index)
+        guard project.removeTimeline(at: index, confirmed: confirmed) else {
+            return
+        }
         if index < timelineIndex {
             timelineIndex -= 1
         } else if timelineIndex >= project.timelines.count {

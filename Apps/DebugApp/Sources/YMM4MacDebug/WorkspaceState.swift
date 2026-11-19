@@ -48,6 +48,10 @@ final class WorkspaceState: ObservableObject {
     /// App の .commands はプロジェクトの編集状態を持たないため、
     /// 要求だけをここに積み、ProjectView が観測して実行する。
     @Published var pendingAction: (action: WorkspaceAction, sequence: Int)?
+    /// 破棄時のバックアップの保存先（本家 MainModel.CreateBackup に
+    /// 対応）。破棄確認で「保存しない」が選ばれた時点で、破棄される
+    /// 現在の状態をここへ保存する。
+    let backupStore = ProjectBackupStore()
     /// Undo 履歴の所有（プロジェクト＝ウィンドウごとに1つ）。
     /// Core の EditCoordinator とアプリ層の記録集約（EditRecorder）を
     /// ここで保持し、プロジェクトの差し替えと履歴のリセットを同じ
@@ -95,6 +99,14 @@ final class WorkspaceState: ObservableObject {
             case .alertFirstButtonReturn:
                 save()
             case .alertSecondButtonReturn:
+                // 「保存しない」= 破棄が確定した時点で、本家と同じく
+                // 破棄される状態のバックアップを作成する（本家は
+                // 新規・開く・閉じる・終了の全経路で「保存しない」の
+                // 選択時に CreateBackup を呼ぶ）。作成の失敗は破棄を
+                // 妨げない（ストアが失敗を nil で返す）。
+                backupStore.createBackup(
+                    of: project, sourceFileName: sourceURL?.lastPathComponent
+                )
                 return true
             default:
                 return false
