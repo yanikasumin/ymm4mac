@@ -47,8 +47,10 @@ struct TimelineStripView: View {
     var rowHeight: CGFloat = 32
     /// 波形表示の有無（本家の「波形を表示/非表示」相当）。
     var showWaveform: Bool = true
-    /// 縦グリッド線の表示（本家の VerticalLines.IsEnabled 相当）。
-    @Binding var showVerticalLines: Bool
+    /// グリッド線設定の変更世代。表示の正本はモデルの
+    /// `timeline.verticalLine.isEnabled` で、外側（ツールバー／設定
+    /// シート）から変更された場合に再描画を促すために読む。
+    @Binding var gridSettingsRevision: Int
     /// キャンバスの表示幅をツールバー側（全体フィット計算用）へ伝える。
     @Binding var reportedCanvasWidth: CGFloat
     /// 表示中ビューポートの最上段レイヤーを外へ伝える
@@ -72,14 +74,13 @@ struct TimelineStripView: View {
     @State var verticalOffset: CGFloat = 0
     /// ドラッグ中のモデル変更を再描画へ反映させるための世代カウンタ。
     @State private var dragRevision = 0
+    /// グリッド線設定（モデル）の変更を再描画へ反映させる世代カウンタ。
+    @State var gridRevision = 0
     /// レイヤー設定の変更を再描画へ反映させるための世代カウンタ。
     @State var layerRevision = 0
     /// レイヤー操作ポップオーバー（名前変更・音量）の対象レイヤー。
     @State var layerPopoverLayer: Int?
     @State var layerRenameText = ""
-    /// レイヤー全体の音量（%）。Core の LayerSetting には音量が無いため
-    /// 形のみのローカル状態（接続台帳に記録）。
-    @State var layerVolumes: [Int: Double] = [:]
     /// 目盛り帯のウィンドウ座標（ホイールズームの当たり判定用）。
     /// 値の出所は AppKit 側の目盛りビュー（コンテナが報告する）。
     @State var rulerRectBox = WindowRectBox()
@@ -119,6 +120,8 @@ struct TimelineStripView: View {
             // body が再評価され、コンテンツが新しい位置で描かれる。
             let _ = dragRevision
             let _ = layerRevision
+            let _ = gridRevision
+            let _ = gridSettingsRevision
 
             TimelineScrollContainerRepresentable(
                 configuration: TimelineScrollConfiguration(
@@ -216,15 +219,17 @@ struct TimelineStripView: View {
                     .frame(width: canvasWidth, height: 1)
                     .offset(y: CGFloat(layer + 1) * rowHeight - 1)
             }
-            if showVerticalLines {
-                ForEach(
-                    verticalGridFrames(viewportWidth: viewportWidth), id: \.self
-                ) { frame in
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.08))
-                        .frame(width: 1, height: contentHeight)
-                        .offset(x: CGFloat(frame) * pxPerFrame)
-                }
+            // 縦グリッド線（モデルの TimelineVerticalLine の規則。
+            // サブ線は主線より薄く引く）。
+            ForEach(
+                Array(
+                    verticalGridLines(viewportWidth: viewportWidth).enumerated()
+                ), id: \.offset
+            ) { _, gridLine in
+                Rectangle()
+                    .fill(Color.primary.opacity(gridLine.isSubLine ? 0.05 : 0.1))
+                    .frame(width: 1, height: contentHeight)
+                    .offset(x: CGFloat(gridLine.frame) * pxPerFrame)
             }
 
             // アイテムブロック（可視範囲のみ生成する）。

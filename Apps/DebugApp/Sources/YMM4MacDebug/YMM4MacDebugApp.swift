@@ -71,16 +71,20 @@ struct YMM4MacDebugApp: App {
                 Menu(UIStrings.Menu.importMenu) {
                     Button(UIStrings.Menu.importSubtitle) {}
                         .disabled(true)
+                        .help(UIStrings.Menu.importSubtitle + UIStrings.Common.unconnectedSuffix)
                     Button(UIStrings.Menu.importSubtitleAsVoice) {}
                         .disabled(true)
+                        .help(UIStrings.Menu.importSubtitleAsVoice + UIStrings.Common.unconnectedSuffix)
                 }
                 Button(UIStrings.Menu.restoreFromBackup) {}
                     .disabled(true)
+                    .help(UIStrings.Menu.restoreFromBackup + UIStrings.Common.unconnectedSuffix)
                 Divider()
                 Button(UIStrings.Menu.videoSettings) { workspace.isVideoSettingsPresented = true }
                 Button(UIStrings.Menu.outputVideo) { workspace.isExportPresented = true }
                 Button(UIStrings.Menu.outputExo) {}
                     .disabled(true)
+                    .help(UIStrings.Menu.outputExo + UIStrings.Common.unconnectedSuffix)
                 Button(UIStrings.Menu.saveThumbnail) {
                     workspace.request(.saveThumbnail(.png))
                 }
@@ -106,15 +110,24 @@ struct YMM4MacDebugApp: App {
                     }
                     Divider()
                     Menu(UIStrings.Menu.controlPointVisibility) {
-                        // 表示モードの保持先は ProjectView 側の形の状態。
-                        // メニューからの切替は未接続（トランスポート帯の
-                        // ドロップダウンで切替できる）。
-                        Button(UIStrings.Menu.controlPointOnSelected) {}
-                            .disabled(true)
-                        Button(UIStrings.Menu.controlPointOnMouseOver) {}
-                            .disabled(true)
-                        Button(UIStrings.Menu.controlPointNever) {}
-                            .disabled(true)
+                        // 表示モードの保持先は ProjectView 側の状態。
+                        // WorkspaceAction 経由で切り替える（トランスポート
+                        // 帯のドロップダウンと同じ状態。FE-UNIT5 で接続）。
+                        Button(UIStrings.Menu.controlPointOnSelected) {
+                            workspace.request(
+                                .setControlPointVisibility(.selectedOnly)
+                            )
+                        }
+                        Button(UIStrings.Menu.controlPointOnMouseOver) {
+                            workspace.request(
+                                .setControlPointVisibility(.onMouseOver)
+                            )
+                        }
+                        Button(UIStrings.Menu.controlPointNever) {
+                            workspace.request(
+                                .setControlPointVisibility(.never)
+                            )
+                        }
                     }
                 }
                 Menu(UIStrings.Menu.itemControl) {
@@ -155,19 +168,27 @@ struct YMM4MacDebugApp: App {
                     Menu(UIStrings.Menu.align) {
                         // 整列の Core 操作が無いため未接続。
                         Button(UIStrings.Menu.alignLeft) {}.disabled(true)
+                            .help(UIStrings.Menu.alignLeft + UIStrings.Common.unconnectedSuffix)
                         Button(UIStrings.Menu.alignCenter) {}.disabled(true)
+                            .help(UIStrings.Menu.alignCenter + UIStrings.Common.unconnectedSuffix)
                         Button(UIStrings.Menu.alignRight) {}.disabled(true)
+                            .help(UIStrings.Menu.alignRight + UIStrings.Common.unconnectedSuffix)
                     }
                     Button(UIStrings.Menu.setToDefault) {}
                         .disabled(true)
+                        .help(UIStrings.Menu.setToDefault + UIStrings.Common.unconnectedSuffix)
                 }
                 Menu(UIStrings.Menu.voiceControl) {
                     // キャラクター切替・ボイスモードはキャラクター編集と
                     // 音声供給（Issue #51）が前提のため未接続。
                     Button(UIStrings.Menu.changeCharacter) {}.disabled(true)
+                        .help(UIStrings.Menu.changeCharacter + UIStrings.Common.unconnectedSuffix)
                     Button(UIStrings.Menu.changePreviousCharacter) {}.disabled(true)
+                        .help(UIStrings.Menu.changePreviousCharacter + UIStrings.Common.unconnectedSuffix)
                     Button(UIStrings.Menu.changeNextCharacter) {}.disabled(true)
+                        .help(UIStrings.Menu.changeNextCharacter + UIStrings.Common.unconnectedSuffix)
                     Button(UIStrings.Menu.changeVoiceMode) {}.disabled(true)
+                        .help(UIStrings.Menu.changeVoiceMode + UIStrings.Common.unconnectedSuffix)
                 }
                 Menu(UIStrings.Menu.timelineControl) {
                     Button(UIStrings.Menu.layerHeightUp) {
@@ -190,6 +211,7 @@ struct YMM4MacDebugApp: App {
                 Menu(UIStrings.Menu.layoutPreset) {
                     Button(UIStrings.Menu.saveLayoutPreset) {}
                         .disabled(true)
+                        .help(UIStrings.Menu.saveLayoutPreset + UIStrings.Common.unconnectedSuffix)
                     Button(UIStrings.Menu.resetLayout) {
                         workspace.request(.resetLayout)
                     }
@@ -197,27 +219,38 @@ struct YMM4MacDebugApp: App {
                 Menu(UIStrings.Menu.tools) {
                     // ドッキング基盤が無いため表示切替は未接続。
                     Button(UIStrings.Menu.toolItemEditor) {}.disabled(true)
+                        .help(UIStrings.Menu.toolItemEditor + UIStrings.Common.unconnectedSuffix)
                     Button(UIStrings.Menu.toolPreview) {}.disabled(true)
+                        .help(UIStrings.Menu.toolPreview + UIStrings.Common.unconnectedSuffix)
                 }
                 Divider()
                 Button(UIStrings.Menu.alwaysShowSceneTab) {}
                     .disabled(true)
+                    .help(UIStrings.Menu.alwaysShowSceneTab + UIStrings.Common.unconnectedSuffix)
             }
 
             // ツールメニュー（本家同梱ツールの並び）。各ツールの
             // ウィンドウ／ドッキング基盤が無いため全て未接続。
             CommandMenu(UIStrings.Menu.tools) {
                 Button(UIStrings.Menu.characterEditor) {}.disabled(true)
+                    .help(UIStrings.Menu.characterEditor + UIStrings.Common.unconnectedSuffix)
                 Button(UIStrings.Menu.settingWindow) {}.disabled(true)
+                    .help(UIStrings.Menu.settingWindow + UIStrings.Common.unconnectedSuffix)
                 Button(UIStrings.Menu.toolSearch) {}.disabled(true)
+                    .help(UIStrings.Menu.toolSearch + UIStrings.Common.unconnectedSuffix)
                 Button(UIStrings.Menu.toolMaterials) {}.disabled(true)
+                    .help(UIStrings.Menu.toolMaterials + UIStrings.Common.unconnectedSuffix)
                 Button(UIStrings.Menu.toolScenario) {}.disabled(true)
+                    .help(UIStrings.Menu.toolScenario + UIStrings.Common.unconnectedSuffix)
                 Button(UIStrings.Menu.toolTranscription) {}.disabled(true)
+                    .help(UIStrings.Menu.toolTranscription + UIStrings.Common.unconnectedSuffix)
                 Button(UIStrings.Menu.toolTemplateEditor) {}.disabled(true)
+                    .help(UIStrings.Menu.toolTemplateEditor + UIStrings.Common.unconnectedSuffix)
                 Button(UIStrings.Menu.toolUserDictionary) {
                     openWindow(id: "user-dictionary")
                 }
                 Button(UIStrings.Menu.toolVolumeAnalyzer) {}.disabled(true)
+                    .help(UIStrings.Menu.toolVolumeAnalyzer + UIStrings.Common.unconnectedSuffix)
             }
 
             // ヘルプメニュー。本家の FAQ／問い合わせ／FANBOX は

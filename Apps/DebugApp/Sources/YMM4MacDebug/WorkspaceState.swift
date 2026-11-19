@@ -112,6 +112,7 @@ enum WorkspaceAction: Equatable {
     case toggleLock
     case toggleClipping
     case toggleWaveform
+    case setControlPointVisibility(ControlPointVisibility)
     case selectAll
     case selectLeftItems
     case selectRightItems
