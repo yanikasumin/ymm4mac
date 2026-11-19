@@ -171,4 +171,47 @@ public enum AnimationSliderScale {
             animationType: animation.animationType, spec: spec,
             absoluteMin: animation.minValue, absoluteMax: animation.maxValue)
     }
+
+    // MARK: - 確定時の値の確定処理（FE-R13-004）
+
+    /// 確定時の値の確定処理（本家 `TextBoxSlider.FixValue` の再現）。
+    ///
+    /// 丸めの桁数は Delta そのものではなく、本家の式
+    /// `clamp((int)(1.0 / Delta / 10.0 + 1.0), 0, 15)` で決まる
+    /// （F0 → 1桁、F1 → 2桁、F3以降は上限の15桁）。F2 は式の値が
+    /// 浮動小数の帰結で 10.999… となり切り捨てで 10桁になる
+    /// （Delta = Pow(0.1, 2) は 0.01 ちょうどではなく
+    /// 0.010000000000000002。本家も同じ Pow 経路のため同値になる
+    /// はずであり、11桁へ「正して」はいけない）。
+    /// 桁が表示書式の小数桁と一致しないのは本家の式そのままの
+    /// 帰結であり、表示桁へ寄せてはいけない。その桁で
+    /// `MidpointRounding.AwayFromZero` 相当の丸めを行い、その後に
+    /// [minimum, maximum] へクランプする（丸め → クランプの順序も
+    /// 本家のまま）。
+    ///
+    /// `minimum` / `maximum` はその値のスライダの Min / Max を渡す:
+    /// 通常は `Animation` の定義範囲、移動量指定の第2値では対称置換後の
+    /// 絶対制限（`ranges(forValueAt:)` の absoluteMin / absoluteMax）。
+    ///
+    /// Delta が正でない・非有限の場合は本家に相当する入力が存在しない
+    /// （属性の Delta は常に正）ため、丸め桁は上限の 15 として扱う。
+    /// 値自体が非有限ならそのまま返す（呼び出し側が確定前に弾く）。
+    public static func fixedValue(
+        _ value: Double, delta: Double, minimum: Double, maximum: Double
+    ) -> Double {
+        guard value.isFinite else { return value }
+        var digits = 15
+        if delta.isFinite, delta > 0 {
+            // (int) 変換が溢れないよう、Double のまま先に頭打ちにする。
+            let raw = 1.0 / delta / 10.0 + 1.0
+            digits = raw >= 15 ? 15 : (raw <= 0 ? 0 : Int(raw))
+        }
+        let factor = pow(10.0, Double(digits))
+        // .NET の MidpointRounding.AwayFromZero は「最近接へ丸め、
+        // 同点のときだけ 0 から離れる」であり、Swift では
+        // .toNearestOrAwayFromZero が対応する（.awayFromZero は
+        // 常に切り上げ方向で別物）。
+        let rounded = (value * factor).rounded(.toNearestOrAwayFromZero) / factor
+        return min(max(rounded, minimum), maximum)
+    }
 }

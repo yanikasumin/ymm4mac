@@ -57,6 +57,16 @@ public final class EditCoordinator {
         return transaction
     }
 
+    /// 操作状態が idle か（有効なトランザクションが無く、復元処理中
+    /// でもない）。`activeTransaction == nil` は復元処理中も真になる
+    /// ため、「新規編集を受け付けられるか」の判定にはこちらを使う
+    /// （FE-R21-126-01）。読み取り専用の照会であり、開始・確定・
+    /// キャンセル・Undo/Redo の既存の操作契約は変えない。
+    public var isIdle: Bool {
+        if case .idle = operationState { return true }
+        return false
+    }
+
     public init(capacity: Int = UndoHistory.defaultCapacity) {
         self.history = UndoHistory(capacity: capacity)
     }

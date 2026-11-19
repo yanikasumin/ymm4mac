@@ -11,10 +11,14 @@ import YMM4Core
 /// mode 5–8 = 補間キーフレーム。モード切替はこの選択が兼ねる）。
 /// 本家は右クリックメニューだが、こちらは行内のメニューボタンから
 /// 開く形にする（表示名は現在の種別名）。
-/// 種別の書き換えは記述子の `setAnimationType` 経由（値列は保たれる）。
+/// 種別の書き換えは記述子の `setAnimationType` 経由で、Core の
+/// 種別変更操作（値列の正規化込み、本家 EndEditAsync 相当）を通る。
 struct AnimationTypeMenuButton: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
+    /// Undo 記録（FE-UNDO-WIRING）。nil の場合は無記録。
+    var editRecorder: EditRecorder? = nil
+    var editTarget: EditTargetKey? = nil
 
     var body: some View {
         Menu {
@@ -63,7 +67,25 @@ struct AnimationTypeMenuButton: View {
     @ViewBuilder
     private func checkButton(type: AnimationType, name: String) -> some View {
         Button {
+            // 他人のセッションが有効な間は離散編集を行わない
+            // （FE-R20-126-03。入口で拒否し、モデルを変更しない）。
+            if let editRecorder, !editRecorder.canRecordValueChange() {
+                return
+            }
+            let oldState = descriptor.animationValue?.recordedState
             descriptor.setAnimationType(type)
+            // 種別変更は値列の再構成と一体の操作であり不可逆なため、
+            // 記録は種別だけでなく変更前後の状態（種別＋値列）を
+            // 一体として保持し、Undo/Redo の適用時は変換を再実行
+            // せず記録した状態をそのまま書き戻す（FE-R23-127-01）。
+            if let editRecorder, let editTarget, let oldState,
+               let newState = descriptor.animationValue?.recordedState {
+                editRecorder.recordValueChange(
+                    target: EditTargetKey(
+                        object: editTarget.object, key: editTarget.key + "#type"),
+                    oldValue: oldState, newValue: newState,
+                    apply: { descriptor.restoreAnimationRecordedState($0) })
+            }
             onEdited()
         } label: {
             if currentType == type {
