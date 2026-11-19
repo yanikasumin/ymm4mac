@@ -1,43 +1,7 @@
 #if os(macOS)
-import AVFoundation
-import CoreGraphics
 import Foundation
 import Metal
 import YMM4Core
-
-/// 同期文脈から AVFoundation の async API を呼ぶための橋渡し。
-///
-/// 合成全体が同期実行（描画先の close() で完了まで待つ）ため、ここで
-/// 完了を待っても観測可能な順序は変わらない。結果の受け渡しは
-/// セマフォの前後関係で同期される。
-private final class AVBridgeResult<T>: @unchecked Sendable {
-    var value: Result<T, Error>?
-}
-
-/// 非 Sendable な AVFoundation オブジェクトを橋渡しへ渡すための箱。
-/// 橋渡しはセマフォで直列化され、同時に走る要求は常に1つだけなので、
-/// 並行アクセスは起きない。
-private final class AVSendableBox<T>: @unchecked Sendable {
-    let value: T
-    init(_ value: T) { self.value = value }
-}
-
-private func runAVBlocking<T>(
-    _ operation: @Sendable @escaping () async throws -> T
-) throws -> T {
-    let box = AVBridgeResult<T>()
-    let semaphore = DispatchSemaphore(value: 0)
-    Task {
-        do {
-            box.value = .success(try await operation())
-        } catch {
-            box.value = .failure(error)
-        }
-        semaphore.signal()
-    }
-    semaphore.wait()
-    return try box.value!.get()
-}
 
 /// 動画アイテムの Source。本家 VideoSource に対応する。
 ///
@@ -52,19 +16,20 @@ private func runAVBlocking<T>(
 /// 非定数レートのときだけ、本家の式どおり）。デコーダは常に現在表示中の
 /// 1フレームだけを保持し、要求時刻がその区間内なら再デコードしない
 /// （本家の各デコーダに共通する方式。MEDIA-IO-FACTS §6）。
-/// デコード基盤は AVFoundation（AVAssetImageGenerator）。本家は
-/// FFmpeg → MediaFoundation → DirectShow のプラグイン試行であり、
-/// AVFoundation が扱えないコンテナ（MKV / WebM / TS 等）はこちらでも
-/// 開けず透明へ落ちる。FFmpeg 併用の要否は設計の土台事項のため、
-/// 本件では判断せず差し替え点（このクラスのデコーダ生成部）に留める。
+/// デコード基盤は `MetalVideoDecoderSupply` 境界の後ろに切り出した
+/// （Issue #70 段階2）。既定の供給は AVFoundation
+/// （`AVFoundationVideoDecoderSupply`、従来このクラスが直接所有して
+/// いた実装の移設で挙動は不変）。AVFoundation が扱えないコンテナ
+/// （MKV / WebM / TS 等）向けに FFmpeg 供給
+/// （`FFmpegVideoDecoderSupply`）も同じ境界で接続できるが、どちらの
+/// 供給を使うかの選択（Factory 層での試行順）は次段階で行うため、
+/// 現行の生成経路は従来どおり AVFoundation のみを使う。
 /// 提示タイムスタンプ（Issue #55）: 論理時刻 0 は素材の提示開始位置
 /// （最初の非空セグメントの提示開始時刻）とし、フレーム取得時に
 /// 提示開始位置を加算して資産タイムラインへ読み替える。本家の
 /// 映像ファイルソースも `streamStartTime`（最初のサンプルの
 /// SampleTime）で同じ補正をし、全長からも差し引く。
-/// 回転は AVAssetImageGenerator の preferredTransform 適用で焼き込む
-/// （本家のデコーダ出力の中心化・回転補正に相当）。SAR（表示幅補正）は
-/// 未対応。配置は画像 Source と同じく中心が原点（端数は 0 方向へ切り捨て）。
+/// 配置は画像 Source と同じく中心が原点（端数は 0 方向へ切り捨て）。
 public final class MetalVideoSource: Source {
     public let controllers: [VideoController] = []
     public private(set) var outputs: [any SourceOutput] = []
@@ -74,18 +39,19 @@ public final class MetalVideoSource: Source {
     private let baseDirectory: URL?
     private let drawingEffect: MetalDrawingEffect
     private let outputReference = ImageReference(label: "video-source")
+    /// デコーダ供給の生成関数。既定は AVFoundation 供給。
+    /// テストと次段階の Factory 統合のために差し替え点を持つ。
+    private let supplyFactory: () -> any MetalVideoDecoderSupply
     private var loadedPath: String??
     private var isFirstUpdate = true
 
-    /// デコーダ（開けなかった場合は nil で、出力は透明に固定される）。
-    private var generator: AVAssetImageGenerator?
-    /// 素材の提示長（ループの剰余と終端フォールバックに使う）。
+    /// デコーダ供給（開けなかった場合は nil で、出力は透明に固定される）。
+    private var decoder: (any MetalVideoDecoderSupply)?
+    /// 素材の提示長（ループの剰余に使う）。供給の値を写したもの。
     /// 提示開始オフセットは含まない論理長（本家の Duration と同じ）。
     private var assetDuration: TimeSpanValue = .zero
     /// 提示開始位置（秒、資産タイムライン上）。論理時刻への加算分。
     private var presentationStartSeconds: Double = 0
-    /// 1フレームの表示区間の長さ（秒）。キャッシュ判定に使う。
-    private var frameDuration: Double = 1.0 / 30.0
     /// 現在保持しているフレームの表示区間 [開始, 終了)（秒）。
     private var currentFrameStart: Double = 0
     private var currentFrameEnd: Double = 0
@@ -93,10 +59,25 @@ public final class MetalVideoSource: Source {
     private var frameTexture: MTLTexture?
 
     public init(devices: MetalGraphicsDevices, item: VideoItem, baseDirectory: URL? = nil) {
-        self.context = devices.makeContext()
+        let context = devices.makeContext()
+        self.context = context
         self.item = item
         self.baseDirectory = baseDirectory
         self.drawingEffect = MetalDrawingEffect(context: context)
+        self.supplyFactory = { AVFoundationVideoDecoderSupply(devices: context.devices) }
+    }
+
+    /// 供給を差し替える生成（テスト・次段階の Factory 統合用）。
+    init(
+        devices: MetalGraphicsDevices, item: VideoItem, baseDirectory: URL? = nil,
+        supplyFactory: @escaping () -> any MetalVideoDecoderSupply
+    ) {
+        let context = devices.makeContext()
+        self.context = context
+        self.item = item
+        self.baseDirectory = baseDirectory
+        self.drawingEffect = MetalDrawingEffect(context: context)
+        self.supplyFactory = supplyFactory
     }
 
     public func update(_ description: TimelineItemSourceDescription) throws {
@@ -114,7 +95,7 @@ public final class MetalVideoSource: Source {
             contentOffset: item.contentOffset,
             contentLength: item.contentLength
         )
-        if item.isLooped, generator != nil {
+        if item.isLooped, decoder != nil {
             if assetDuration == .zero {
                 time = .zero
             } else {
@@ -131,7 +112,8 @@ public final class MetalVideoSource: Source {
     public func dispose() {
         drawingEffect.dispose()
         context.devices.unregister(outputReference)
-        generator = nil
+        decoder?.close()
+        decoder = nil
         frameTexture = nil
         outputs = []
     }
@@ -139,7 +121,8 @@ public final class MetalVideoSource: Source {
     // MARK: - デコーダ
 
     private func openDecoder() {
-        generator = nil
+        decoder?.close()
+        decoder = nil
         frameTexture = nil
         hasFrame = false
         assetDuration = .zero
@@ -147,53 +130,21 @@ public final class MetalVideoSource: Source {
 
         if let path = item.filePath,
            let url = resolveMediaURL(path: path, baseDirectory: baseDirectory) {
-            let assetBox = AVSendableBox(AVURLAsset(url: url))
-            // メタデータは async の load API で読む（同期プロパティは
-            // macOS 13 以降非推奨）。
-            let metadata = try? runAVBlocking { () async throws -> (duration: Double, frameDuration: Double, start: Double)? in
-                let asset = assetBox.value
-                guard let track = try await asset.loadTracks(withMediaType: .video).first
-                else { return nil }
-                // 提示区間はセグメントの提示配置から決める（音声側の
-                // 工場と同じ規則）。全長は提示長であり、資産全体の
-                // 長さではない（提示開始オフセットを含むため）。
-                let trackRange = try await track.load(.timeRange)
-                let segments = (try? await track.load(.segments)) ?? []
-                let presentation = AVFoundationPCMProviderFactory.presentationRange(
-                    segments: segments, fallback: trackRange
-                )
-                guard presentation.duration.isValid, !presentation.duration.isIndefinite
-                else { return nil }
-                let minDuration = CMTimeGetSeconds(try await track.load(.minFrameDuration))
-                var frameDuration = 1.0 / 30.0
-                if minDuration.isFinite && minDuration > 0 {
-                    frameDuration = minDuration
-                } else {
-                    let rate = try await track.load(.nominalFrameRate)
-                    if rate > 0 {
-                        frameDuration = 1.0 / Double(rate)
-                    }
-                }
-                return (
-                    CMTimeGetSeconds(presentation.duration), frameDuration,
-                    CMTimeGetSeconds(presentation.start)
-                )
-            }
-            if let metadata {
-                let imageGenerator = AVAssetImageGenerator(asset: assetBox.value)
-                imageGenerator.appliesPreferredTrackTransform = true
-                generator = imageGenerator
-                assetDuration = TimeSpanValue(seconds: metadata.duration)
-                presentationStartSeconds = metadata.start.isFinite ? metadata.start : 0
+            let supply = supplyFactory()
+            if supply.open(filePath: path, url: url) {
+                decoder = supply
+                assetDuration = supply.duration
+                presentationStartSeconds = supply.presentationStartSeconds
                 // 本家 VideoItem.ContentLength はファイルから求めた
                 // Duration そのものである。モデル層の保持値へ反映し、
                 // GetSourceTime（負レート時の基準）が本家と揃うようにする。
                 item.contentLength = assetDuration
-                frameDuration = metadata.frameDuration
+            } else {
+                supply.close()
             }
         }
 
-        if generator == nil {
+        if decoder == nil {
             // 開けない場合の代替: 1×1 完全透明（本家 CreateEmptyBitmap）。
             registerTransparent()
         }
@@ -208,28 +159,13 @@ public final class MetalVideoSource: Source {
     /// 何もしない。キャッシュ区間は資産タイムラインの絶対秒で保持
     /// するため、論理時刻は提示開始位置を加算して読み替える。
     private func updateFrame(atSeconds requested: Double) {
-        guard let generator else { return }
+        guard let decoder else { return }
         let absolute = presentationStartSeconds + requested
         if hasFrame && absolute >= currentFrameStart && absolute < currentFrameEnd {
             return
         }
 
-        // 終端（提示終端）を超えた要求には最終フレームを出す（本家の
-        // 各デコーダ共通）。負の論理時刻は論理 0（提示開始位置）へ
-        // 寄せる（本家のシークも負方向は素材先頭で止まる）。
-        let end = presentationStartSeconds + assetDuration.seconds
-        var target = max(presentationStartSeconds, absolute)
-        var toleranceBefore = CMTime.zero
-        if target >= end {
-            target = end
-            toleranceBefore = .positiveInfinity
-        }
-
-        let frame = fetchFrame(generator: generator, at: target, toleranceBefore: toleranceBefore)
-            ?? (toleranceBefore == .zero
-                ? fetchFrame(generator: generator, at: target, toleranceBefore: .positiveInfinity)
-                : nil)
-        guard let frame else {
+        guard let frame = decoder.frame(atAbsoluteSeconds: absolute) else {
             // 得られなければ前フレームを維持する。まだ1フレームも
             // 得られていなければ透明を登録しておく（未登録の参照は
             // 合成側で「出力なし」になり、本家の透明代替と食い違う）。
@@ -239,8 +175,8 @@ public final class MetalVideoSource: Source {
             return
         }
         frameTexture = frame.texture
-        currentFrameStart = frame.actualSeconds
-        currentFrameEnd = frame.actualSeconds + frameDuration
+        currentFrameStart = frame.startSeconds
+        currentFrameEnd = frame.endSeconds
         hasFrame = true
         // 本家は (-幅/2, -高さ/2) の描画で中心化する（画像 Source と同じ。
         // 端数は 0 方向への切り捨て）。
@@ -256,26 +192,6 @@ public final class MetalVideoSource: Source {
                     bottom: top + Double(frame.height)
                 )
             )
-        )
-    }
-
-    /// 指定時刻のフレームを1枚取得する。前方許容誤差は常に 0（要求時刻を
-    /// 含むフレームを取る。本家の「要求時刻を含むサンプルで止める」方式）。
-    private func fetchFrame(
-        generator: AVAssetImageGenerator, at seconds: Double, toleranceBefore: CMTime
-    ) -> (texture: MTLTexture, width: Int, height: Int, actualSeconds: Double)? {
-        generator.requestedTimeToleranceBefore = toleranceBefore
-        generator.requestedTimeToleranceAfter = .zero
-        let time = CMTime(seconds: seconds, preferredTimescale: 600)
-        let generatorBox = AVSendableBox(generator)
-        guard let result = try? runAVBlocking({ try await generatorBox.value.image(at: time) }),
-              let converted = makePremultipliedTexture(
-                device: context.devices.device, cgImage: result.image
-              )
-        else { return nil }
-        return (
-            texture: converted.texture, width: converted.width, height: converted.height,
-            actualSeconds: CMTimeGetSeconds(result.actualTime)
         )
     }
 
