@@ -513,6 +513,27 @@ public struct Animation: Equatable, Sendable {
         values[index] = AnimationValue(clamped(value))
     }
 
+    /// 値列のインデックス指定の書き換え（キーフレーム区間ではない
+    /// 値の編集用。移動量指定の第2値など、FE-R13-003）。
+    ///
+    /// 値列が対象位置まで実体化していない場合は、読み取り側の代用
+    /// 規則（範囲外は末尾の値、無ければ既定値）と同じ値で対象位置
+    /// まで実体化してから書き換える（区間版 `setValue(_:atSegment:)`
+    /// の実体化と同じ規則）。クランプ範囲は呼び出し側が渡す: 移動量
+    /// 指定の第2値では本家がその値のスライダの Min/Max を絶対制限の
+    /// 対称範囲（±最大絶対値）へ置き換えるため、定義範囲
+    /// [minValue, maxValue] へは固定しない。
+    public mutating func setValue(
+        _ value: Double, atValueIndex index: Int, clampRange: ClosedRange<Double>
+    ) {
+        guard index >= 0 else { return }
+        while values.count <= index {
+            values.append(AnimationValue(keyFrameValue(values.count)))
+        }
+        values[index] = AnimationValue(
+            min(max(value, clampRange.lowerBound), clampRange.upperBound))
+    }
+
     /// 先頭の値を書き換える。本家 `SetFirstValue`。
     /// 値が無い場合は1つ追加する。
     public mutating func setFirstValue(_ value: Double) {

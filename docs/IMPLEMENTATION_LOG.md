@@ -1810,6 +1810,32 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **次の担当へ。** 単位リソースキー 38 件の実文字列は未解決のまま（FE-SLIDER-CORE から継続）。`ConditionalUnitAnimationSlider` 8 件も仕様なしのまま。ファイル参照（FE-R1-043、`PropertyKind.filePath`）は次単位。
 
+#### FE-R13-NUMERIC — アニメーション数値編集の残件（FE-R13-003 / FE-R13-004。FE-SLIDER-UI の分割残件）
+
+**本家規則の照合（逆コンパイル成果物で確認。根拠はファイル:行相当）。**
+
+- 確定処理（FE-R13-004）: 本家 `TextBoxSlider.FixValue`（TextBoxSlider.cs 末尾）は `digits = clamp((int)(1.0 / Delta / 10.0 + 1.0), 0, 15)` とし、`Math.Round(value, digits, MidpointRounding.AwayFromZero)` の後に `Math.Clamp(value, Min, Max)` する（丸め → クランプの順）。適用点はテキスト確定時（`InvokeEndEditForTextBox` が解釈できた数値へ `FixValue` を通す）と編集終了時（`OnEndEditing` が `Value = FixValue(Value)`。スライダ操作もこの経路で最終値が確定する）、および自動化経由の設定（`SetValueFromAutomation`）。
+- 桁数は表示書式の小数桁とは一致しない。Delta は属性が stringFormat から導出する（`AnimationSliderAttribute` / `TextBoxSliderAttribute` のコンストラクタ: "F<n>" → `Pow(0.1, n)`、"D" → 1）。式の実挙動: F0 → 1桁、F1 → 2桁、F3 以降は上限 15 桁。F2 は `Pow(0.1, 2)` が 0.01 ちょうどではなく 0.010000000000000002（0.1 の二乗に最も近い double）になるため式の値が 10.999… となり、切り捨てで **10桁**になる（Mac の Swift `pow` で実測して確認。本家も同じ Pow 経路のため同値になるはずだが、本家実機での桁数の直接確認は未実施）。
+- Min / Max はその値のスライダのものを使う。アニメーションでは `AnimationValueSliderViewModel` の MinValue / MaxValue = `Animation.MinValue / MaxValue` で、移動量指定の第2値だけは `AnimationSliderViewModel.UpdateAnimationValueViewModels` が基準範囲・絶対制限の双方を ±最大絶対値の対称範囲へ置き換える（Mac 側の `AnimationSliderScale.ranges(forValueAt:)` と同じ規則）。値の書き込み自体（`AnimationValueSliderViewModel.Value` setter）はクランプしない。
+- 仕様なしプロパティの扱い: 本家では `Animation` プロパティの編集コントロールは `AnimationSliderAttribute` が生成するものであり、属性が無いプロパティがどの編集経路で確定処理を受けるかは逆コンパイル成果物からは確認できなかった。そのため仕様なし項目では丸めを行わず、従来どおり記述子のクランプだけに委ねる（本単位の判断。未確認事項として残す）。
+
+**何を実装したか（FE-R13-004）。**
+
+- Core: `AnimationSliderScale.fixedValue(_:delta:minimum:maximum:)` を純粋関数として追加（Editing/AnimationSliderScale.swift）。式は本家のとおり再現し、`Int` 変換の溢れを避けるため Double のまま先に 0...15 へ頭打ちにする点だけ防御を足した。丸め規則は .NET `MidpointRounding.AwayFromZero` に対応する Swift の `.toNearestOrAwayFromZero` を使う（`.awayFromZero` は常に切り上げ方向で別物。当初こちらで実装してテストが落ち、原因を切り分けて修正した）。
+- 行側: `AnimationRowView.writeValue(_:segment:)` の入口で `fixedOnCommit` を通す。対象はテキスト確定とスライダの双方が通る集約経路であり、スライダは Mac では即時書き込みのためドラッグ中も同じ確定処理を通る（本家は編集終了時に1回。最終値は一致する）。クランプ範囲は定義範囲 [minValue, maxValue]。書き込み関数の構造（振り分けとコールバック経由の確定）は変えていないため、PR #126 の EditRecorder 接続点は維持される。
+- テスト: AnimationSliderScaleTests に5件追加（F0/F1/F2/F3 の桁数導出、丸め → クランプの順序）。Mac 実測で対象 88 件（AnimationSliderScaleTests 22、AnimationTests 19、PropertyMetadataTests 23、他フィルタ一致分）全て成功。
+
+**何を実装したか（FE-R13-003）。**
+
+- Core: `Animation.setValue(_:atValueIndex:clampRange:)` を追加（Animation/Animation.swift）。キーフレーム区間の `setValue(_:atSegment:)` は区間インデックスの上限がキーフレーム数であり、移動量指定（キーフレーム非対応）の第2値を書けないため、値インデックス専用の経路を分けた。値列が短い場合は読み取り側の代用規則（範囲外は末尾の値、無ければ既定値）と同じ値で実体化してから対象位置だけを書き換える。クランプ範囲は呼び出し側が渡す（第2値の対称範囲を定義範囲へ固定しないため）。
+- Core: `PropertyAccess.animation` に `setValueAtIndex` クロージャを追加し、記述子に `setAnimationValue(_:atValueIndex:clampRange:)` を追加（Editing/PropertyMetadata.swift）。構築は既存ファクトリ1箇所のみ。
+- 行側: `AnimationRowView` の body を縦積みへ変え、移動量指定のときだけ第2値の行（「移動量」ラベル＋数値入力＋単位＋スライダ）を追加した。スライダ範囲は `AnimationSliderScale.sliderRange(for:valueIndex: 1)`（対称置換済み）を再利用し、再実装していない。表示値は `editValue(of:valueIndex: 1)`、書き込みは `writeMovementAmount` が確定処理（FE-R13-004、対称範囲で丸め → クランプ）を通してから記述子のインデックス経路へ渡す。第2値の入力セッション（テキスト・未編集基準・フォーカス）は第1値と独立に持つ。仕様なし項目では第1値と同じくスライダを出さず数値入力のみ。
+- テスト: AnimationTests に4件（第2値への負値書き込み、短い値列の実体化、対称範囲でのクランプ、負インデックス無視）、PropertyMetadataTests に1件（記述子経由の書き込みが定義範囲で丸められないこと）を追加。Mac 実測は FE-R13-004 と同じ実行で全て成功。DebugApp の `swift build` も成功（224ステップ）。
+
+**手動検証チェックリスト（未実施。アプリ層のため目視確認が要る）。** (1) FE-R13-003: 移動量指定へ切り替えると第2値（移動量）の入力欄とスライダが出ること。(2) FE-R13-003: 第2値のスライダ範囲が ±の対称範囲であり、定義範囲が 0..100 の項目でも負の移動量をスライダ・数値入力の双方で設定できること。(3) FE-R13-003: 第2値を変えるとプレビューの動き（1フレームあたりの移動量）が変わること。(4) FE-R13-004: F1 の項目（例: 音量）で 1.234 と入力して確定すると 1.23 になること（Delta 由来の2桁）。(5) FE-R13-004: スライダをドラッグして離した後の値が同じ桁で丸まっていること。(6) FE-R13-003+004: 第2値へ 1.234 と入力して確定すると、対称範囲のまま 1.23 へ丸まること。
+
+**未確認事項。** 仕様なしプロパティに対する本家の確定処理の有無（上記のとおり確認できず、丸めなしとした）。F2 の桁数 10 は Mac 側の `pow` 実測に基づく推定であり、本家実機（Windows / .NET の `Math.Pow`）での直接確認は未実施。値列の正規化タイミングの差（FE-R14-001）は本単位でも扱っていない（第2値の書き込みは実体化を伴うが、種別切替時の正規化そのものは別単位）。
+
 #### FE-FILEPATH — ファイル参照（FE-R1-043。監査 Round 2 設計の「ファイル参照」節の実装）
 
 **本家規則の照合（着工前に逆コンパイル成果物で確認。根拠はファイル:行）。**
