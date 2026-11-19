@@ -3,7 +3,8 @@ import XCTest
 
 /// FE-R27-129-01 / 03: 再生速度の編集が「速度の変更＋編集終了時
 /// 調整」を Undo/Redo 可能な1つの確定編集として扱われることの
-/// 回帰テスト（監査 Round 27 の受け入れ試験 1〜8）。
+/// 回帰テスト（監査 Round 27 の受け入れ試験 1〜8 と、Round 28
+/// の FE-R28-129-01 の競合順序を扱う試験 9）。
 ///
 /// アプリ層（`AnimationRowView` の再生速度セッションと
 /// `ProjectView` の終了時ハンドラ）と同じ記録手順を Core の
@@ -302,5 +303,63 @@ final class PlaybackRateEditSessionTests: XCTestCase {
         XCTAssertEqual(
             fixture.descriptor.animationValue!.values.map(\.value),
             [100, 0])
+    }
+
+    /// 受け入れ試験 9（FE-R28-129-01）: スライダ所有中に
+    /// TextField の確定通知が到着しても、所有トークンは失われ
+    /// ない。アプリ層の処分後の手順を再現する: ドラッグ開始で
+    /// セッションを開き基点を捕捉 → スライダの逐次書き込み →
+    /// テキスト確定は新しいセッションを開かず、既存トークンで
+    /// 書き込みを統合する → ドラッグ終了で終了時調整を同じ
+    /// セッションへ記録して確定する（調整と確定は一度だけ）。
+    /// 履歴は1エントリで、Undo/Redo で速度・長さ・オフセットが
+    /// 一体で往復する。
+    ///
+    /// 処分前のアプリ層は確定時に `EditDragSession.begin` を
+    /// 無条件に呼び、記録側に拒否されて状態が `.refused` へ
+    /// 上書きされ、トークンを失っていた。再入した開始が記録側
+    /// で拒否されること（＝アプリ側は開始要求自体を送らない
+    /// ことで所有を守る、という設計の前提）も併せて固定する。
+    func testTextCommitDuringSliderDragIntegratesIntoOwnedSession() {
+        let fixture = makeFixture()
+        prepareItem(fixture)
+        fixture.item.contentOffset = seconds(2)
+
+        // ドラッグ開始: セッションを開き、基点を捕捉する。
+        let token = fixture.recorder.beginSession()
+        XCTAssertNotNil(token)
+        let baseline = fixture.item.capturePlaybackRateEditBaseline()
+        // スライダの逐次書き込み。
+        writeRate(fixture, 80, token: token)
+        // 所有中の再入した開始は記録側で拒否される。アプリ層は
+        // この要求を送らない（所有中の確定は統合経路を通る）。
+        XCTAssertNil(fixture.recorder.beginSession())
+        XCTAssertTrue(fixture.recorder.hasActiveSession)
+        // テキスト確定の統合: 既存トークンで書き込む。セッション
+        // は開き直さず、ここでは確定もしない。
+        writeRate(fixture, -50, token: token)
+        // ドラッグ終了: 終了時調整 → 確定（一度だけ）。
+        finishSession(fixture, baseline: baseline, token: token)
+        fixture.recorder.commitSession(token: token!)
+
+        XCTAssertEqual(fixture.item.playbackRate, -50)
+        XCTAssertEqual(fixture.item.length, 600)
+        // 符号反転の付け替え（試験 2 と同じ基点・最終値）。
+        XCTAssertEqual(fixture.item.contentOffset, seconds(-12))
+        XCTAssertEqual(fixture.recorder.coordinator.history.undoCount, 1)
+        // 未確定セッションが記録側に残っていない。
+        XCTAssertFalse(fixture.recorder.hasActiveSession)
+
+        // Undo で速度・長さ・オフセットが一体で戻る。
+        XCTAssertTrue(fixture.recorder.coordinator.undo())
+        XCTAssertEqual(fixture.item.playbackRate, 100)
+        XCTAssertEqual(fixture.item.length, 300)
+        XCTAssertEqual(fixture.item.contentOffset, seconds(2))
+
+        // Redo でも一体で再適用される。
+        XCTAssertTrue(fixture.recorder.coordinator.redo())
+        XCTAssertEqual(fixture.item.playbackRate, -50)
+        XCTAssertEqual(fixture.item.length, 600)
+        XCTAssertEqual(fixture.item.contentOffset, seconds(-12))
     }
 }
