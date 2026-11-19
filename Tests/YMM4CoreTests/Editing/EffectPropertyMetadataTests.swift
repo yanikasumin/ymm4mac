@@ -500,7 +500,9 @@ final class EffectPropertyMetadataTests: XCTestCase {
         XCTAssertEqual(number.numberValue, 3.25)
         XCTAssertTrue(number.setNumberValue(7.5))
         let strength = try childDescriptor(parameter, "Strength")
-        XCTAssertEqual(strength.kind, .animation)
+        // 生保持の汎用子は所有型を特定できないため、スライダ仕様は
+        // 付かない（FE-R1-042 の解決対象外）。
+        XCTAssertEqual(strength.kind, .animation(spec: nil))
         XCTAssertTrue(strength.setAnimationConstantValue(55))
 
         let encoded = VideoEffectRegistry.encode(definition).value

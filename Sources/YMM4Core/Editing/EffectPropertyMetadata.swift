@@ -80,7 +80,12 @@ public enum EffectPropertyMetadata {
             break
         }
         result += specificDescriptors(for: definition)
-        return result
+        // スライダ表示仕様（FE-R1-042）は具象定義の型を所有型として
+        // 解決する。本家ではエフェクトのプロパティは具象クラス自身が
+        // 宣言する（属性の抽出表がそれを裏付ける）。
+        return AnimationSliderTable.resolving(
+            result, ownerCandidates: [type(of: definition).typeName]
+        )
     }
 }
 

@@ -1453,6 +1453,34 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **差異。** 両系統は異なるアルゴリズムを使用しており、同一条件での出力波形・音質の等価性は未検証である。アイテム側 Sola が掛かった素材をプレビュー全体速度の TimePitch でさらに伸縮すると、異なる伸縮処理が二重に重なる構造になっており、書き出し（全体速度は効かない）との間にも処理経路の差がある。本家のプレビュー全体速度の音高保持の中身はデコンパイル側で未同定であり、TimePitch の等価性は未検証。是正範囲は本記録の後に判断する。
 
+#### FE-SLIDER-CORE — スライダ表示仕様の Core 基盤（フロントエンド監査 FE-R1-042、単位2前半）
+
+**何を実装したか。** アニメーション付き数値プロパティのスライダ表示仕様（基準範囲・表示形式・単位・刻み）を Core で保持し、記述子構築時に解決する基盤。本家は各 `Animation` プロパティへ `AnimationSliderAttribute`（StringFormat / UnitText / DefaultMin / DefaultMax）を付け、スライダの基準範囲を絶対制限（`Animation` 自身の minValue / maxValue）とは別に決める。従来のポートにはこのデータが無く、アプリ層のスライダは絶対制限全域をそのまま範囲にしていた（FE-R1-042 の欠陥）。本単位は Core の型・参照表・解決までで、スライダ UI は次単位。
+
+**型と表。** `AnimationSliderSpec`（`Sources/YMM4Core/Editing/AnimationSliderSpec.swift`）: defaultMin / defaultMax / stringFormat / unit / unitIsResourceKey / delay と、導出プロパティ `delta`（本家 `Delta` の規則の再実装: 形式が "F<n>" なら 0.1^n、数値化できなければ 1、"D" 始まりなら 1。それ以外は本家属性自体が例外とする形式で表に存在しないため防御として 1）。`delay` は本家属性のコンストラクタが設定しないため属性由来では常に 0。参照表 `AnimationSliderTableData.swift` は抽出データ（本家デコンパイルからの `AnimationSliderAttribute` 全 1,023 件）から機械生成した Swift ソースで、生成スクリプトは解析側ワークスペースの `frontend-audit/generate_slider_table.py`（生成ファイルのヘッダに生成元と再生成方法を記載）。
+
+**キー設計の根拠（衝突検査の実測）。** キーは (所有型の完全修飾名, プロパティ実名) とし、表示名はキーにしない（監査 Round 2 の設計判断）。抽出 1,023 件を (単純クラス名, プロパティ) で数えると一意な組は 1,018 件で、5 件の重複（`DrawingBrushParameterBase` の X / Y / Angle / Aspect と `ScalableDrawingBrushParameterBase` の Zoom）が存在する。この 5 件はいずれも `YukkuriMovieMaker.Brush` と `YukkuriMovieMaker.Plugin.Community.Brush` の同名クラス同士で、仕様値は完全一致する。完全修飾名をキーにすれば 1,023 件全てが一意になるため、完全修飾キーを採用した。所有型の正規化は、ポート側の $type 名（"完全修飾名, アセンブリ名"）から最初のコンマ以降を落とす規則で統一する（`AnimationSliderKey.ownerTypeName(fromTypeName:)`）。
+
+**未解決の単位（38 件）。** 抽出時に単位が本家 `Texts` リソースのキー名だった 38 件は、実文字列がデコンパイル側に含まれないため、キー名のまま表へ保持し `unitIsResourceKey = true` で未解決と判別できるようにした。推測で文字列は埋めていない。実文字列の確定はリソース側の調査が別途必要（次単位以降の残件）。
+
+**対象外（8 件）。** `ConditionalUnitAnimationSlider` の 8 件（LinearGradient の Size / Offset、GradientMesh の Width / Height 等、単位が条件で切り替わるもの）は通常の属性と意味論が異なるため今回の表に含めない。該当プロパティの記述子は仕様なしのまま残る（試験で固定）。
+
+**記述子への解決。** `PropertyKind.animation` に `spec: AnimationSliderSpec?` を保持させ（絶対制限は従来どおり `Animation` 側）、`PropertyDescriptor.sliderSpec` で参照できるようにした。解決は入口の一括処理 `AnimationSliderTable.resolving(_:ownerCandidates:)` で行い、候補は「具象型 → 宣言基底」の順に最初に一致した宣言を使う。仕様が見つからない記述子は nil のままにし、絶対制限全域へのフォールバックはしない。不足は `AnimationSliderTable.unresolvedProperties(in:ownerCandidates:)` で診断として収集できる。
+
+解決を組み込んだ経路: (1) アイテム（`ItemPropertyMetadata.descriptors(for:)`）— 候補は具象アイテム型の $type 名、`VisualItem`、`BaseItem`。本家では宣言場所がプロパティごとに異なる（Volume 等は具象型、X 等は `VisualItem`、`PlaybackRate2` は具象型ごとに範囲が異なる再宣言で `BaseItem` には属性自体が無い）ため、この候補順が要る。VoiceItem の字幕系は id 自体が本家プロパティ名（JimakuX 等）であり具象型で引ける。(2) エフェクト（`EffectPropertyMetadata.descriptors(for:)`）— 候補は具象定義の $type 名（本家ではエフェクトのプロパティは具象クラスが宣言する）。(3) 複合子のうち所有型を特定できるもの（`EffectPropertyMetadataComposite`）— ブラシパラメータ子（パラメータ型ごとに具象型→宣言基底の候補表を実測のクラス階層で固定）、Drawing 変換子（`DrawingBrushParameterBase`）、グラデーションメッシュ格子点（`GradientMeshPoint`）、メッシュ変形の点（`MeshDeformationPoint`）、モザイクの Size（形状ごとの具象型→`SizeMosaicParameterBase`）。
+
+未対応の経路: 生保持オブジェクトの汎用子（rawObjectChildren 等）は所有型をその層で特定できないため解決しない（仕様なしが正で、試験でも固定）。また実装中に判明した既存の欠落として、`ItemPropertyMetadata` は VideoItem / AudioItem に Volume / Pan の記述子自体を出していない（VoiceItem のみ）。表には両型の Volume 仕様があるため、記述子側の欠落は別途処分が要る（本単位の範囲外として記録）。
+
+**スケール計算を含めなかった判断。** 本家 `TextBoxSlider.ChangeMinMax` の2の冪スケール拡張は、監査 Round 2 の設計判断で「UI 側の派生状態」（セグメント間で最大スケールを共有する MinScale 伝播、移動量モードの対称範囲置換、端点補正といった表示モデル側の例外を含む）と位置付けられている。純粋関数として切り出しても、検証は結局コントロールの振る舞いと対で行う必要があり、Core へ先行して置くと未検証の式だけが固定されるため、本単位では含めず UI 単位で扱う。これは省略ではなく設計判断としての記録である。
+
+**本家との差分。** ユーザーから見える差はまだ無い（UI 未接続）。内部差として、本家は属性をプロパティ宣言に直接持つが、こちらは生成表＋構築時解決で等価な情報を再現する。`ConditionalUnitAnimationSlider` と単位リソースキー 38 件は本家でも条件分岐・リソース参照で解決されるもので、こちらでは未解決のまま明示する。
+
+**検証。** Mac（同期先 ~/ymm4-work/fe-slider/YMM4Mac）で方式名フィルタ実行し全合格: 新規 `AnimationSliderSpecTests` 14 件（表の全件性とキー一意性、両名前空間の同名クラスの一致、リソースキーの未解決表示、delta 導出 F0/F1/F2/F4、VideoItem 音量の表レベル裏取り、VoiceItem の記述子解決と単位の全角 ％、`PlaybackRate2` の型別範囲、VisualItem 経由の解決、TextItem の `PlaybackRate2` が仕様なし＋診断に載ること、ZoomEffect の解決、ブラシ子・格子点の解決、ConditionalUnit の対象外固定）、既存 `PropertyMetadataTests` 17 件、`EffectPropertyMetadataTests` 17 件（うち1件は `PropertyKind` のケース変更に伴い等値表明を `.animation(spec: nil)` へ精密化）。合計 48 件・失敗 0。AudioDrift は既定どおり除外。
+
+**次の担当へ（アプリ層の破壊箇所）。** `PropertyKind.animation` への関連値追加により、アプリ層で式位置の `kind == .animation` 比較がコンパイル不能になる。Mac でアプリパッケージをビルドして実測した破壊は `Apps/DebugApp/Sources/YMM4MacDebug/ProjectView.swift` の 800 行目と 944 行目の2箇所のみ（エラー: member 'animation(spec:)' expects argument）。次単位（スライダ UI）で同ファイルに触る際にパターン照合へ直すこと。本単位ではアプリ層に触っていない。
+
+**追随修正（同ブランチで実施）。** 上記2箇所（`ProjectView.swift` の `writeAnimationProperty` / `writeItemPosition`）を `guard case .animation = descriptor.kind` のパターン照合へ置き換えた（意味は従来どおり「animation 種別か」の判定で不変）。Mac（同期先 ~/ymm4-work/fe-slider/YMM4Mac）で `Apps/DebugApp` の `swift build` 成功と `AnimationSliderSpecTests` の合格を確認済み。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
