@@ -159,6 +159,7 @@ final class FFmpegVideoProcessRunner: FFmpegVideoProcess, @unchecked Sendable {
     private var errorText = ""
     private var reapedExitStatus: Int32?
     private var outputFinished = false
+    private var terminated = false
     private(set) var producedFrameCount = 0
 
     init(request: FFmpegVideoProcessRequest) throws {
@@ -273,14 +274,16 @@ final class FFmpegVideoProcessRunner: FFmpegVideoProcess, @unchecked Sendable {
                     upToCount: request.frameByteCount - data.count
                 ) ?? Data()
             } catch {
-                if data.isEmpty {
+                // 終了指示済みなら、途中のフレームは証拠にせず
+                // 終端として返す（プロトコルの契約どおり）。
+                if data.isEmpty || isTerminated {
                     finishOutput()
                     return nil
                 }
                 throw FFmpegVideoProcessError.truncatedFrame
             }
             if chunk.isEmpty {
-                if data.isEmpty {
+                if data.isEmpty || isTerminated {
                     finishOutput()
                     return nil
                 }
@@ -341,7 +344,27 @@ final class FFmpegVideoProcessRunner: FFmpegVideoProcess, @unchecked Sendable {
         return errorText
     }
 
+    private var isTerminated: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return terminated
+    }
+
     func terminate() {
+        condition.lock()
+        if terminated {
+            condition.unlock()
+            return
+        }
+        terminated = true
+        condition.unlock()
+        // stdout の読み側を先に閉じてから SIGTERM を送る。パイプが
+        // 満杯で書き込み待ちになっている ffmpeg は SIGTERM を処理
+        // できず終了しない（段階3で音声側を実測し、段階4で映像側
+        // も実バイナリで同型と確認した）。読み側が閉じれば書き込み
+        // 待ちは書き込みエラーで解け、プロセスは直ちに終了する。
+        // 音声側（FFmpegAudioProcess.terminate）と同じ手順。
+        try? outputHandle.close()
         if process.isRunning {
             process.terminate()
         }
