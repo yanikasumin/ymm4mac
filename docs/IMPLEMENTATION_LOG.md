@@ -1894,3 +1894,41 @@ R5 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinato
 - **FE-R6-119-02（P1）履歴変更通知の発火時点で記録抑制が残っている**: `UndoHistory.undo()` / `redo()` は `isApplying = true` の後 `defer` で関数終了時に復帰させていたため、`onHistoryChanged` の発火時点でも抑制が有効なままだった。通知クロージャから新しい編集を確定させると、`record` の `guard !isApplying` で履歴登録だけが黙って破棄され、モデルへの変更は残るのに Undo できない変更が生まれていた。本家 `UndoRedoManager` は `isUndoRedoing` を false へ戻してから `HistoryChanged` を発火させる（レビュアーが再照合済み）ため、本家とも異なる挙動だった。処分: 記録抑制の範囲をコマンドの適用中だけに限定する。適用部分を `applySuppressingRecording`（適用スコープ内でのみ `isApplying` を立て、`defer` で解除）へ切り出し、スタック更新を終え・抑制を解除してから `onHistoryChanged` を発火させる順序へ変更した（`undo` / `redo` とも）。適用中の記録抑制そのもの（R2-U04）は維持される。回帰テスト `testEditCommittedFromHistoryChangedNotificationIsRecorded`（Undo の通知の中から新しい編集を確定させ、その編集が履歴に登録され Undo 可能であること）を追加。
 
 R6 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinatorTests` 15件（従来13件＋R6 回帰2件、`testCancelReentryDoesNotRecurse` は新契約へ見直し）、`UndoHistoryTests` 10件。関連する既存テストも全合格（PropertyMetadataTests 系34件、TimelineEditingTests 20件、いずれも失敗0）。全スイートは回していない。ARCHITECTURE.md は処理経路・所有権に変更が無いため未更新。
+
+#### FE-R14-001 — アニメーション種別変更時の値列正規化を Core 操作として実装（フロントエンド監査 Round 14、P2）
+
+**症状。** Mac の記述子種別セッターは `animationType` を素の代入で書き換えるだけで値列を正規化しなかった。そのため、既定値 100 の拡大率を定数 50 にした状態で「ランダム移動」へ切り替えると、終端値が未実体化のまま残り、評価側の代用規則（不足分は既定値で補う）で 100 と評価され、表示・評価が 50→100 に化け得た。スライダ単位（FE-R13-002）で表示側の `AnimationSliderScale.activeValues` は本家の `ActiveValues`（既存の値だけを取る）に合わせたが、モデル側の値列そのものの正規化は未実装で残っていた（Round 13 で残存として記録、Round 14 で本件として採番）。
+
+**本家規則（逆コンパイル済みコードで確定。仕様抽出の参照に留め写経はしていない）。** 正規化は `Animation` 自身の編集終了処理にある: `BeginEdit`（`YukkuriMovieMaker.Commons/Animation.cs:600`）が旧種別を記録し、`EndEditAsync`（同 605–686）が編集終了時に値列を組み替える。有効な値の数は `GetActiveValueCount`（同 136–148。キーフレーム対応型 = キーフレーム数 + 2、なし = 1、それ以外 = 2）、`ActiveValues = Values.Take(GetActiveValueCount())`（同 85）。変換に使う長さは `Length`（同 47。`SetAnimationParameters`、同 754 で所有アイテムから注入）。種別変更時の分岐は次のとおり:
+
+- 新種別が「なし」: 先頭の値だけ残す（同 633–637）。
+- 旧種別が「なし」: 先頭だけ残し、移動量指定なら移動量 0 を追加、それ以外は先頭の値の複製を有効な値の数まで補う（同 638–644）。定数 50 → ランダム移動で終端値も 50 になるのはこの規則。
+- 旧種別が「移動量指定」: 開始値と移動量から、非対応の新種別なら終端値 = 開始値 + 移動量 × 長さ、キーフレーム対応なら等分位置へ線形に割り付け（同 645–658）。
+- 旧種別がキーフレーム非対応（ランダム移動・反復移動）: 移動量指定なら移動量 =（終了値 − 開始値）/ 長さ、キーフレーム対応なら開始値→終了値を等分位置へ線形に割り付け、非対応同士（ランダム ⇔ 反復）は値列不変（同 659–673）。
+- 旧種別がキーフレーム対応: 移動量指定なら移動量 =（値列の末尾の値 − 先頭の値）/ 長さ、非対応の新種別なら終端値 = 末尾の値、対応同士は値列不変（同 674–685）。
+
+**設計。** Mac の記述子書き込みは即時反映で編集セッション境界（BeginEdit/EndEdit）が無いため、監査 Round 14 の指定どおり「種別変更＋値列正規化」を1つの Core 操作 `Animation.changeAnimationType(to:)`（`Sources/YMM4Core/Animation/Animation.swift`）として実装し、記述子の種別セッター（`PropertyDescriptorFactory.animation` の `setType`、`Sources/YMM4Core/Editing/PropertyMetadata.swift`）は必ずこの操作を通す形にした。種別を直接書き換える他の経路は編集経路ではないことを確認済み: 形式層のデコード／複写（`AnimationCodecSupport`。読み込みデータは本家でも EndEdit を通らない）、GPU 層のパラメータ解釈（`MetalEffectProcessorsNoise`。描画用の解釈であり編集ではない）。定数値書き込み（`setConstantValue`）は種別「なし」＋単一値という正規化済みの状態を直接構築するため対象外とした。変換に使う長さは `Animation.length`（所有アイテムが `refreshAnimationContext` で伝播する注入値）で、本家の `Length` と同じ供給経路である。表示側の導出状態である `AnimationSliderScale` には触っていない（正規化はモデル側の操作であり、役割が異なる）。
+
+**本家との差異（意図的）。** (1) 本家 `EndEditAsync` の「種別不変」側分岐（有効な値の数への切り詰め・末尾値での補充、Animation.cs:608–632）は実装していない。Mac では値列の個数はキーフレーム追加・削除の連動（`insertKeyFrame` / `removeKeyFrame` / `removeAllKeyFrames`）と値書き込み（`setValue` の実体化）で維持されており、読み込みデータに超過分があっても評価は先頭 `activeValueCount` 個だけを使う。超過分を編集のたびに切り捨てると保存時の往復保全（未知・超過データの保持）を損なうため、種別変更時に限る正規化とした。(2) 値列が空の異常データでは本家は `Values.First()` 等で例外になるが、Mac 側は既定値で代用して処理を続ける（防御的な相違）。
+
+**テスト対応表**（`Tests/YMM4CoreTests/Animation/AnimationTypeChangeTests.swift`、15件）:
+
+| テスト | 本家分岐 |
+|---|---|
+| testNoneToRandomFillsEndValueWithFirstValue | 旧「なし」→ ランダム移動。監査の具体症状（既定値100・定数50 → 終端も50、評価も全区間50） |
+| testNoneToRepetitiveFillsEndValueWithFirstValue | 旧「なし」→ 繰り返し移動（同規則） |
+| testNoneToMovementAmountAppendsZeroAmount | 旧「なし」→ 移動量指定（移動量 0） |
+| testNoneToKeyFrameSupportedFillsAllValuesWithFirstValue | 旧「なし」→ キーフレーム対応（キーフレーム数 + 2 まで複製） |
+| testKeyFrameSupportedToNoneKeepsOnlyFirstValue | 新種別「なし」（先頭だけ残す） |
+| testMovementAmountToRandomConvertsEndValue | 旧・移動量指定 → 非対応（終端 = 開始 + 移動量 × 長さ） |
+| testMovementAmountToKeyFrameSupportedDistributesLinearly | 旧・移動量指定 → 対応（等分位置へ線形割付） |
+| testRandomToMovementAmountConvertsAmount | 旧・非対応 → 移動量指定（（終了 − 開始）/ 長さ） |
+| testRepetitiveToKeyFrameSupportedDistributesLinearly | 旧・繰り返し移動 → 対応（等分位置へ線形割付） |
+| testRandomToRepetitiveKeepsValues | 非対応同士は値列不変 |
+| testKeyFrameSupportedToMovementAmountUsesLastValue | 旧・対応 → 移動量指定（末尾の値を使用） |
+| testKeyFrameSupportedToRandomUsesLastValueAsEndValue | 旧・対応 → 非対応（終端 = 末尾の値） |
+| testKeyFrameSupportedToKeyFrameSupportedKeepsValues | 対応同士は値列不変 |
+| testSameTypeChangeIsNoOp | 同一種別は無操作 |
+| testDescriptorSetTypeNormalizesValues | 記述子セッターが操作を迂回しないことの固定 |
+
+検証: Mac（~/ymm4-work/fe-r14-001/YMM4Mac）で実施。`AnimationTypeChangeTests` 15件全合格。関連する既存スイートもフィルタ実行で全合格（`Animation|PropertyMetadata` フィルタで 131件・失敗0 — AnimationTests / AnimationEvaluationTests / AnimationTypeTests / AnimationSliderScaleTests / AnimationSliderSpecTests / PropertyMetadataTests / EffectPropertyMetadataTests を含む。`ItemKeyFrameEditingTests` 8件も別途全合格）。Apps/DebugApp の swift build 成功（224ステップ）。全スイートは回していない。ARCHITECTURE.md は処理経路・所有権の変更ではなく既存の記述子経路内部の操作差し替えのため未更新。
