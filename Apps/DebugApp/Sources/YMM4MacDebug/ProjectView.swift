@@ -2498,9 +2498,17 @@ struct ProjectView: View {
             displayedPreviewFrame = nil
             // アイテム0件の空タイムラインで合成結果が得られない場合は
             // エラー表示にせず、プレースホルダ文言に任せる。
-            previewError = (timeline?.items.isEmpty ?? true)
-                ? nil
-                : "合成に失敗しました（例外または出力なし）"
+            // 合成例外の理由が診断に残っている場合はそれを表示する
+            // （FE-R1-037）。
+            if (timeline?.items.isEmpty ?? true) {
+                previewError = nil
+            } else if let composition = failures.first(
+                where: { $0.kind == PreviewBox.compositionFailureKind }
+            ) {
+                previewError = "合成に失敗しました: \(composition.message)"
+            } else {
+                previewError = "合成に失敗しました（例外または出力なし）"
+            }
             previewCurrentFailure = !failures.isEmpty
             previewDiagnostics = history
         }

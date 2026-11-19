@@ -85,6 +85,9 @@ public final class PreviewBox: PreviewRenderSession {
         )
     }
 
+    /// 合成そのものの失敗を診断へ記録するときの種別。
+    public static let compositionFailureKind = "previewComposition"
+
     /// 指定フレームで合成し、読み戻した画像を返す。失敗時は nil。
     public func render(
         frame: Int, timeline: Timeline, usage: TimelineSourceUsage = .paused
@@ -96,6 +99,13 @@ public final class PreviewBox: PreviewRenderSession {
         do {
             try composer.update(time: TimeSpanValue(seconds: seconds), usage: usage)
         } catch {
+            // 例外の理由を捨てず、セッションの診断へ残す（FE-R1-037）。
+            // ワーカーは描画ごとの診断を切り分けて表示側へ渡すため、
+            // 現在の失敗状態と診断履歴の両方に理由が残る。
+            diagnostics.record(
+                kind: Self.compositionFailureKind,
+                message: String(describing: error)
+            )
             return nil
         }
         guard let output = composer.output else { return nil }
