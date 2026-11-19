@@ -212,6 +212,95 @@ final class MediaItemLengthTests: XCTestCase {
         XCTAssertEqual(item.contentOffset, .zero)
     }
 
+    // MARK: - FE-R16-001: 差し替え後のタイムライン長キャッシュ整合
+
+    /// アイテムを1つ持つタイムラインを用意する。長さキャッシュは
+    /// 実アイテム集合と一致した状態から始める。
+    private func makeTimelineWithAudioItem(
+        duration: Double
+    ) -> (timeline: Timeline, item: AudioItem) {
+        let timeline = Timeline()
+        let item = AudioItem()
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(duration)))
+        item.resetLength(fps: 30)
+        timeline.items = [item]
+        timeline.refreshTimelineLengthAndMaxLayer()
+        return (timeline, item)
+    }
+
+    /// アプリ層 `applyFileChange` の確定手順（記録→調整→調整が起きた
+    /// 場合だけキャッシュ再計算）を Core 側で再現する。
+    /// アイテム側の調整は所属タイムラインを知らないため、キャッシュの
+    /// 追随はタイムラインを把握している側の責務という契約を固定する。
+    private func applyFileChangeSequence(
+        item: AudioItem, timeline: Timeline, newDuration: Double
+    ) -> Bool {
+        let previous = item.originalContentLength
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(newDuration)))
+        let adjusted = item.adjustLengthAfterFileChange(
+            previousOriginalContentLength: previous, fps: 30
+        )
+        if adjusted {
+            timeline.refreshTimelineLengthAndMaxLayer()
+        }
+        return adjusted
+    }
+
+    /// 調整だけではキャッシュは追随しない（アプリ層の再計算が必要な
+    /// 根拠）。再計算後は実長と一致する。
+    func testAdjustAloneLeavesTimelineLengthCacheStale() {
+        let (timeline, item) = makeTimelineWithAudioItem(duration: 10)
+        XCTAssertEqual(timeline.length, 300)
+        let previous = item.originalContentLength
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(20)))
+        XCTAssertTrue(item.adjustLengthAfterFileChange(
+            previousOriginalContentLength: previous, fps: 30
+        ))
+        XCTAssertNotEqual(timeline.length, timeline.computeCurrentLength())
+        timeline.refreshTimelineLengthAndMaxLayer()
+        XCTAssertEqual(timeline.length, timeline.computeCurrentLength())
+    }
+
+    /// 拡大: 差し替え確定後にキャッシュが新しい実長へ追随する。
+    func testTimelineLengthCacheFollowsFileChangeExpansion() {
+        let (timeline, item) = makeTimelineWithAudioItem(duration: 10)
+        let adjusted = applyFileChangeSequence(
+            item: item, timeline: timeline, newDuration: 20
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertEqual(item.length, 600)
+        XCTAssertEqual(timeline.length, timeline.computeCurrentLength())
+        XCTAssertEqual(timeline.length, 600)
+    }
+
+    /// 短縮: 伸びた状態から短い素材へ差し替えてもキャッシュが縮む。
+    func testTimelineLengthCacheFollowsFileChangeShrink() {
+        let (timeline, item) = makeTimelineWithAudioItem(duration: 20)
+        XCTAssertEqual(timeline.length, 600)
+        let adjusted = applyFileChangeSequence(
+            item: item, timeline: timeline, newDuration: 10
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertEqual(item.length, 300)
+        XCTAssertEqual(timeline.length, timeline.computeCurrentLength())
+        XCTAssertEqual(timeline.length, 300)
+    }
+
+    /// 同長差し替え: 調整は起きず、利用者のトリムとキャッシュの
+    /// 整合はそのまま保たれる。
+    func testTimelineLengthCacheStaysConsistentWhenFileChangeKeepsLength() {
+        let (timeline, item) = makeTimelineWithAudioItem(duration: 10)
+        item.length = 100
+        timeline.refreshTimelineLengthAndMaxLayer()
+        let adjusted = applyFileChangeSequence(
+            item: item, timeline: timeline, newDuration: 10
+        )
+        XCTAssertFalse(adjusted)
+        XCTAssertEqual(item.length, 100)
+        XCTAssertEqual(timeline.length, timeline.computeCurrentLength())
+        XCTAssertEqual(timeline.length, 100)
+    }
+
     // MARK: - PlaybackRateMap.findContentExhaustedTime
 
     /// テーブルの範囲内で尽きる場合の交点計算。

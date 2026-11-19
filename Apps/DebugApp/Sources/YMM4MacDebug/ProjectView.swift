@@ -1524,10 +1524,17 @@ struct ProjectView: View {
                 return
             }
             item.recordMediaInfo(info)
-            item.adjustLengthAfterFileChange(
+            // 長さが決め直されたら、タイムライン長のキャッシュも
+            // 追随させる（FE-R16-001）。キャッシュは自動追随せず、
+            // 書き出し範囲の決定にも使われるため、所属タイムラインを
+            // 把握しているアプリ層が再計算する。長さが変わらなかった
+            // 場合は再計算しない。
+            if item.adjustLengthAfterFileChange(
                 previousOriginalContentLength: previousOriginal,
                 fps: timeline.videoInfo.fps
-            )
+            ) {
+                timeline.refreshTimelineLengthAndMaxLayer()
+            }
             requestPreviewRender(modelChanged: true)
         }
     }
