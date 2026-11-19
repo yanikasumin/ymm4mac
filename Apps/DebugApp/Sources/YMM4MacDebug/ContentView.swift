@@ -72,6 +72,10 @@ struct ContentView: View {
             minWidth: 1100, maxWidth: .infinity,
             minHeight: 700, maxHeight: .infinity
         )
+        // メインウィンドウの閉鎖（閉じるボタン・⌘W）にも破棄確認を
+        // 通す（FE-R32-131-02。ユーザー辞書編集の別ウィンドウには
+        // 付けない）。
+        .background(WindowCloseGuard(workspace: workspace))
         .onAppear {
             // 起動時間（プロセス開始→画面表示）の終点を記録する。
             AutoTestEnvironment.recordFirstAppear()

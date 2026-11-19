@@ -29,7 +29,14 @@ final class DebugAppDelegate: NSObject, NSApplicationDelegate {
             return .terminateNow
         }
         let proceed = MainActor.assumeIsolated {
-            workspace.confirmDiscardUnsavedChanges()
+            let proceed = workspace.confirmDiscardUnsavedChanges()
+            if proceed {
+                // 終了に続けてウィンドウが閉じられる際、閉鎖側の確認が
+                // 二重に出ないよう印を立てる（FE-R32-131-02。閉鎖側が
+                // 1回だけ消費する）。
+                workspace.discardConfirmedForTermination = true
+            }
+            return proceed
         }
         return proceed ? .terminateNow : .terminateCancel
     }

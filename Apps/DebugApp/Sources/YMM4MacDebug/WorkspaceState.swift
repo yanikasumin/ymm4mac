@@ -55,6 +55,14 @@ final class WorkspaceState: ObservableObject {
     /// Undo・Redo の有効/無効を再評価させるための契機。
     @Published private(set) var editHistoryRevision = 0
 
+    /// 終了フロー（DebugAppDelegate.applicationShouldTerminate）で
+    /// 破棄確認が済んだ印（FE-R32-131-02）。終了が許可されると
+    /// ウィンドウの閉鎖が続けて起きるため、閉鎖側の確認
+    /// （WindowCloseGuard）が二重に出ないよう、閉鎖側が1回だけ
+    /// 消費する。ウィンドウだけを閉じる操作では立てない（次に
+    /// 終了する際は改めて確認する）。
+    var discardConfirmedForTermination = false
+
     /// 編集アクションを ProjectView へ要求する。
     func request(_ action: WorkspaceAction) {
         pendingAction = (action, (pendingAction?.sequence ?? 0) + 1)
