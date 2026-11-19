@@ -20,9 +20,18 @@ import Foundation
 /// Interlocked で加算するが、ここでは逐次に加算する（結果は同じ）。
 /// 資源ごとの読み取りバッファも本家は使い回すが、ここでは読み取り
 /// ごとに確保する（意味論に影響しない内部差）。
+///
+/// モデルの所有（Issue #106）: 読み取り対象のタイムラインは
+/// `retarget(to:sceneTimelines:)` で差し替えられる。実時間再生では
+/// 編集モデルではなく、映像プレビューと同じスナップショット
+/// （`Project.makeExportSnapshot` の専有複製）を渡す運用とし、生成側
+/// （チャンク生成キュー）が編集中のモデルを直接読まない構造にする。
+/// 差し替えは読み取り・シークと直列化された状態で呼ぶこと（再生側は
+/// 供給ロックの保持中に行う）。差し替え前のタイムラインから開いた
+/// 資源は全て破棄され、読み取り位置は保持される。
 public final class TimelineAudioMixer: AudioStream {
-    /// 対象タイムライン。
-    public let timeline: Timeline
+    /// 対象タイムライン。`retarget` で差し替わる。
+    public private(set) var timeline: Timeline
     private let factory: AudioSourceFactory
     private var resources: [(item: BaseItem, stream: AudioStream)] = []
     private var groupResolver: AudioGroupResolver?
@@ -31,6 +40,24 @@ public final class TimelineAudioMixer: AudioStream {
         self.timeline = timeline
         self.factory = factory
         super.init()
+    }
+
+    /// 読み取り対象のタイムラインを差し替える（Issue #106）。
+    ///
+    /// 開いている資源とグループ解決は旧タイムライン前提のため全て
+    /// 破棄し、次の読み取りで新しいタイムラインから開き直す。工場の
+    /// シーン解決も、差し替え先と同じモデル集合（スナップショットの
+    /// タイムライン群）へ向け直す — 解決が編集モデルへ戻ると、
+    /// SceneItem の音声だけが生モデルを読み続けてしまうためである。
+    /// 読み取り位置（`position`）は保持する。シークではないので、
+    /// 呼び出し側が蓄積側（リングバッファ等）の破棄を担う。
+    public func retarget(to newTimeline: Timeline, sceneTimelines: [Timeline]) {
+        timeline = newTimeline
+        factory.sceneTimelineResolver = { id in
+            sceneTimelines.first { $0.id == id }
+        }
+        resources.removeAll()
+        groupResolver = nil
     }
 
     private var fps: Int { timeline.videoInfo.fps }

@@ -49,6 +49,28 @@ public final class PlaybackAudioSource {
     public func seek(toTime time: TimeSpanValue) {
         mixer.seek(toTime: time)
         levelMeter.seek(to: time, hz: hz)
+        resetRingBuffer()
+    }
+
+    /// 読み取りモデルを差し替える（Issue #106）。
+    ///
+    /// ミキサーの対象タイムラインを新しいスナップショットへ差し替え、
+    /// 旧モデルから先読みした蓄積は破棄する。ミキサーの読み取り位置は
+    /// 蓄積として破棄する分だけ進んでいるため、その分を巻き戻して
+    /// 「次に返る音声の位置は差し替え前後で変わらない」契約にする。
+    /// メーターの状態は変えない（測定済みの窓は再生済みの音であり、
+    /// 遡って差し替えるものではない）。呼び出しは読み取り（チャンク
+    /// 生成）と直列化された状態で行うこと（再生エンジンは供給ロックの
+    /// 保持中に呼ぶ）。
+    public func replaceModel(timeline: Timeline, sceneTimelines: [Timeline]) {
+        let resumePosition = mixer.position - bufferLength
+        mixer.retarget(to: timeline, sceneTimelines: sceneTimelines)
+        resetRingBuffer()
+        mixer.seek(to: resumePosition)
+    }
+
+    /// リング蓄積を空に戻す。Hz が変わった場合は寸法も合わせ直す。
+    private func resetRingBuffer() {
         if ringBuffer.count != hz * AudioStream.channelCount * 2 {
             ringBuffer = [Float](
                 repeating: 0, count: hz * AudioStream.channelCount * 2

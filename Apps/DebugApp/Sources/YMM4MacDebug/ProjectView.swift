@@ -60,6 +60,11 @@ struct ProjectView: View {
     @State private var previewSessionKey: PreviewBox.SessionKey?
     /// 編集が入ってスナップショットの作り直しが必要な状態か。
     @State private var previewModelDirty = true
+    /// 直近に確定したスナップショット（タイムライン群と対象）。
+    /// 映像ワーカーと再生エンジンの音声が同じモデルを読むための
+    /// 保持で、`refreshPreviewModel` の成功時にだけ差し替わる
+    /// （Issue #106）。セッション切替時は resetPreview で消す。
+    @State private var previewSnapshot: (timelines: [Timeline], timeline: Timeline)?
     /// 直近のスナップショット生成時刻（連続編集時の間引き用）。
     @State private var lastPreviewSnapshotAt = Date.distantPast
     /// 間引き・失敗時の遅延確定はこの 1 件に集約する（R11-06）。
@@ -2700,6 +2705,7 @@ struct ProjectView: View {
         previewError = nil
         previewSessionKey = nil
         previewModelDirty = true
+        previewSnapshot = nil
         previewCurrentFailure = false
         previewDiagnostics = []
         guard let timeline else { return }
@@ -2852,6 +2858,7 @@ struct ProjectView: View {
         lastPreviewSnapshotAt = Date()
         previewModelDirty = false
         previewModelVersion += 1
+        previewSnapshot = snapshot
         // 保留中のサムネイル保存は取り消さない。対象は新しいモデル
         // の同じフレームへ結び直され、その完成通知で発火する
         // （R20-113-01。R12-06 の取消しはモデル変更については
@@ -2865,6 +2872,13 @@ struct ProjectView: View {
         previewWorker.setModel(
             identity: identity, timelines: snapshot.timelines,
             timeline: snapshot.timeline, baseDirectory: baseDirectory
+        )
+        // 音声も同じスナップショットへ差し替える（Issue #106）。
+        // 映像と音声でモデル版数を一致させ、編集の反映時点が
+        // ずれないようにするための単一の確定経路。再生中は
+        // エンジン側で保留され、停止時に適用される。
+        playbackEngine?.updateAudioModel(
+            timeline: snapshot.timeline, timelines: snapshot.timelines
         )
     }
 
@@ -2901,6 +2915,18 @@ struct ProjectView: View {
     /// 実時間再生エンジンをセッションに合わせて作り直す。
     /// 音声工場の組み立てはアプリ内自動テストと同じ生成パターン
     /// （実ファイル工場＋ボイス供給リゾルバ＋シーン解決）。
+    ///
+    /// ミキサーの読み取り対象は、確定済みスナップショットがあれば
+    /// そのタイムラインにする（Issue #106。シーン解決もスナップ
+    /// ショット内のタイムライン群へ向ける）。無い場合（セッション
+    /// 初期化の直後で、直後の refreshPreviewModel が確定させるまで
+    /// の間、およびスナップショット生成に失敗している間）は、
+    /// 動画設定だけを写した空のタイムラインで仮組みし、音声生成側が
+    /// 編集モデルを持つ状態を作らない（書き出しがスナップショットを
+    /// 作れない場合に共有へフォールバックしない AUD-07 の方針と
+    /// 同じ）。仮組みの間は無音になり、最初の確定で差し替わる。
+    /// エンジン自身の `timeline` は表示同期用に表示タイムラインを
+    /// 渡す。
     private func resetPlaybackEngine(timeline: Timeline) {
         playbackEngine?.dispose()
         playbackEngine = nil
@@ -2910,7 +2936,8 @@ struct ProjectView: View {
         let pcmProviderFactory = AVFoundationPCMProviderFactory(
             baseDirectory: baseDirectory
         )
-        let timelines = project.timelines
+        let snapshot = previewSnapshot
+        let timelines = snapshot?.timelines ?? []
         let factory = AudioSourceFactory(
             providerFactory: pcmProviderFactory,
             sceneTimelineResolver: { id in timelines.first { $0.id == id } },
@@ -2921,8 +2948,16 @@ struct ProjectView: View {
         let levelMeter = SoundLevelMeter()
         levelMeter.isSoundLevelMeterEnabled = isPeakMeterEnabled
         levelMeter.isLoudnessMeterEnabled = isLoudnessMeterEnabled
+        let mixerTimeline: Timeline
+        if let snapshot {
+            mixerTimeline = snapshot.timeline
+        } else {
+            let placeholder = Timeline()
+            placeholder.videoInfo = timeline.videoInfo
+            mixerTimeline = placeholder
+        }
         let source = PlaybackAudioSource(
-            mixer: TimelineAudioMixer(timeline: timeline, factory: factory),
+            mixer: TimelineAudioMixer(timeline: mixerTimeline, factory: factory),
             levelMeter: levelMeter
         )
         let engine = RealtimePlaybackEngine(timeline: timeline, source: source)

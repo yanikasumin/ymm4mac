@@ -55,8 +55,18 @@ public enum PlaybackRateMode: Sendable {
 /// 触るのはチャンク生成キューからの供給読み取りだけで、供給元への
 /// アクセスは `sourceAccessLock` で直列化し、世代カウンタで
 /// 陳腐化した生成結果を捨てる。
+///
+/// モデルの所有（Issue #106）: `timeline` はメインスレッド専用の
+/// 表示同期用参照であり（現在フレームの書き込み、長さと位置の換算
+/// のみ）、チャンク生成キューからは触らない。音声生成が読むモデルは
+/// 供給元のミキサーが保持するスナップショットだけであり、編集モデル
+/// とはインスタンスが分離されている。スナップショットの差し替えは
+/// `updateAudioModel` で受け、映像プレビューのモデル確定と同じ
+/// タイミングで届く。再生中に届いた差し替えは保留し、再生の終了
+/// （`endPlayback`）で適用する — 映像側が再生中にモデルを確定しない
+/// 規則と揃え、音と映像の反映時点を一致させるためである。
 public final class RealtimePlaybackEngine: @unchecked Sendable {
-    /// 対象タイムライン。
+    /// 対象タイムライン（メインスレッド専用の表示同期用）。
     public let timeline: Timeline
     /// 音声供給（ミキサー＋レベルメーター）。
     public let source: PlaybackAudioSource
@@ -112,9 +122,15 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
     /// 次に生成するチャンクの先頭位置（ソースサンプル数）。
     private var nextChunkSamplePosition: Int = 0
     private var isDisposed = false
+    /// 再生中に届いた音声モデルの差し替え（Issue #106）。
+    /// 再生の終了時に `applyAudioModel` で適用する。
+    private var pendingAudioModel: (timeline: Timeline, timelines: [Timeline])?
 
     /// 1 チャンクの長さ（フレーム数 = 1 秒分）。
-    private var chunkFrames: Int { timeline.videoInfo.hz }
+    /// Hz は供給側（スナップショット）から取る。チャンク生成キューが
+    /// 編集モデルへ触れないための境界であり、表示側の位置換算
+    /// （メインスレッド）が `timeline` を使うのとは役割が異なる。
+    private var chunkFrames: Int { source.hz }
     /// 先行スケジュールの上限（本家の供給窓と同じ 2 秒分）。
     private let maxScheduledChunks = 2
 
@@ -177,6 +193,28 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
     private func seekSource(toTime time: TimeSpanValue) {
         sourceAccessLock.lock()
         source.seek(toTime: time)
+        sourceAccessLock.unlock()
+    }
+
+    /// 音声生成が読むモデルを差し替える（Issue #106）。
+    ///
+    /// 映像プレビューのモデル確定（スナップショット生成）と同じ
+    /// タイミングで、メインスレッドから呼ぶ。停止中は即時に適用し、
+    /// 再生中は保留して再生の終了時に適用する（クラスのドキュメント
+    /// に記した反映タイミングの規則）。適用は供給ロックの保持中に行い、
+    /// チャンク生成・シークと直列化する。
+    public func updateAudioModel(timeline: Timeline, timelines: [Timeline]) {
+        if isPlaying {
+            pendingAudioModel = (timeline: timeline, timelines: timelines)
+            return
+        }
+        applyAudioModel(timeline: timeline, timelines: timelines)
+    }
+
+    /// モデル差し替えの実適用。供給ロックで直列化する。
+    private func applyAudioModel(timeline: Timeline, timelines: [Timeline]) {
+        sourceAccessLock.lock()
+        source.replaceModel(timeline: timeline, sceneTimelines: timelines)
         sourceAccessLock.unlock()
     }
 
@@ -315,12 +353,25 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
     }
 
     /// 再生を終える共通処理（ポーリング停止とエンジン破棄）。
+    /// 再生中に保留された音声モデルの差し替えはここで適用する
+    /// （Issue #106。リピート再開の経路では、この後の `play` が
+    /// 新しいモデルで再シークして再開する）。適用は状態変化の通知
+    /// より先に行う — 通知は同期的に発火し、その処理（プレビュー
+    /// モデルの確定）がさらに新しいモデルを届けるため、保留分を
+    /// 後から適用すると新しい方を上書きしてしまう。
     private func endPlayback() {
         stopPolling()
         bumpGeneration()
         teardownEngine()
-        if isPlaying {
+        let wasPlaying = isPlaying
+        if wasPlaying {
             isPlaying = false
+        }
+        if let pending = pendingAudioModel {
+            pendingAudioModel = nil
+            applyAudioModel(timeline: pending.timeline, timelines: pending.timelines)
+        }
+        if wasPlaying {
             onPlayingStateChanged?(false)
         }
     }
@@ -417,7 +468,10 @@ public final class RealtimePlaybackEngine: @unchecked Sendable {
     private func renderChunk(
         startingAtSamples start: Int, expectedGeneration: Int
     ) -> AVAudioPCMBuffer? {
-        let hz = timeline.videoInfo.hz
+        // Hz は供給側（スナップショット）から取る。生成キューが編集
+        // モデル（`timeline`）へ触れる読み取りはここが最後の1か所
+        // だったため、境界として供給側へ寄せた（Issue #106）。
+        let hz = source.hz
         guard hz > 0 else { return nil }
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
