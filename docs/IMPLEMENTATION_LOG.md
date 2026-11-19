@@ -1861,6 +1861,41 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 - 検証方式: アプリ層にはテストターゲットが無いため、確定手順（記録→調整→調整が起きた場合だけ再計算）を Core テストで再現し、キャッシュ整合の契約を固定した。MediaItemLengthTests へ4件追加: 調整だけではキャッシュが追随しないこと（再計算の必要性の根拠）、拡大（10秒→20秒でキャッシュ 300→600）、短縮（20秒→10秒で 600→300）、同長差し替え（調整なし・トリムとキャッシュ整合を保持）。いずれも確定後に `timeline.length == timeline.computeCurrentLength()` が成立することを確認する。残りは手動検証チェックリスト (8) で固定する。
 - 対象外として触っていないもの: FE-R16-002（別プロジェクト切り替え後の非同期継続）。別単位へ移管済み。
 - 検証: Mac（~/ymm4-work/fe-filepath/YMM4Mac）で Apps/DebugApp の `swift build` 成功。Core テストは方式名フィルタで実行し全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: MediaItemLengthTests 24 件（Round 16 の回帰試験で +4）、PropertyMetadataTests 20 件、EffectPropertyMetadataTests 17 件（方式名の部分一致で併せて実行）、TimelineEditingTests 20 件、TimelineEditingLengthTests 29 件。合計 110 件、失敗 0。手動検証チェックリスト (8) の追加分は未実施（目視確認待ち）。
+#### FE-R15-EDITEND — ファイル参照の編集終了時調整の残件（FE-R15-004 / FE-R15-006。IMPLEMENTED、Mac 検証済み）
+
+FE-FILEPATH 節で別単位へ移管した2件の処分。分岐 (3)（再生速度変更時の比率再計算）と FE-R15-006（エコー設定変更時の素材長再計算）を実装し、分岐 (2)（区切り終端追随）は供給が存在しないため設計メモのみとした。
+
+**本家規則の照合（着工前に逆コンパイル成果物で確認。根拠はファイル:行）。**
+
+- 編集終了時調整の全体（ItemEditorViewModel.cs:24-76 の `EditingValue`）: 基準値（旧 Frame / Layer / Length / 再生速度の先頭値 / 速度が定数か / ContentLength / OriginalContentLength、および区切り判定 `isLengthOnSeparator`）は編集開始時（`BeginEditCommand`）に捕捉され、`EndEdit` が else-if 連鎖で分岐する。(1) OriginalContentLength が変わった → `ResetLength(VideoInfo, resetContentOffset: true)`。(2) ContentLength が変わり、かつ `isLengthOnSeparator` → `ResetLength(VideoInfo)`。(3) 再生速度の先頭値が変わり、旧・新とも種別が「なし」（定数）→ 比率再計算。(1) は FE-FILEPATH で実装済み（`adjustLengthAfterFileChange`）。
+- 分岐 (3) の正確な規則（ItemEditorViewModel.cs:52-69）: 新速度 ≠ 0 のとき、消費量 = 旧速度が 0 なら `Length` そのもの、そうでなければ `Length × |旧速度| / 100`。新しい長さ = `(int)(消費量 / |新速度| × 100)`（double から int へのキャスト = 0 方向への切り捨て）。その後、長さが 1 未満なら 300 へ倒す（この判定は新速度が 0 で長さを換算しなかった場合にも走る）。符号反転（`旧速度 < 0` と `新速度 < 0` の排他）時は `ContentOffset = ContentLength − (ContentOffset + VideoInfo.GetTimeFrom(新しい長さ) × |旧速度| / 100)`。`GetTimeFrom` は `FrameTime.FrameToTime(frame, FPS)`（VideoInfo.cs:90-93）。付け替えには新しい長さと旧速度を使う。ContentOffset はクランプされない（負値になり得る）。
+- 区切り（ContentSeparations）の定義（IItem.cs:39、BaseItem.cs:192-213、VideoItem.cs:264-327、AudioItem.cs:264-327）: **素材ファイルの解析結果でも、アイテムの保持データでもなく、アイテムの現在値から都度計算されるプロパティ**である。入力は素材長（エコー尾込みの ContentLength と尾なしの実長）、ContentOffset、PlaybackRate2、Length、VideoFPS、IsLooped、エコー設定。動画・音声の override: ContentLength が Zero なら空。定数速度では区切りは「素材の終端（実長 × (i+1) − ContentOffset）/ |速度| × 100」（i はループ時の繰り返し分。非ループは1つ）と「最終位置 ＋ GetEchoLength() / |速度| × 100」（エコー有効時）。非定数速度では `PlaybackRateMap.EnumerateContentBoundaryCrossings`（ループ時）または `FindContentExhaustedTime` による素材消耗位置と、「最終位置 ＋ EchoEffect.AdditionalDuration（速度で割らない生の尾）」。基底（BaseItem）の規則は別で、定数時は `−ContentOffset + ContentLength × 先頭値`（先頭値の百分率をそのまま掛ける。本家の記述どおりに記録する）。EndEdit の `isLengthOnSeparator` は編集開始時点の値で計算され、区切りをフレーム換算（`FrameTime.TimeToFrame(time, fps)`）し、`Length + 1` を超えるものを打ち切ったうえで「いずれかの区切りフレームと Length の差が 1 以内」を見る（ItemEditorViewModel.cs:26）。
+- エコー再評価のタイミング（FE-R15-006）: 本家の `ContentLength` は取得プロパティで、ファイルの再生時間（FilePath 単位でキャッシュ）へ**取得時点のエコー設定**の尾を加える（VideoItem.cs:242-262、AudioItem.cs:243-262）。エコープロパティの setter は "ContentLength" と "ContentSeparations" の変更通知を出す（VideoItem.cs:176,192,208、AudioItem.cs:207,223,239）。つまり素材長の再計算はプロパティ変更の即時であり、長さ（Length）の追随だけが編集終了時の分岐 (2) 経由。SceneItem も同様にシーン長＋エコー尾の ContentLength を持つ（SceneItem.cs:63）。
+
+**分岐 (2) の扱い（設計メモ。実装しない）。**
+
+- Mac 側 Core に供給は存在しない: `ContentSeparations` 相当のプロパティは Sources 全体に無く（grep で 0 件。タイムライン単位でもスナップ対象として「Core に供給が無い」と記録済み）、`PlaybackRateMap` には `findContentExhaustedTime` はあるが `EnumerateContentBoundaryCrossings` 相当が無い。
+- 供給の新設に必要なもの: (a) `BaseItem` へ区切りの計算プロパティを追加すること（基底規則と動画・音声 override の2形。上記の本家規則どおり）。入力はすべて既存の保持値（originalContentLength / contentLength / contentOffset / playbackRate2 / length / videoFPS / isLooped / エコー設定）で足り、**新たな I/O や素材解析は不要**。(b) ループ＋非定数速度の場合に必要な `PlaybackRateMap.EnumerateContentBoundaryCrossings` 相当（素材境界を繰り返し横切る位置の列挙）。既存の `findContentExhaustedTime` は最初の消耗位置だけを返すため、その繰り返し適用か専用列挙が要る。(c) 分岐 (2) 本体は、編集開始時点の区切りで `isLengthOnSeparator` を捕捉する仕組みごと編集終了時調整へ組み込むこと（捕捉時点が編集開始である点が分岐 (3) の基準値捕捉と共通の土台になる）。(d) タイムラインのスナップ対象（タイムライン単位で未実装のまま残っている素材内部の区切り）も同じ供給を使うため、供給の新設はそちらと合わせて設計するのがよい。
+- したがって FE-R15-006 の長さ追随も分岐 (2) そのものであり、本単位では素材長の再計算までを実装し、長さ追随は供給新設の単位へ残す。代表的な未追随ケース: 長さを素材終端へ合わせてある（トリムしていない）アイテムでエコーを有効化しても、長さは旧素材長のままになる（本家では編集終了時に新しい素材長へ決め直される）。
+
+**何を実装したか。**
+
+- Core（`Editing/MediaItemLength.swift`）: `adjustLengthAfterPlaybackRateChange(previousFirstValue:previousIsConstant:fps:)` を追加（分岐 (3)。条件不成立・値不変では false、長さかオフセットを変えたら true を返し、呼び出し側のキャッシュ再計算判断に使う。FE-R16-001 と同じ契約）。`refreshContentLengthForEchoSettings()` を追加し、`recordMediaInfo` の素材長計算をこちらへ一本化した（規則の二重実装を避ける。素材長ゼロなら尾を付けない FE-R15-001 の規則を含む）。長さ自体は変えない（分岐 (2) 待ちである旨をドキュメントに明記）。
+- Core（`Items/VideoItem.swift` / `Items/AudioItem.swift`）: エコー3プロパティ（EchoIsEnabled / EchoInterval / EchoAttenuation）の didSet から `refreshContentLengthForEchoSettings()` を呼ぶ。これがエコー変更の検出点で、書き込み経路（デコード・将来の記述子・直接代入）を問わず追随する。デコード時は originalContentLength が常にゼロ（素材長は永続化されない）ため再計算はゼロのままで無害、複製（コーデック往復）も同じ。SceneItem は素材長の記録経路（recordMediaInfo）の対象外であり、本単位では対象外とした（シーン長の供給は別経路）。
+- アプリ層（接続は PR #122 のファイル参照と同じ型）: `AnimationRowView` に書き込み直前通知 `onAnimationWillChange`（`writeValue` の先頭で発火。スライダ・テキスト確定の両経路が通る単一点）と、セッション終了通知 `onEditSessionEnded`（テキスト入力のフォーカス喪失時 = 確定の後、スライダのドラッグ終了時 = `onEditingChanged` の false）を追加。`PropertyInspectorView` が両通知を子行へ伝播し、`ProjectView.itemDetail` だけが実ハンドラを渡す。`ProjectView` は再生速度の記述子（id "PlaybackRate2"）に限り、最初の書き込み直前に基準値（先頭値・定数か）を捕捉し（`capturePlaybackRateEditBaseline`。セッション内では上書きしない。本家の EditingValue と同じ）、セッション終了時に Core の分岐 (3) を実行して、変わればタイムライン長キャッシュを再計算する（`finishPlaybackRateEdit`）。記述子の書き込み関数自体の構造は変更していない（PR #126 のトランザクション接続と競合しない）。
+
+**本家との差分・未確認事項。**
+
+- セッションの粒度: 本家はアイテムエディタ全体の編集開始・終了（BeginEdit / EndEdit）で1回だが、Mac 側は行単位（フォーカス喪失 / ドラッグ終了）で1回。速度を 100 → 50 → 25 と分けて確定すると、本家は一括で ×(100/25)、こちらは ×(100/50) の後に ×(50/25) と2回に分かれ、切り捨ての分だけ最大で数フレームずれる場合がある。
+- アニメーション種別の変更（行内の種別メニュー）はセッション捕捉の対象外とした。種別だけを変えた直後の値編集では、本家（編集開始時点の種別で判定）とは分岐 (3) の可否が異なり得る。
+- 行が選択変更で破棄される場合、フォーカス喪失の通知が届かずセッション終了が発火しないことがある。その場合、基準値は保持されたままになり、次のセッション終了時にまとめて調整される（比率としては累積で正しいが、長さの追随が遅れる）。実機での発生有無は未確認。
+- 符号反転時のオフセット計算で、本家の `TimeSpan × double` の tick 丸め（.NET の演算子実装依存）は実機照合していない。こちらは tick を double 化して比例し Int64 へ切り捨てる。差は最大でも tick 単位（100ns）で、フレーム精度には届かない。
+- エコー設定のインスペクタ記述子は現状 Mac 側に存在しない（エコー3プロパティはモデルと保存だけがあり、UI から編集できない）。本単位の再計算はモデル層の検出までで、UI からの編集自体は記述子の追加が別途必要。
+
+**手動検証チェックリスト（未実施）。** (1) 動画・音声アイテムのインスペクタで再生速度（定数）を 100% → 50% へ変え、入力欄からフォーカスを外すと長さが 2 倍になること。スライダでドラッグした場合も、ドラッグを終えた時点で一度だけ長さが変わること。(2) 速度を負値へ反転させると、長さと ContentOffset が終端基準へ付け替わること（プレビューで素材の終端側が保たれること）。(3) 速度の種別が「なし」以外（直線移動など）では長さが変わらないこと。(4) 長さが変わったとき、タイムライン全体の長さ（スクロール範囲・書き出し範囲）が追随すること。(5) 速度変更後に保存→再読み込みしても、長さとオフセットが保持されること。
+
+**検証。** Mac（~/ymm4-work/fe-r15-editend/YMM4Mac）で Apps/DebugApp の `swift build` 成功（224 ステップ）。Core テストは方式名フィルタで実行し全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: MediaItemLengthTests 40 件（従来 24 件＋新規 16 件: エコー再計算 4 件 — 後からの有効化で素材長だけが追随し長さは不変、間隔・減衰の変更と無効化、素材長ゼロの保持、速度比例。分岐 (3) 12 件 — 比率換算の拡大・縮小、切り捨て、旧速度 0 の特殊分岐、新速度 0 で不変、1 未満で 300 へ、符号反転なしでオフセット不変、符号反転の付け替え（同率・倍率変更併用）、旧・新いずれか非定数での拒否、値不変での無動作）、関連スイート（YmmpCodecTests / VideoItemScopeTests / PropertyMetadataTests 系 / TimelineEditingTests / TimelineEditingLengthTests / ItemKeyFrameEditingTests）合計 135 件。いずれも失敗 0。全スイートは回していない。ARCHITECTURE.md のメディアアイテムのデータフローへ、分岐 (3) の接続とエコー再計算の経路を追記した。
+
 #### FE-UNDO-CORE — フロントエンド基盤（Undo/Redo）の Core 側新設（IMPLEMENTED、Mac 検証済み）
 
 フロントエンド監査 Round 2 の設計判断（FE-R2-DESIGN.md「Undo/Redo 基盤」）に基づき、履歴の土台だけを `Sources/YMM4Core/Editing/` へ新設した。アプリ層への接続と既存編集操作の移行は次単位で行う（本節の時点では参照元なし）。スナップショット方式は設計判断で不採用が確定しているため採っていない。
