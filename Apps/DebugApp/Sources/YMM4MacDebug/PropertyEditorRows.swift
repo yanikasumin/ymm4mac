@@ -2,12 +2,33 @@ import AppKit
 import SwiftUI
 import YMM4Core
 
+/// 記述子の値変更を Undo へ記録する共通処理（FE-UNDO-WIRING）。
+/// 記録先（recorder）または対象キーが無い場合は何もしない。
+/// 適用クロージャは記述子を保持し、記述子の読み書きクロージャが
+/// 対象オブジェクトを強く保持するため、履歴に残る間は対象も残る
+/// （`EditTargetKey` の接続側契約）。
+func recordDescriptorValueChange<Value: Equatable>(
+    recorder: EditRecorder?, target: EditTargetKey?,
+    oldValue: Value?, newValue: Value?,
+    apply: @escaping (Value) -> Void
+) {
+    guard let recorder, let target,
+          let oldValue, let newValue else { return }
+    recorder.recordValueChange(
+        target: target, oldValue: oldValue, newValue: newValue, apply: apply)
+}
+
 // MARK: - 数値
 
 struct NumberRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
+    var editRecorder: EditRecorder?
+    var editTarget: EditTargetKey?
     @State private var text: String
+    /// スライダのドラッグについて、この行が Undo セッションを
+    /// 開始したか（所有の追跡）。
+    @State private var sliderSessionOwned = false
     /// 未編集とみなすテキスト（初期表示・フォーカス取得時点・
     /// プログラム側の同期直後の文字列）。確定時に text がこれと
     /// 一致すれば書き戻さない（FE-R1-019。表示は %.4g へ丸まるため、
@@ -15,9 +36,14 @@ struct NumberRowView: View {
     @State private var uneditedText: String
     @FocusState private var isFocused: Bool
 
-    init(descriptor: PropertyDescriptor, onEdited: @escaping () -> Void) {
+    init(
+        descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+    ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
+        self.editRecorder = editRecorder
+        self.editTarget = editTarget
         let initial = formatNumber(descriptor.numberValue ?? 0)
         _text = State(initialValue: initial)
         _uneditedText = State(initialValue: initial)
@@ -41,9 +67,24 @@ struct NumberRowView: View {
                     }
                 }
             if let range {
-                Slider(value: sliderBinding, in: range)
-                    .frame(minWidth: 60)
+                Slider(
+                    value: sliderBinding, in: range,
+                    onEditingChanged: sliderEditingChanged
+                )
+                .frame(minWidth: 60)
             }
+        }
+    }
+
+    /// スライダのドラッグ開始・終了で Undo セッションを開閉し、
+    /// ドラッグ全体を履歴1エントリへまとめる。
+    private func sliderEditingChanged(_ editing: Bool) {
+        guard let editRecorder else { return }
+        if editing {
+            sliderSessionOwned = editRecorder.beginSession()
+        } else if sliderSessionOwned {
+            editRecorder.commitSession()
+            sliderSessionOwned = false
         }
     }
 
@@ -61,9 +102,14 @@ struct NumberRowView: View {
         Binding(
             get: { descriptor.numberValue ?? 0 },
             set: { newValue in
+                let old = descriptor.numberValue
                 descriptor.setNumberValue(newValue)
                 text = formatNumber(descriptor.numberValue ?? newValue)
                 uneditedText = text
+                recordDescriptorValueChange(
+                    recorder: editRecorder, target: editTarget,
+                    oldValue: old, newValue: descriptor.numberValue,
+                    apply: { descriptor.setNumberValue($0) })
                 onEdited()
             }
         )
@@ -82,9 +128,14 @@ struct NumberRowView: View {
             uneditedText = text
             return
         }
+        let old = descriptor.numberValue
         descriptor.setNumberValue(value)
         text = formatNumber(descriptor.numberValue ?? value)
         uneditedText = text
+        recordDescriptorValueChange(
+            recorder: editRecorder, target: editTarget,
+            oldValue: old, newValue: descriptor.numberValue,
+            apply: { descriptor.setNumberValue($0) })
         onEdited()
     }
 }
@@ -92,12 +143,22 @@ struct NumberRowView: View {
 struct IntegerRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
+    var editRecorder: EditRecorder?
+    var editTarget: EditTargetKey?
     @State private var text: String
     @FocusState private var isFocused: Bool
+    /// スライダのドラッグについて、この行が Undo セッションを
+    /// 開始したか（所有の追跡）。
+    @State private var sliderSessionOwned = false
 
-    init(descriptor: PropertyDescriptor, onEdited: @escaping () -> Void) {
+    init(
+        descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+    ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
+        self.editRecorder = editRecorder
+        self.editTarget = editTarget
         _text = State(initialValue: String(descriptor.integerValue ?? 0))
     }
 
@@ -113,17 +174,38 @@ struct IntegerRowView: View {
                 }
             Stepper("", value: Binding(
                 get: { descriptor.integerValue ?? 0 },
-                set: { descriptor.setIntegerValue($0); text = String($0); onEdited() }
+                set: { newValue in
+                    let old = descriptor.integerValue
+                    descriptor.setIntegerValue(newValue)
+                    text = String(newValue)
+                    recordDescriptorValueChange(
+                        recorder: editRecorder, target: editTarget,
+                        oldValue: old, newValue: descriptor.integerValue,
+                        apply: { descriptor.setIntegerValue($0) })
+                    onEdited()
+                }
             ))
             .labelsHidden()
             if let range {
                 Slider(
                     value: sliderBinding,
                     in: Double(range.lowerBound)...Double(range.upperBound),
-                    step: 1
+                    step: 1,
+                    onEditingChanged: sliderEditingChanged
                 )
                 .frame(minWidth: 60)
             }
+        }
+    }
+
+    /// スライダのドラッグ開始・終了で Undo セッションを開閉する。
+    private func sliderEditingChanged(_ editing: Bool) {
+        guard let editRecorder else { return }
+        if editing {
+            sliderSessionOwned = editRecorder.beginSession()
+        } else if sliderSessionOwned {
+            editRecorder.commitSession()
+            sliderSessionOwned = false
         }
     }
 
@@ -139,8 +221,13 @@ struct IntegerRowView: View {
         Binding(
             get: { Double(descriptor.integerValue ?? 0) },
             set: { newValue in
+                let old = descriptor.integerValue
                 descriptor.setIntegerValue(Int(newValue.rounded()))
                 text = String(descriptor.integerValue ?? Int(newValue.rounded()))
+                recordDescriptorValueChange(
+                    recorder: editRecorder, target: editTarget,
+                    oldValue: old, newValue: descriptor.integerValue,
+                    apply: { descriptor.setIntegerValue($0) })
                 onEdited()
             }
         )
@@ -151,8 +238,13 @@ struct IntegerRowView: View {
             text = String(descriptor.integerValue ?? 0)
             return
         }
+        let old = descriptor.integerValue
         descriptor.setIntegerValue(value)
         text = String(descriptor.integerValue ?? value)
+        recordDescriptorValueChange(
+            recorder: editRecorder, target: editTarget,
+            oldValue: old, newValue: descriptor.integerValue,
+            apply: { descriptor.setIntegerValue($0) })
         onEdited()
     }
 }
@@ -162,12 +254,19 @@ struct IntegerRowView: View {
 struct TextRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
+    var editRecorder: EditRecorder?
+    var editTarget: EditTargetKey?
     @State private var text: String
     @FocusState private var isFocused: Bool
 
-    init(descriptor: PropertyDescriptor, onEdited: @escaping () -> Void) {
+    init(
+        descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+    ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
+        self.editRecorder = editRecorder
+        self.editTarget = editTarget
         _text = State(initialValue: descriptor.stringValue ?? "")
     }
 
@@ -182,7 +281,12 @@ struct TextRowView: View {
     }
 
     private func commit() {
+        let old = descriptor.stringValue
         descriptor.setStringValue(text)
+        recordDescriptorValueChange(
+            recorder: editRecorder, target: editTarget,
+            oldValue: old, newValue: descriptor.stringValue,
+            apply: { descriptor.setStringValue($0) })
         onEdited()
     }
 }
@@ -190,12 +294,19 @@ struct TextRowView: View {
 struct MultilineTextRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
+    var editRecorder: EditRecorder?
+    var editTarget: EditTargetKey?
     @State private var text: String
     @FocusState private var isFocused: Bool
 
-    init(descriptor: PropertyDescriptor, onEdited: @escaping () -> Void) {
+    init(
+        descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+    ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
+        self.editRecorder = editRecorder
+        self.editTarget = editTarget
         _text = State(initialValue: descriptor.stringValue ?? "")
     }
 
@@ -207,7 +318,12 @@ struct MultilineTextRowView: View {
             .focused($isFocused)
             .onChange(of: isFocused) { _, focused in
                 if !focused {
+                    let old = descriptor.stringValue
                     descriptor.setStringValue(text)
+                    recordDescriptorValueChange(
+                        recorder: editRecorder, target: editTarget,
+                        oldValue: old, newValue: descriptor.stringValue,
+                        apply: { descriptor.setStringValue($0) })
                     onEdited()
                 }
             }
@@ -219,11 +335,31 @@ struct MultilineTextRowView: View {
 struct EnumRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
+    var editRecorder: EditRecorder?
+    var editTarget: EditTargetKey?
+
+    init(
+        descriptor: PropertyDescriptor, onEdited: @escaping () -> Void,
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
+    ) {
+        self.descriptor = descriptor
+        self.onEdited = onEdited
+        self.editRecorder = editRecorder
+        self.editTarget = editTarget
+    }
 
     var body: some View {
         Picker("", selection: Binding(
             get: { descriptor.stringValue ?? "" },
-            set: { descriptor.setStringValue($0); onEdited() }
+            set: { newValue in
+                let old = descriptor.stringValue
+                descriptor.setStringValue(newValue)
+                recordDescriptorValueChange(
+                    recorder: editRecorder, target: editTarget,
+                    oldValue: old, newValue: descriptor.stringValue,
+                    apply: { descriptor.setStringValue($0) })
+                onEdited()
+            }
         )) {
             ForEach(options, id: \.value) { option in
                 Text(option.displayName).tag(option.value)
@@ -252,8 +388,13 @@ struct AnimationRowView: View {
     let descriptor: PropertyDescriptor
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
+    var editRecorder: EditRecorder?
+    var editTarget: EditTargetKey?
     @State private var text: String
     @FocusState private var isFocused: Bool
+    /// スライダのドラッグについて、この行が Undo セッションを
+    /// 開始したか（所有の追跡）。
+    @State private var sliderSessionOwned = false
     /// 入力セッションが所有する編集対象区間。フォーカスを得た時点で
     /// 固定し、確定まで保持する。再生ヘッドが別区間へ移っても、
     /// 未確定の入力が別区間へ書き込まれることはない（R20-114-01）。
@@ -263,11 +404,14 @@ struct AnimationRowView: View {
 
     init(
         descriptor: PropertyDescriptor, animationContext: AnimationEvaluationContext,
-        onEdited: @escaping () -> Void
+        onEdited: @escaping () -> Void,
+        editRecorder: EditRecorder? = nil, editTarget: EditTargetKey? = nil
     ) {
         self.descriptor = descriptor
         self.animationContext = animationContext
         self.onEdited = onEdited
+        self.editRecorder = editRecorder
+        self.editTarget = editTarget
         let animation = descriptor.animationValue
         let value: Double
         if let animation {
@@ -363,14 +507,17 @@ struct AnimationRowView: View {
                     if range.max > range.min {
                         Slider(
                             value: sliderBinding,
-                            in: range.min...range.max
+                            in: range.min...range.max,
+                            onEditingChanged: sliderEditingChanged
                         )
                         .frame(minWidth: 60)
                     }
                 }
                 // アニメーション種別の切替メニュー（本家は
                 // AnimationSlider の右クリックメニュー）。
-                AnimationTypeMenuButton(descriptor: descriptor, onEdited: onEdited)
+                AnimationTypeMenuButton(
+                    descriptor: descriptor, onEdited: onEdited,
+                    editRecorder: editRecorder, editTarget: editTarget)
                 Text(caption(for: animation))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -409,21 +556,66 @@ struct AnimationRowView: View {
         return "\(range)、開始値を編集中"
     }
 
+    /// スライダのドラッグ開始・終了で Undo セッションを開閉し、
+    /// ドラッグ全体を履歴1エントリへまとめる。
+    private func sliderEditingChanged(_ editing: Bool) {
+        guard let editRecorder else { return }
+        if editing {
+            sliderSessionOwned = editRecorder.beginSession()
+        } else if sliderSessionOwned {
+            editRecorder.commitSession()
+            sliderSessionOwned = false
+        }
+    }
+
     /// 値の書き込み経路の振り分け: 定数は定数化、キーフレーム区間が
     /// あればその区間の開始値、それ以外は先頭値。
     private func writeValue(_ value: Double) {
         writeValue(value, segment: editingSegment)
     }
 
+    /// 書き込みと Undo 記録。記録の対象キーは書き込み経路（定数／
+    /// 先頭値／区間）ごとに分け、適用クロージャも同じ経路で書き戻す
+    /// （経路が違えば戻し方も違うため。FE-UNDO-WIRING）。
     private func writeValue(_ value: Double, segment: Int?) {
         guard let animation = descriptor.animationValue else { return }
         if animation.animationType == .none {
+            let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationConstantValue(value)
+            recordAnimationChange(
+                branch: "const", valueIndex: 0, oldValue: old,
+                apply: { descriptor.setAnimationConstantValue($0) })
         } else if let segment {
+            let old = AnimationSliderScale.editValue(
+                of: animation, valueIndex: segment)
             descriptor.setAnimationValue(value, atSegment: segment)
+            recordAnimationChange(
+                branch: "seg\(segment)", valueIndex: segment, oldValue: old,
+                apply: { descriptor.setAnimationValue($0, atSegment: segment) })
         } else {
+            let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationFirstValue(value)
+            recordAnimationChange(
+                branch: "first", valueIndex: 0, oldValue: old,
+                apply: { descriptor.setAnimationFirstValue($0) })
         }
+    }
+
+    /// 書き込み後の値を読み戻して（ setter がクランプするため、
+    /// 要求値ではなく実効値を記録する）Undo へ登録する。
+    private func recordAnimationChange(
+        branch: String, valueIndex: Int, oldValue: Double,
+        apply: @escaping (Double) -> Void
+    ) {
+        guard let editRecorder, let editTarget else { return }
+        let newValue = descriptor.animationValue.map {
+            AnimationSliderScale.editValue(of: $0, valueIndex: valueIndex)
+        }
+        recordDescriptorValueChange(
+            recorder: editRecorder,
+            target: EditTargetKey(
+                object: editTarget.object, key: editTarget.key + "#" + branch),
+            oldValue: oldValue, newValue: newValue, apply: apply)
     }
 
     private func commit() {

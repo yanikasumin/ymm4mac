@@ -23,6 +23,13 @@ struct PropertyInspectorView: View {
     /// ファイル参照の値が確定したときの通知（記述子と新しいパス）。
     /// 情報取得と長さ調整は呼び出し側（編集操作層への橋渡し）が行う。
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    /// Undo 記録の集約点（FE-UNDO-WIRING）。nil の場合は無記録
+    /// （エフェクト編集など未移行の経路）。
+    var editRecorder: EditRecorder? = nil
+    /// 記述子の所有者（対象キー `EditTargetKey` の同一性側）。
+    /// 複合の子記述子では最上位の所有者を保ち、キー文字列側に
+    /// 経路（親記述子 ID とコレクション位置）を積んで区別する。
+    var editTargetOwner: AnyObject? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -37,7 +44,10 @@ struct PropertyInspectorView: View {
                             descriptor: descriptor,
                             animationContext: animationContext,
                             onEdited: onEdited,
-                            onFilePathChanged: onFilePathChanged
+                            onFilePathChanged: onFilePathChanged,
+                            editRecorder: editRecorder,
+                            editTargetOwner: editTargetOwner,
+                            editTargetKeyPath: ""
                         )
                     }
                 }
@@ -54,6 +64,17 @@ private struct PropertyRowView: View {
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    var editRecorder: EditRecorder? = nil
+    var editTargetOwner: AnyObject? = nil
+    /// 対象キーの経路部分（複合の親記述子 ID を積んだもの）。
+    var editTargetKeyPath: String = ""
+
+    /// この行の値変更の対象キー。記録先が無い場合は nil。
+    private var editTarget: EditTargetKey? {
+        guard editRecorder != nil, let editTargetOwner else { return nil }
+        return EditTargetKey(
+            editTargetOwner, key: editTargetKeyPath + descriptor.id)
+    }
 
     @ViewBuilder
     var body: some View {
@@ -63,14 +84,20 @@ private struct PropertyRowView: View {
                 descriptor: descriptor,
                 animationContext: animationContext,
                 onEdited: onEdited,
-                onFilePathChanged: onFilePathChanged
+                onFilePathChanged: onFilePathChanged,
+                editRecorder: editRecorder,
+                editTargetOwner: editTargetOwner,
+                editTargetKeyPath: editTargetKeyPath
             )
         case .collection:
             CollectionRowView(
                 descriptor: descriptor,
                 animationContext: animationContext,
                 onEdited: onEdited,
-                onFilePathChanged: onFilePathChanged
+                onFilePathChanged: onFilePathChanged,
+                editRecorder: editRecorder,
+                editTargetOwner: editTargetOwner,
+                editTargetKeyPath: editTargetKeyPath
             )
         default:
             HStack(alignment: .center, spacing: 8) {
@@ -87,30 +114,55 @@ private struct PropertyRowView: View {
     private var editor: some View {
         switch descriptor.access {
         case .number:
-            NumberRowView(descriptor: descriptor, onEdited: onEdited)
+            NumberRowView(
+                descriptor: descriptor, onEdited: onEdited,
+                editRecorder: editRecorder, editTarget: editTarget)
         case .integer:
-            IntegerRowView(descriptor: descriptor, onEdited: onEdited)
+            IntegerRowView(
+                descriptor: descriptor, onEdited: onEdited,
+                editRecorder: editRecorder, editTarget: editTarget)
         case .boolean:
             Toggle("", isOn: Binding(
                 get: { descriptor.boolValue ?? false },
-                set: { descriptor.setBoolValue($0); onEdited() }
+                set: { newValue in
+                    let old = descriptor.boolValue
+                    descriptor.setBoolValue(newValue)
+                    if let old, let editRecorder, let editTarget {
+                        editRecorder.recordValueChange(
+                            target: editTarget,
+                            oldValue: old, newValue: newValue,
+                            apply: { descriptor.setBoolValue($0) })
+                    }
+                    onEdited()
+                }
             ))
             .labelsHidden()
         case .text:
             if case .text(let multiline) = descriptor.kind, multiline {
-                MultilineTextRowView(descriptor: descriptor, onEdited: onEdited)
+                MultilineTextRowView(
+                    descriptor: descriptor, onEdited: onEdited,
+                    editRecorder: editRecorder, editTarget: editTarget)
             } else {
-                TextRowView(descriptor: descriptor, onEdited: onEdited)
+                TextRowView(
+                    descriptor: descriptor, onEdited: onEdited,
+                    editRecorder: editRecorder, editTarget: editTarget)
             }
         case .filePath:
+            // ファイル参照は記録対象外（パスの書き換えに伴う長さ調整
+            // が非同期で対にならず、パスだけ戻すと不整合になるため。
+            // FE-UNDO-WIRING の未移行経路として実装ログに明記）。
             FilePathRowView(
                 descriptor: descriptor,
                 onEdited: onEdited,
                 onFilePathChanged: onFilePathChanged
             )
         case .enumeration:
-            EnumRowView(descriptor: descriptor, onEdited: onEdited)
+            EnumRowView(
+                descriptor: descriptor, onEdited: onEdited,
+                editRecorder: editRecorder, editTarget: editTarget)
         case .color:
+            // 色は連続変化の境界信号が無く、確定単位を切れないため
+            // 記録対象外（未移行経路として実装ログに明記）。
             ColorPicker("", selection: Binding(
                 get: { swiftUIColor(from: descriptor.colorValue ?? .white) },
                 set: { descriptor.setColorValue(coreColor(from: $0)); onEdited() }
@@ -118,7 +170,9 @@ private struct PropertyRowView: View {
             .labelsHidden()
         case .animation:
             AnimationRowView(
-                descriptor: descriptor, animationContext: animationContext, onEdited: onEdited
+                descriptor: descriptor, animationContext: animationContext,
+                onEdited: onEdited,
+                editRecorder: editRecorder, editTarget: editTarget
             )
         case .object, .collection:
             // body 側で専用レイアウトへ振り分けるため、ここには来ない。
@@ -133,6 +187,9 @@ private struct ObjectRowView: View {
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    var editRecorder: EditRecorder? = nil
+    var editTargetOwner: AnyObject? = nil
+    var editTargetKeyPath: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -145,7 +202,10 @@ private struct ObjectRowView: View {
                         descriptor: child,
                         animationContext: animationContext,
                         onEdited: onEdited,
-                        onFilePathChanged: onFilePathChanged
+                        onFilePathChanged: onFilePathChanged,
+                        editRecorder: editRecorder,
+                        editTargetOwner: editTargetOwner,
+                        editTargetKeyPath: editTargetKeyPath + descriptor.id + "/"
                     )
                 }
             }
@@ -164,6 +224,9 @@ private struct CollectionRowView: View {
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    var editRecorder: EditRecorder? = nil
+    var editTargetOwner: AnyObject? = nil
+    var editTargetKeyPath: String = ""
     @State private var revision = 0
 
     var body: some View {
@@ -200,7 +263,11 @@ private struct CollectionRowView: View {
                                 descriptor: child,
                                 animationContext: animationContext,
                                 onEdited: onEdited,
-                                onFilePathChanged: onFilePathChanged
+                                onFilePathChanged: onFilePathChanged,
+                                editRecorder: editRecorder,
+                                editTargetOwner: editTargetOwner,
+                                editTargetKeyPath:
+                                    editTargetKeyPath + descriptor.id + "[\(index)]/"
                             )
                         }
                     }

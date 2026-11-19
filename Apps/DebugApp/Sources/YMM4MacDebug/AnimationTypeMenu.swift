@@ -15,6 +15,9 @@ import YMM4Core
 struct AnimationTypeMenuButton: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
+    /// Undo 記録（FE-UNDO-WIRING）。nil の場合は無記録。
+    var editRecorder: EditRecorder? = nil
+    var editTarget: EditTargetKey? = nil
 
     var body: some View {
         Menu {
@@ -63,7 +66,18 @@ struct AnimationTypeMenuButton: View {
     @ViewBuilder
     private func checkButton(type: AnimationType, name: String) -> some View {
         Button {
+            let old = currentType
             descriptor.setAnimationType(type)
+            // 種別だけを記録する。値列の正規化は種別変更と対の操作
+            // として別単位（FE-R14-001）であり、現行の setter は
+            // 種別の差し替えのみを行うため往復は対称である。
+            if let editRecorder, let editTarget {
+                editRecorder.recordValueChange(
+                    target: EditTargetKey(
+                        object: editTarget.object, key: editTarget.key + "#type"),
+                    oldValue: old, newValue: type,
+                    apply: { descriptor.setAnimationType($0) })
+            }
             onEdited()
         } label: {
             if currentType == type {
