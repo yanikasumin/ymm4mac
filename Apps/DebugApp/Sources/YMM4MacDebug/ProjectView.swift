@@ -1898,10 +1898,10 @@ struct ProjectView: View {
                     "ファイルが見つからないため、長さを更新できませんでした: \(newPath)"
                 return
             }
-            // ファイルパスの変更自体は Undo 記録の対象外（長さ調整の
-            // 一部は記録される）のため、差し替えが成立した時点で
-            // 未保存フラグを個別に立てる（FE-R32-131-03）。
-            workspace.markEdited()
+            // 未保存の記録は行側の書き込み成立時点に一本化した
+            // （FE-R33-131-01）。ここは素材長の調整だけを担い、
+            // 記録には関与しない。取得失敗で戻る経路でも、書き込み
+            // 時点で立ったフラグは消えない。
             item.recordMediaInfo(info)
             // 長さが決め直されたら、タイムライン長のキャッシュも
             // 追随させる（FE-R16-001）。キャッシュは自動追随せず、
@@ -3088,6 +3088,13 @@ struct ProjectView: View {
                     onEdited: { requestPreviewRender(modelChanged: true) },
                     onFilePathChanged: { _, newPath in
                         applyFileChange(item: item, newPath: newPath, timeline: timeline)
+                    },
+                    onFilePathCommitted: {
+                        // パスの書き込みが成立した時点で未保存に
+                        // する（FE-R33-131-01）。情報取得の成否は
+                        // applyFileChange 側で扱い、記録には関与
+                        // させない。
+                        workspace.markEdited()
                     },
                     editRecorder: workspace.editRecorder,
                     editTargetOwner: item,
