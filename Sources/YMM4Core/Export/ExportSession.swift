@@ -182,6 +182,23 @@ public struct ExportOutcome: Sendable {
     /// 本体の成否には影響しなかった副次的な失敗
     /// （付随ファイル生成の失敗など）。
     public var warning: ExportError?
+
+    /// セッションを開始する前に失敗が確定した結果（Issue #70
+    /// 段階4: 必要素材が失敗状態のため書き出し自体を中止する
+    /// 場合）。writer は作られていないため finalize は呼ばれて
+    /// おらず、成果物も生じていない。
+    public static func failedBeforeStart(error: ExportError) -> ExportOutcome {
+        ExportOutcome(
+            completion: .failed,
+            framesWritten: 0,
+            finalizeInvoked: false,
+            finalizeSucceeded: false,
+            outputProduced: false,
+            accompanyingFilesProduced: false,
+            error: error,
+            warning: nil
+        )
+    }
 }
 
 // MARK: - セッション

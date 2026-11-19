@@ -44,6 +44,18 @@ public enum MediaAvailabilityFailureKind: String, Equatable, Sendable {
     case ffmpegUnavailable
     /// 開けた後に途中で失敗した。
     case midStreamFailure
+
+    /// 利用者向けの短い文言（Issue #70 段階4）。プレビューの重ね
+    /// 表示・タイムラインの警告・書き出しの失敗理由で共用する
+    /// 唯一の文言表。専門用語は出さない。
+    public var shortUserMessage: String {
+        switch self {
+        case .fileNotFound: return "ファイルが見つかりません"
+        case .unsupportedOrDecodeFailed: return "素材を読み込めませんでした"
+        case .ffmpegUnavailable: return "FFmpeg が見つかりません"
+        case .midStreamFailure: return "素材の途中で読み込みが失敗しました"
+        }
+    }
 }
 
 /// 失敗1件。

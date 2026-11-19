@@ -194,14 +194,23 @@ final class FFmpegPCMProviderFactoryTests: XCTestCase {
         XCTAssertEqual(failedKind(registry), .unsupportedOrDecodeFailed)
     }
 
-    func testNoAudioStreamsRecordsUnsupported() {
+    /// 音声ストリームの不在は復号の失敗ではない（段階4で是正）。
+    /// 映像だけの素材は正当な素材であり、台帳が映像・音声の両
+    /// 経路で共有されるため、失敗を記録すると映像側の利用可否
+    /// （UI の警告・書き出しの失敗判定）まで汚染される。
+    /// AVFoundation 側もトラックが無ければ記録しない。
+    func testNoAudioStreamsReturnsNilWithoutRecordingFailure() {
         let processFactory = FakeAudioProcessFactory()
         let registry = MediaAvailabilityRegistry()
         let factory = makeFactory(
             probeJSON: videoOnlyJSON, registry: registry, processFactory: processFactory
         )
         XCTAssertNil(factory.createProvider(filePath: "a.mkv", audioTrackIndex: 0))
-        XCTAssertEqual(failedKind(registry), .unsupportedOrDecodeFailed)
+        XCTAssertNil(failedKind(registry))
+        XCTAssertEqual(
+            registry.state(for: MediaMaterialKey(filePath: "/proj/a.mkv")),
+            .notAttempted
+        )
     }
 
     func testTrialFailureReturnsNil() {
