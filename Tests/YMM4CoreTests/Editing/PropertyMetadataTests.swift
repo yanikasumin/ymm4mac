@@ -134,6 +134,24 @@ final class PropertyMetadataTests: XCTestCase {
         XCTAssertTrue(item.isInverted)
     }
 
+    func testSetNumberValueRejectsNonFiniteValues() throws {
+        let item = TextItem()
+        let fadeIn = try descriptor(ItemPropertyMetadata.descriptors(for: item), "FadeIn")
+        XCTAssertTrue(fadeIn.setNumberValue(0.5))
+        XCTAssertEqual(item.fadeIn, 0.5)
+        // 非有限値は書き込まれず false を返し、既存値が保持される
+        // （FE-R3-118-02。モデルへ入ると保存時に 0.0 へ化ける）。
+        XCTAssertFalse(fadeIn.setNumberValue(.nan))
+        XCTAssertEqual(item.fadeIn, 0.5)
+        XCTAssertFalse(fadeIn.setNumberValue(.infinity))
+        XCTAssertEqual(item.fadeIn, 0.5)
+        XCTAssertFalse(fadeIn.setNumberValue(-.infinity))
+        XCTAssertEqual(item.fadeIn, 0.5)
+        // 有限値の通常動作は変わらない。
+        XCTAssertTrue(fadeIn.setNumberValue(0.75))
+        XCTAssertEqual(item.fadeIn, 0.75)
+    }
+
     func testKindMismatchReturnsNilAndFalse() throws {
         let item = TextItem()
         let frame = try descriptor(ItemPropertyMetadata.descriptors(for: item), "Frame")

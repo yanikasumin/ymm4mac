@@ -123,6 +123,11 @@ public struct PropertyDescriptor {
     @discardableResult
     public func setNumberValue(_ value: Double) -> Bool {
         guard case .number(_, let set) = access else { return false }
+        // 非有限値（NaN / 無限大）は書き込まない。モデルへ入ると
+        // 保存時に JSON 側で 0.0 へ置換され、入力と異なる値で
+        // 保存されてしまう（FE-R3-118-02。UI 側でも弾くが、
+        // 全ての書き込み経路に対する防御としてここでも弾く）。
+        guard value.isFinite else { return false }
         set(value)
         return true
     }

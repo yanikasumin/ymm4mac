@@ -49,19 +49,44 @@ extension TimelineStripView {
 
     // MARK: - 共用操作
 
+    /// 選択中アイテムを同一性で捕捉する。削除を挟む操作では、削除前に
+    /// これで選択対象の個体を押さえ、削除後に restoreSelection で
+    /// インデックスを引き直す（FE-R1-003 / 004。インデックスの単純な
+    /// 補正では、削除位置より後ろの選択が別アイテムへずれる）。
+    func captureSelectedItem() -> BaseItem? {
+        guard let selectedItemIndex,
+              timeline.items.indices.contains(selectedItemIndex)
+        else { return nil }
+        return timeline.items[selectedItemIndex]
+    }
+
+    /// 捕捉した選択を同一性で復元する。対象が残っていればその新しい
+    /// インデックスを選択し、消えていれば選択を解除する。もともと
+    /// 選択が無かった場合は何もしない。
+    func restoreSelection(of captured: BaseItem?) {
+        guard let captured else { return }
+        if let index = timeline.items.firstIndex(where: { $0 === captured }) {
+            selectedItemIndex = index
+        } else {
+            selectedItemIndex = nil
+        }
+    }
+
     /// アイテムを再生ヘッド位置・表示最上段レイヤーへ追加する
     /// （本家の追加コマンドの CommandParameter は右クリック位置だが、
     /// こちらは再生ヘッド＋ GetCurrentLayer() で代替する）。
+    /// 追加は Core の衝突解決つき追加（tryAddItems）を経由する
+    /// （FE-R1-009。addItems の直呼びは衝突解決・FPS 注入・選択の
+    /// 確定を迂回する）。tryAddItems は追加分を Core 選択にするため、
+    /// UI 側はインデックスを引き直すだけにする。
     func addItemAtPlayhead(kind: AddItemKind) {
         let item = ItemFactory.makeItem(kind: kind)
-        item.frame = currentFrame
-        item.layer = rowHeight > 0 ? Int(verticalOffset / rowHeight) : 0
         item.length = ItemFactory.placeholderLength(fps: timeline.videoInfo.fps)
-        timeline.addItems([item])
-        timeline.refreshTimelineLengthAndMaxLayer()
+        let layer = rowHeight > 0 ? Int(verticalOffset / rowHeight) : 0
+        guard timeline.tryAddItems([item], frame: currentFrame, layer: layer)
+        else { return }
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
-            timeline.selectItems([item])
         }
         layerRevision += 1
         onEdited()
@@ -219,38 +244,57 @@ extension TimelineStripView {
         Divider()
         Menu(UIStrings.Menu.move) {
             Button(UIStrings.Timeline.moveLeftFrame) {
-                timeline.moveItems([item], deltaFrame: -1, deltaLayer: 0)
-                onEdited()
+                moveMenuItem(item, index: index, deltaFrame: -1, deltaLayer: 0)
             }
             Button(UIStrings.Timeline.moveRightFrame) {
-                timeline.moveItems([item], deltaFrame: 1, deltaLayer: 0)
-                onEdited()
+                moveMenuItem(item, index: index, deltaFrame: 1, deltaLayer: 0)
             }
             Button(UIStrings.Timeline.moveLeftSecond) {
-                timeline.moveItems(
-                    [item], deltaFrame: -max(timeline.videoInfo.fps, 1), deltaLayer: 0)
-                onEdited()
+                moveMenuItem(
+                    item, index: index,
+                    deltaFrame: -max(timeline.videoInfo.fps, 1), deltaLayer: 0)
             }
             Button(UIStrings.Timeline.moveRightSecond) {
-                timeline.moveItems(
-                    [item], deltaFrame: max(timeline.videoInfo.fps, 1), deltaLayer: 0)
-                onEdited()
+                moveMenuItem(
+                    item, index: index,
+                    deltaFrame: max(timeline.videoInfo.fps, 1), deltaLayer: 0)
             }
             Button(UIStrings.Timeline.moveUpLayer) {
-                timeline.moveItems([item], deltaFrame: 0, deltaLayer: -1)
-                onEdited()
+                moveMenuItem(item, index: index, deltaFrame: 0, deltaLayer: -1)
             }
             Button(UIStrings.Timeline.moveDownLayer) {
-                timeline.moveItems([item], deltaFrame: 0, deltaLayer: 1)
-                onEdited()
+                moveMenuItem(item, index: index, deltaFrame: 0, deltaLayer: 1)
             }
         }
         Divider()
         Button(UIStrings.Menu.deleteSelection) {
+            // 選択中アイテムと削除対象が別でも選択がずれないよう、
+            // 削除前に同一性を捕捉して削除後に復元する（FE-R1-003）。
+            let captured = captureSelectedItem()
             timeline.deleteItems([item])
-            if selectedItemIndex == index { selectedItemIndex = nil }
+            restoreSelection(of: captured)
             onEdited()
         }
+    }
+
+    /// 右クリック移動メニューの実行。本家の通常移動が使う上位操作
+    /// moveSelectedAndGroupedItems（選択＋グループを対象に、衝突と
+    /// 範囲で移動量を縮小する）を経由する（FE-R1-010。moveItems の
+    /// 直呼びは差分加算のみで制約を持たない）。
+    /// 対象アイテムが Core 選択に含まれていない場合は、このファイルの
+    /// グループ化／解除と同じ作法で対象単体を選択にしてから呼ぶ
+    /// （本家でも右クリックしたアイテムが操作対象になる）。既に選択に
+    /// 含まれている場合は選択集合ごと（＋グループ）移動する。
+    func moveMenuItem(
+        _ item: BaseItem, index: Int, deltaFrame: Int, deltaLayer: Int
+    ) {
+        if !timeline.selectedItems.contains(where: { $0 === item }) {
+            timeline.selectItems([item])
+            selectedItemIndex = index
+        }
+        timeline.moveSelectedAndGroupedItems(
+            deltaFrame: deltaFrame, deltaLayer: deltaLayer)
+        onEdited()
     }
 
     /// キーフレームを追加する（相対フレームが範囲内のときだけ）。
@@ -281,7 +325,10 @@ extension TimelineStripView {
 
     /// レイヤーを削除する（そのレイヤーのアイテムも削除し、上を詰める。
     /// 本家 DeleteLayer と同じく、対象レイヤーの中身ごと消える）。
+    /// 選択は同一性で保持する（FE-R1-004。範囲外のときだけ解除する
+    /// 従来の補正では、残った選択が別アイテムを指す）。
     func deleteLayer(at target: Int) {
+        let captured = captureSelectedItem()
         let doomed = timeline.items.filter { $0.layer == target }
         if !doomed.isEmpty {
             timeline.deleteItems(doomed)
@@ -292,10 +339,7 @@ extension TimelineStripView {
         timeline.layerSettings.items.removeAll { $0.layer == target }
         shiftLayerSettings { layer in layer > target ? layer - 1 : layer }
         timeline.refreshTimelineLengthAndMaxLayer()
-        if let selected = selectedItemIndex,
-           timeline.items.indices.contains(selected) == false {
-            selectedItemIndex = nil
-        }
+        restoreSelection(of: captured)
         layerRevision += 1
         onEdited()
     }
