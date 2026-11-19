@@ -56,7 +56,18 @@ enum EditDragSession {
     /// ドラッグ開始時にセッションを開き、結果を状態へ反映する。
     /// 記録先が無い構成では従来どおり無記録で書き込むため、開始前
     /// のままにする。
+    ///
+    /// 再入の防御（FE-R28-129-01）: 既に自分が所有している場合は、
+    /// 所有を維持したまま何もしない。無条件に開き直すと、記録側は
+    /// 有効なセッションがあるため新しい開始を拒否し、状態だけが
+    /// `.refused` へ上書きされて所有トークンを失う。記録側には
+    /// 未確定セッションが残り続け、後続の編集や Undo/Redo が
+    /// 拒否され続ける。ドラッグ所有中に別経路の確定処理が開始を
+    /// 試みる場合（再生速度行のテキスト確定）と、終了通知の
+    /// 取りこぼし後に次のドラッグが始まる場合の双方を、この
+    /// 1か所で断つ（全行・プレビュードラッグ共通の土台）。
     mutating func begin(using recorder: EditRecorder?) {
+        if case .owning = self { return }
         guard let recorder else {
             self = .idle
             return
@@ -896,7 +907,31 @@ struct AnimationRowView: View {
     /// として同期的に完結させる。開始が拒否された場合は書き込み
     /// 自体を行わない（離散編集の入口拒否と同じで、モデルも
     /// 基点も変わらない。監査 Round 27 の受け入れ試験 4）。
+    ///
+    /// スライダとセッションを共有するため、確定が届いた時点の
+    /// 状態で経路が分かれる（FE-R28-129-01。スライダ操作中に
+    /// TextField のフォーカス喪失で確定が届く順序がある）:
+    /// - 所有中: そのセッションへ書き込みを統合する（統合方式）。
+    ///   新しいセッションは開かず、終了時調整と確定はドラッグ
+    ///   終了時に一度だけ行われる。基点はドラッグ開始時点で
+    ///   捕捉済みであり、ここでは捕捉し直さない。無条件に開始を
+    ///   試みると記録側に拒否されて所有トークンを失うため、
+    ///   この分岐が本件の処分の中核である。
+    /// - 開始拒否のドラッグが進行中: テキスト確定を拒否し、
+    ///   所有状態には一切触らない。ドラッグは終了まで書き込み
+    ///   禁止のままとなり、終了時に状態が戻る（FE-R21-126-01）。
+    ///   表示は呼び出し側（`commit`）が現在値へ戻す。
+    /// - 開始前: 従来どおり同期セッションで完結させる。
     private func commitPlaybackRateText(_ value: Double) {
+        if case .owning(let token) = sliderSession {
+            writeValue(
+                value, segment: focusedSegment ?? editingSegment,
+                sessionToken: token)
+            return
+        }
+        if case .refused = sliderSession {
+            return
+        }
         sliderSession.begin(using: editRecorder)
         guard sliderSession.writeAllowed(recorder: editRecorder) else {
             // 開始拒否: 記録側にセッションは開かれていないため、
