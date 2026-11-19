@@ -1487,6 +1487,62 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **検証。** Mac（同期先 ~/ymm4-work/fe-r8-001/YMM4Mac）で方式名フィルタ実行し全合格: `PropertyMetadataTests` 19 件（新規に両型の記述子の存在・get/set の結線・スライダ仕様の解決を固定）、`AnimationSliderSpecTests` 14 件、`EffectPropertyMetadataTests` 17 件。合計 50 件・失敗 0。AudioDrift は既定どおり除外。期待値（範囲・形式・単位）は抽出データ `slider-attributes.json` の両型 Volume / Pan で裏取り済み。
 
+#### FE-SCENE-BACKUP — シーン削除の確認と破棄時バックアップ（FE-UNIT4 積み残し (b)(c) の処分）
+
+FE-UNIT4 節の未解決 (b)（シーン削除時の確認が無い）と (c)（破棄時のバックアップ作成が無い）の処分。基点は PR #131 のブランチ `feat/fe-unit4-save`（先端 f609192）であり、本単位の PR は PR #131 の後に積む前提（#131 がマージされた main へ載せ替えてから出す）。
+
+**本家の規則（逆コンパイル成果物で裏取り済み）。**
+
+- シーン削除の確認: `MainViewModel.DeleteSceneAsync`（MainViewModel.cs:4292-4303）は、対象シーンの `Items.IsEmpty` なら確認なしで即削除し、アイテムが1件でもあれば `Texts.ConfirmDeleteMessage`（実文字列「{0}を削除しますか？」、Texts.resx:486。{0} はシーン名）をタイトル `Texts.ConfirmationDialogTitle` の OKCancel で出し、OK の場合だけ `model.DeleteScene` する。キャンセルでは削除しない。
+- 最後の1つは削除不可: DeleteSceneAsync 自体には件数条件が無いが、呼び出し側が両経路とも件数で塞いでいる — ドキュメントを閉じる経路（AvalonDockDocumentClosing、MainViewModel.cs:418-425）は `Timelines.Count != 1` の場合だけ DeleteSceneAsync へ進み、DeleteScene コマンドの CanExecute（同 4031-4038）は `Timelines.Count > 1`。
+- バックアップの作成時点: 未保存変更の破棄が確定した時点、すなわち破棄確認で「保存しない（No）」が選ばれた時点で、全経路共通に `CreateBackup()` を呼ぶ — ウィンドウを閉じる（SaveProjectOnCloseWindowCommand の No 分岐、MainViewModel.cs:407）、新規作成（CloseProject、同 4676）、開く（OpenProject、同 4719）、アプリ終了（全ウィンドウ一括確認の No 分岐、App.xaml.cs:662）。「保存する（Yes）」やキャンセルでは作らない。
+- バックアップの中身と名前: `MainModel.CreateBackup`（MainModel.cs:1251-1268）は現在のプロジェクト全体を書き出す。書き出す Project の FilePath はバックアップファイル自身のパスになる。ファイル名は `CreateBackupFilePath`（同 1245-1249）で `{DateTime.Now:yyyy-MM-dd HH-mm-ss-f} {基名}.ymmp`（末尾の f は秒の小数第1位）。基名は ProjectFilePath が空なら `Texts.DefaultProjectFileName`（実文字列「無題」、Texts.resx:5024）、そうでなければ拡張子なしのファイル名。保存先は `AppDirectories.BackupDirectory`（ユーザーディレクトリ配下の `backup`、AppDirectories.cs:64）。
+- 保持世代数と掃除: 作成のたびに `RefreshBackupFilesList`（MainModel.cs:1290-1307）がフォルダ内の全ファイルを更新日時の新しい順に並べ、`YMMSettings.BackupLimit2`（既定値 15、YMMSettings.cs:118 の `backupLimit = 15`）を超えた分を削除する。個別の削除失敗は無視する。
+- 失敗時の扱い: アプリ側のラッパ `App.xaml.cs` の `CreateBackup()`（922-933）は例外を捕捉してログへ記録するだけで、破棄や終了を妨げない。
+
+**実装（コミットは作業単位で3件）。**
+
+- Core（`1ca3c4e`）: `Project.timelineDeletionRequiresConfirmation(at:)` と `Project.removeTimeline(at:confirmed:)` を新設し、確認条件（アイテムのあるシーンだけ）と削除の成立（最後の1つ・範囲外・未確認は不成立）を Core の操作として固定した。新規 `ProjectBackupStore`（`Sources/YMM4Core/Format/ProjectBackupStore.swift`）が本家 CreateBackup 相当を担う: ファイル名の形式と基名の規則（無題・パス除去）を本家どおりにし、書き出しは encode → decode の往復で作った写しに対して行い（写しの filePath はバックアップ先自身。ライブモデルは書き換えない）、作成後に保持世代数15への掃除を行う。失敗は例外でなく nil で返す。保存先は Application Support 配下の `YMM4Mac/Backup`（後述の差分）。
+- テスト（`4a49ea2`）: `ProjectSceneDeletionTests` 8件（空シーンは確認不要、アイテムのあるシーンは確認必須、未確認では削除されず確認済みで削除される、空シーンは未確認でも削除できる、最後の1つと範囲外は削除不可）と `ProjectBackupStoreTests` 7件（ファイル名の本家形式、基名の規則、内容が破棄時点のプロジェクトと一致し FilePath がバックアップ自身を指すこと、ライブモデルの不変、保持世代数15への掃除、失敗時に nil が返ること）。
+- アプリ（`2eb5d76`）: `ProjectView.deleteTimeline(at:)` は、アイテムのあるシーンでは本家 ConfirmDeleteMessage の文言（タブ表示名を当てた「{名前}を削除しますか？」）で NSAlert の確認を出し、キャンセルでは削除しない。空のシーンは従来どおり確認なし。削除の成立は Core の `removeTimeline(at:confirmed:)` へ寄せ、成功後の `markEdited()`（未保存フラグ）は従来どおり維持。`WorkspaceState` が `backupStore`（ProjectBackupStore）を所有し、共通手順 `confirmDiscardUnsavedChanges()` の「保存しない」が選ばれた時点で現在の状態を保存する。新規・開く・ウィンドウ閉鎖・終了の全経路がこの共通手順を通るため、本家と同じく全経路で破棄時バックアップが作られる。
+
+**本家との差分。**
+
+- バックアップの保存先: 本家はユーザーディレクトリ配下の `backup`。Mac は Application Support 配下の `YMM4Mac/Backup` とした（UserDictionaryStore の配置慣行と同じ基点。プラットフォームの配置差異であり、規則そのものは本家どおり）。
+- 掃除の対象範囲: 本家はフォルダ内の全ファイル（隠しファイルを含む）が対象。Mac の `pruneBackups()` は隠しファイルを列挙から除き、サブディレクトリも列挙対象になりうる。バックアップフォルダは本ストアだけが使うため実害は無い細差として記録する。
+- 確認ダイアログの形: 本家はタイトル「確認」＋ OKCancel ボタン。Mac は NSAlert で本文に文言を置き、ボタンは「削除／キャンセル」とした（macOS の慣行に合わせた表示差異。条件と文言は本家どおり）。
+- 本家はシーン削除の前にプレビューを一時停止する（DeleteSceneAsync 冒頭の `PausePreviewAsync`）。Mac の削除経路には従来からプレビュー停止が無く、本単位では触れていない（観測した差分として記録）。
+- バックアップに含めるレイアウト・ツール状態: 本家は書き出し時点の LayoutXml と ToolStates を取得して入れる。Mac の写しは Project の保持値（読み込み時の LayoutXml・ToolStates の往復保持）をそのまま含む。ドッキング基盤が無いための FE-R1-036 部分対応の範囲であり、本単位での変更はない。
+- 本家にあるが本単位の範囲外（未実装のまま）: (1) 自動バックアップタスク（`CreateBackupTask`。BackupSpan 分ごとに、最終編集後に未保存の変更があれば CreateBackup）。(2) 通常保存（SaveProject）のたびに保存済みファイルをバックアップフォルダへコピーする経路（MainModel.cs:1205-1219）。(3) 未処理例外時の CreateBackup（App.xaml.cs:789・800・808）。(4) 復元導線: 本家は `RefreshBackupFilesList` が最新10件を `BackupFiles` として公開し、`OpenBackupProject`（MainViewModel.cs:4695-4699）でバックアップを開いて元のプロジェクトパスへ戻す導線を持つ。Mac 側に復元 UI は無い（作成までが本単位の範囲）。
+
+**検証。** Mac（~/ymm4-work/fe-safety/YMM4Mac、他の swift-test が動いていないことを確認してから実施）で対象を絞って実行し全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: 新規 `ProjectSceneDeletionTests` 8件・`ProjectBackupStoreTests` 7件、PR #131 の保存系 `YmmpCodecTests` 27件、未保存管理の関連 `UndoHistoryTests` 10件・`EditCoordinatorTests` 15件・`CharacterReferenceTests` 7件・`ExportSnapshotTests` 3件・`InputValidationTests` 12件、Apps/DebugApp の `swift build` 成功＋ `PreviewCoreTests` 12件。合計 101件・失敗 0。全スイートは実行していない（変更範囲に応じた検証範囲の規則による）。アプリ層の振る舞い（確認ダイアログの実表示、破棄経路でのバックアップ作成）は自動テストの対象が無いため、下の手動チェックで固定する。
+
+**手動検証チェックリストへの追加（FE-UNIT4 系の連番 (23)〜、未実施）。** (23) アイテムのあるシーンを削除すると「{名前}を削除しますか？」の確認が出て、「キャンセル」で削除されず、「削除」で削除されて未保存フラグが立つこと。空のシーンは確認なしで削除できること。シーンが最後の1つのときは削除が成立しないこと（FE-SCENE-BACKUP）。(24) 未保存の編集をして破棄確認で「保存しない」を選ぶと、`~/Library/Application Support/YMM4Mac/Backup` に「yyyy-MM-dd HH-mm-ss-f 元名.ymmp」（元ファイルが無ければ「無題」）が作られ、そのファイルを開くと破棄時点の内容になっていること。新規・開く・ウィンドウ閉鎖・終了の各経路で作られること（FE-SCENE-BACKUP）。(25) バックアップが16件以上になると、更新日時の古いものから消えて15件に保たれること（FE-SCENE-BACKUP）。
+
+**PR 本文の下書き（PR 作成時に使う。基点は PR #131 のブランチであり、本 PR は #131 の後に積む）。**
+
+> ## 概要
+> FE-UNIT4（PR #131）の積み残し2件の処分: (1) アイテムのあるシーンの削除に確認ダイアログを追加、(2) 未保存変更の破棄が確定した時点でプロジェクトのバックアップを作成する。実装記録は docs/IMPLEMENTATION_LOG.md の FE-SCENE-BACKUP 節。
+>
+> ## 本家根拠
+> - シーン削除: MainViewModel.DeleteSceneAsync（アイテムが空なら確認なし、あれば Texts.ConfirmDeleteMessage「{0}を削除しますか？」の OKCancel）。最後の1つの削除不可は呼び出し側の件数条件（AvalonDockDocumentClosing の Count != 1、DeleteScene コマンドの CanExecute = Count > 1）。
+> - バックアップ: MainModel.CreateBackup / CreateBackupFilePath / RefreshBackupFilesList。作成時点は破棄確認で「保存しない」が選ばれた時点（閉じる・新規・開く・終了の全経路）。ファイル名は「yyyy-MM-dd HH-mm-ss-f 基名.ymmp」（基名なしは「無題」）、保持世代数は YMMSettings.BackupLimit2 の既定値15、失敗は破棄を妨げない（App.xaml.cs のラッパが例外を捕捉）。
+>
+> ## 変更したシンボル
+> - Core: `Project.timelineDeletionRequiresConfirmation(at:)` / `Project.removeTimeline(at:confirmed:)`（新規）、`ProjectBackupStore`（新規。`createBackup(of:sourceFileName:date:)` / `backupFileName(sourceFileName:date:)` / `pruneBackups()`、保存先 Application Support/YMM4Mac/Backup）
+> - アプリ: `ProjectView.deleteTimeline(at:)`（確認接続、削除の成立は Core へ）、`WorkspaceState.backupStore`（所有を追加）、`confirmDiscardUnsavedChanges()`（「保存しない」確定時にバックアップ作成）
+>
+> ## 設計判断
+> - 確認の要否と削除の成立は Core の操作として固定し、アプリ層はダイアログ表示だけを担う（アプリ層にテスト対象が無いための FE-UNDO-WIRING と同じ方針）。
+> - バックアップの書き出しは encode → decode の往復で作った写しに対して行い、ライブモデルの FilePath を書き換えない（書き出しスナップショットと同じ確立した方法）。写しの FilePath は本家どおりバックアップファイル自身を指す。
+> - 保存先のみプラットフォーム差異として Application Support 配下にした。本家にある自動バックアップタスク・保存時のコピー・例外時バックアップ・復元導線は本 PR の範囲外（台帳に差分として記録）。
+>
+> ## テスト
+> Mac で対象を絞って実行し全合格（101件・失敗0）: 新規 ProjectSceneDeletionTests 8件・ProjectBackupStoreTests 7件、YmmpCodecTests 27件、UndoHistoryTests 10件・EditCoordinatorTests 15件・CharacterReferenceTests 7件・ExportSnapshotTests 3件・InputValidationTests 12件、DebugApp ビルド成功＋PreviewCoreTests 12件。アプリ層の実挙動は台帳の手動チェックリスト (23)〜(25) で固定（未実施）。
+>
+> ## 積み方
+> 基点は PR #131 のブランチ `feat/fe-unit4-save`。#131 のマージ後に main へ載せ替えてからマージする。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
@@ -2054,7 +2110,7 @@ R6 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinato
 
 **手動検証チェックリスト（未実施）。** (1) 編集後に「新規プロジェクト」を選ぶと確認が出て、「キャンセル」で編集内容が残ること。(2) 確認で「保存」を選ぶと保存されてから新規プロジェクトになること。未保存プロジェクトでは保存ダイアログが出て、それをキャンセルすると確認へ戻ること。(3) 編集後に「開く」で確認が出て、「保存しない」で選んだファイルが開くこと。ファイル選択をキャンセルした場合は元のプロジェクトがそのまま残ること。(4) 編集後に保存すると、以後は新規・開くで確認が出ないこと。(5) 開いたファイルで編集して ⌘S を押すとダイアログが出ず、同じファイルが更新されること（更新時刻と内容で確認）。(6) 「名前を付けて保存…」で別ファイルへ保存した後は、⌘S がその新しいファイルへ上書きすること。(7) .ymmp をタイムラインへドロップしたときも、未保存なら確認が出ること。(8) 編集後にウィンドウを閉じる／⌘Q で確認が出て、「キャンセル」で終了しないこと。(9) シーンを切り替えて保存し、開き直すとそのシーンが表示されること（FE-R1-012）。(10) 表示中より前のシーンを削除しても表示中のシーンが変わらず、表示中のシーンを削除すると次のシーンが表示されること（FE-R1-013）。(11) プレビュー帯の高さ・ズーム・レイヤー行の高さ・プレビュー倍率を変えて再起動すると、前回のレイアウトで表示されること（FE-R1-036）。(12) 本家で作ったプロジェクト（LayoutXml 入り）を開いて保存しても、LayoutXml がそのまま保持されること。
 
-**未解決。** (a) FE-R1-036 の残り: 本家の LayoutXml（AvalonDock のドッキング配置そのもの）の解釈・適用は、Mac 側にドッキング基盤が無いため未対応。レイアウトメニューのプリセット保存・ツール表示切替（本家 DockingLayoutPreset 相当）も未接続のまま（ダイアログ単位の範囲）。(b) シーン削除時の確認: 本家はアイテムのあるシーンの削除で確認を出す（MainViewModel.DeleteSceneAsync、Texts.ConfirmDeleteMessage の OKCancel）が、FE-R1-013 の台帳範囲（選択の帳簿付け）外のため本単位では入れていない。観測した差分として記録する。(c) 破棄時のバックアップ作成（本家 CreateBackup）はバックアップ機能自体が無いため未対応。(d) 複数ウィンドウ時は `WorkspaceState.current` が最後に生成されたワークスペースを指すため、終了確認の対象が単一前提である（複数ウィンドウの重複実行は FE-R1-002 の範囲）。
+**未解決。** (a) FE-R1-036 の残り: 本家の LayoutXml（AvalonDock のドッキング配置そのもの）の解釈・適用は、Mac 側にドッキング基盤が無いため未対応。レイアウトメニューのプリセット保存・ツール表示切替（本家 DockingLayoutPreset 相当）も未接続のまま（ダイアログ単位の範囲）。(b) シーン削除時の確認: 本家はアイテムのあるシーンの削除で確認を出す（MainViewModel.DeleteSceneAsync、Texts.ConfirmDeleteMessage の OKCancel）が、FE-R1-013 の台帳範囲（選択の帳簿付け）外のため本単位では入れていない。観測した差分として記録する（→ FE-SCENE-BACKUP で処分済み）。(c) 破棄時のバックアップ作成（本家 CreateBackup）はバックアップ機能自体が無いため未対応（→ FE-SCENE-BACKUP で処分済み）。(d) 複数ウィンドウ時は `WorkspaceState.current` が最後に生成されたワークスペースを指すため、終了確認の対象が単一前提である（複数ウィンドウの重複実行は FE-R1-002 の範囲）。
 
 ##### Round 32 処分（FE-R32-131-01〜04、PR #131 レビュー）
 
