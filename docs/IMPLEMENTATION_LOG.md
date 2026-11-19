@@ -59,6 +59,7 @@
 - NOISEFIX — Noise 既存3種（Fractal / Random / Curl）の本家シェーダとの差分是正
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 - INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
+- ISSUE134 — 口パク包絡キャッシュの署名へカスタム音声ファイルの同一性を追加（Issue #134）
 
 ## 実装記録（変更IDごとに自然言語で追記）
 
@@ -2124,3 +2125,56 @@ PR #126 の Round 21 新規指摘「失効したセッショントークンが�
 - **残る論点（本処分の範囲外として明記）**: プロジェクト切り替え後の遅延イベントのうち、トークンを提示する経路は本契約で断たれる。トークンを持たない離散編集の遅延イベントはビューの破棄（プロジェクト切り替えで画面が作り直される既存構造）に依存しており、本処分では扱っていない。
 
 検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+#### ISSUE134 — 口パク包絡キャッシュの署名へカスタム音声ファイルの同一性を追加（Issue #134。IMPLEMENTED、Mac 検証済み）
+
+**問題。** VoiceItem のカスタムボイス（発音＝hatsuon が音声ファイルの絶対パス）について、同じパスのファイルを別の内容に差し替えても口パク（エンベロープ）が再計算されない。`MetalTachieSource.envelopeSignature`（Sources/YMM4GPU/Sources/Media/MetalTachieSources.swift）は hatsuon のパス文字列とアイテム側プロパティのみで構成され、ファイル自体の同一性を含まないため、同一パスへの上書き保存では署名が変わらず、キャッシュされた包絡がセッション中ずっと使われ続けた。ファイル監視の仕組みは Sources 配下に無い（統合 QA 2026-11-19 でコード検証済み）。
+
+**何を実装したか。** 署名の末尾に、ファイル自体の同一性（サイズ＋更新時刻）を部品として追加した。部品の生成は新設の `MetalTachieSource.fileIdentityComponent(ofHatsuon:)` が担う。
+
+**どう実装したか。**
+- 「発音がファイルパスか」の判定は、音声供給側がカスタム音声の解決に使う既存の判定 `VoicePCMProviderResolver.isCustomVoicePath` と同一の基準を使う（絶対パス／file URL／Windows ドライブパス）。供給側がファイルとして開く対象と、署名が同一性を追う対象がずれないための選択である。
+- 同一性は POSIX `stat` の `st_size` と `st_mtimespec`（秒＋ナノ秒の整数）を文字列化する。全ファイル読みのハッシュは採らない。パス解決は供給側 `resolveMediaURL` の絶対パス経路と揃えた（file URL ならそのパス、それ以外は文字列自体をパスとして扱う）。シンボリックリンクは stat が辿るため、リンク先の差し替えも検出できる。
+- stat が失敗する（ファイルが存在しない）場合は固定の不在標識 `file:missing` を返す。ファイルの消滅・出現の遷移も署名の変化として検出できる。Windows ドライブパスは Mac では stat が失敗するため不在標識になる（従来も開けないため実害は無い）。
+- 発音がファイルパスでない場合（音声エンジンの声名など）は部品自体を付けず、署名は従来どおりアイテム側の入力だけで決まる（stat も行わない）。
+
+**呼び出し頻度と stat コストの根拠（実コード確認＋実測）。** 署名は `envelopeValues` から呼ばれ、その呼び出しは `MetalTachieSource.update` 内の包絡経路に限られる（描画器が存在し、声が範囲内で、平滑化が有効な場合のみ）。頻度の上限は、立ち絵アイテムが表示されている間のフレーム描画ごと（再生中はフレームレート相当）で、その場合でも追加コストは stat 1回だけである。実測（本人の Mac、load average 約19の高負荷下、実在ファイルへの 100,000 回ループ×3 の最速）: POSIX `stat` は約 1.4 µs/回、`FileManager.attributesOfItem` は約 54.6 µs/回（約39倍）。この差から、FileManager の辞書経由ではなく POSIX stat を直接使う形にした。包絡の再計算本体（音声デコード＋平滑化）に比べれば、いずれの方式でも無視できる水準だが、より安い方を採る理由は無いため stat を選んだ、というのが正確な記録である。
+
+**プロジェクトを開き直した場合の扱い（Issue の確認事項、実コードで確認）。** 包絡キャッシュ `envelopeCache` は `MetalTachieSource` のインスタンスプロパティで、メモリ内にのみ存在し永続化されない。Source は合成器（TimelineComposer）ごとに生成され、プレビューのセッションはモデル差し替え（プロジェクトの開き直し・切り替えを含む）のたびに `PreviewRenderWorker.setModel` が新しい `PreviewBox` を生成して旧セッションを破棄する。したがって、プロジェクトを開き直せば Source ごと作り直され、キャッシュは空から始まって包絡は再計算される。書き出しもジョブごとに供給元を生成するため同様である。本件の不具合は「プロジェクトを開いたまま同一パスのファイルを差し替える」場合に限られ、今回の修正でその場合も再起動・開き直しなしに再計算される。
+
+**本家との差分。** ユーザーから見える差分は、差し替えが表示へ反映されるようになる点のみで、本家の再計算署名（音声ファイル・ContentOffset・ContentLength・更新世代など）の考え方に沿う内部修正である。
+
+**検証。** Mac（同期先 ~/ymm4-work/issue134/YMM4Mac、ffmpeg 不要の範囲）で対象フィルタ `EnvelopeSignature|VoiceAudioProvider|Playback|PresentationTimestamp|StreamingPCMProvider|RenderDiagnostics` を実行し、合計 79 件・失敗 0。そのうち `EnvelopeSignatureTests` は 10 件（既存4件＋新規6件）で、新規分は以下を固定する: 別サイズへの差し替えで署名が変わる、同サイズでも更新時刻が変われば署名が変わり、サイズと更新時刻を戻せば署名も戻る（同一性＝サイズ＋更新時刻の定義そのもの）、ファイル無変更では署名が安定する（キャッシュが効く回帰）、ファイルの消滅・出現で署名が変わり不在の間は不在標識で安定する、file URL 形式の発音でも同一性が入る、ファイルパスでない発音では部品が付かず署名が従来どおり決まる。全スイートは回していない。AudioDrift は対象外（音声クロック・リサンプリング中核の変更を含まない）。STATUS.md は Issue #134 を主要な未解決として列挙していないため追随なし（課題の正本は GitHub Issues）。
+
+**PR 本文の下書き。**
+
+> ## 概要
+>
+> Issue #134 の修正。同一パスの外部音声ファイルを差し替えても口パク（エンベロープ）が再計算されない問題を解消する。
+>
+> ## 根拠
+>
+> - `MetalTachieSource.envelopeSignature` は hatsuon のパス文字列とアイテム側プロパティのみで構成され、ファイル自体の同一性を含まなかった（統合 QA 2026-11-19 でコード検証済み）。
+> - 包絡キャッシュは Source インスタンス内のメモリキャッシュであり、プロジェクトを開き直せば再計算されることは実コードで確認した。本件はプロジェクトを開いたまま差し替える場合の問題。
+>
+> ## 変更したシンボル
+>
+> - `MetalTachieSource.envelopeSignature(of:)`（Sources/YMM4GPU/Sources/Media/MetalTachieSources.swift）: カスタム音声の場合にファイル同一性の部品を末尾へ追加。
+> - `MetalTachieSource.fileIdentityComponent(ofHatsuon:)`（新規）: 「発音がファイルパスか」は音声供給側の既存判定 `VoicePCMProviderResolver.isCustomVoicePath` と同一基準。同一性は POSIX stat のサイズ＋更新時刻（秒・ナノ秒）。不在時は固定標識 `file:missing`。パスでない発音では nil（署名は従来どおり）。
+>
+> ## 設計判断
+>
+> - ハッシュ（全ファイル読み）は採らず、Issue 方針どおり更新時刻＋サイズを採用。
+> - stat コスト実測（Mac、高負荷下）: POSIX stat 約 1.4 µs/回、FileManager 経由 約 54.6 µs/回。署名はフレーム描画ごとの計算が上限頻度のため、安い POSIX stat を直接使う。
+>
+> ## テスト
+>
+> - Mac で対象フィルタ（EnvelopeSignature / VoiceAudioProvider / Playback / PresentationTimestamp / StreamingPCMProvider / RenderDiagnostics）合計 79 件・失敗 0。EnvelopeSignatureTests は新規6件を含む 10 件（差し替え・同サイズ＋時刻変更・無変更での安定・消滅と出現・file URL・非パス発音）。
+> - 実装記録: docs/IMPLEMENTATION_LOG.md の ISSUE134 節。
+>
+> ## 完了条件との対応
+>
+> - 同一パスのファイルを差し替えると、再起動なしでエンベロープが再計算される（署名変化→キャッシュ再計算の経路をテストで固定）。
+> - 差し替えていない場合は従来どおりキャッシュが効く（回帰テストで固定）。
+>
+> Closes #134
