@@ -59,6 +59,7 @@
 - NOISEFIX — Noise 既存3種（Fractal / Random / Curl）の本家シェーダとの差分是正
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 - INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
+- FE-VOICE-DESC — VoiceItem の残り編集項目とエコー項目の記述子追加、セリフ行の部分装飾の編集経路
 
 ## 実装記録（変更IDごとに自然言語で追記）
 
@@ -2124,3 +2125,66 @@ PR #126 の Round 21 新規指摘「失効したセッショントークンが�
 - **残る論点（本処分の範囲外として明記）**: プロジェクト切り替え後の遅延イベントのうち、トークンを提示する経路は本契約で断たれる。トークンを持たない離散編集の遅延イベントはビューの破棄（プロジェクト切り替えで画面が作り直される既存構造）に依存しており、本処分では扱っていない。
 
 検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+#### FE-VOICE-DESC — VoiceItem の残り編集項目とエコー項目の記述子追加、セリフ行の部分装飾の編集経路（IMPLEMENTED、Mac 検証済み）
+
+フロントエンド監査の単位6（セリフ・キャラクター・辞書）と FE-R15-006 の処分で分離された残件。本家には編集項目があるが Mac 版ではモデル保持のみでインスペクタから編集できなかった項目へ、`ItemPropertyMetadata` の記述子を追加する。既存の記述子の意味・順序は変更していない（追加のみ）。開始コミットは main `88b5e14`、ブランチ `feat/fe-voice-descriptors`。
+
+**本家根拠（逆コンパイル済みソースと `Texts` リソース実文字列で確認。表示名は今回初めてリソース実値で裏付けた）。** 対象項目の属性は次のとおり（グループ名・Order・編集部品属性・`Range`・表示名キー→実文字列）:
+
+| 項目 | 型 | グループ | Order | 部品・値域 | 表示名 |
+|---|---|---|---|---|---|
+| IsWaveformEnabled | 3型共通 | 全般（GeneralGroupName） | 5 | ToggleSlider | 「波形」（`*IsWaveformEnabledName`） |
+| PlaybackRateAudioProcessingMode | 3型共通 | Voice 161 / Video 231 / Audio 121（各型のグループ） | — | EnumComboBox | 「再生速度変更方式」（`AudioPlayerPlaybackRateMode`）。選択肢: Resampling =「リサンプリング / 音程変化」、Sola =「SOLA / 音程維持」 |
+| AdditionalTime | VoiceItem | ボイス（VoiceGroupName） | 178 | TextBoxSlider F2・秒、Range -100000〜100000、既定 0.3 | 「セリフ後の余韻」（`CharacterAdditionalTimeName`。キャラクター設定と共通キー） |
+| VoiceFadeIn / VoiceFadeOut | VoiceItem | ボイス | 180 / 190 | TextBoxSlider F2・秒、Range 0〜100000、既定 0 | 「フェードイン」/「フェードアウト」 |
+| EchoIsEnabled | 3型共通 | エコー（EchoGroupName） | 195（Video は 250、Audio は 150） | ToggleSlider | 「有効」 |
+| EchoInterval | 3型共通 | エコー | 同上 | TextBoxSlider F2・秒、Range 0〜2、既定 0.1 | 「間隔」 |
+| EchoAttenuation | 3型共通 | エコー | 同上 | TextBoxSlider ％、Range 0〜90、既定 40 | 「減衰」 |
+
+グループ名の扱い: 本家の `VoiceGroupName` の実値は「ボイス」、`GeneralGroupName` は「全般」だが、Mac 側の既存記述子は VoiceItem の音声系を「音声」、全般を「基本」で統一済みであり、セクションが割れることを避けるため新規分も既存のグループ名へ寄せた（既存記述子の変更はしていない）。エコーは新規グループのため本家どおり「エコー」とした。配置は本家の Order と既存項目との相対順序を保つ: 波形は基本グループ末尾（具象型宣言のため BaseItem 宣言分の後ろ）、VoiceItem の音声グループ内は セリフ 120 → 音量 140 → パン 150 → 方式 161 → 余韻 178 → フェードイン 180 → フェードアウト 190、AudioItem の方式は音量・パンの後ろ（121）、VideoItem の方式は動画グループで FilePath の後ろ（231）。
+
+**Pronounce についての訂正（単位の依頼前提の誤り）。** 依頼文は Pronounce を「読み仮名のテキスト項目」としていたが、本家 `VoiceItem.cs`（248行目付近）で `Pronounce` の型は `IVoicePronounce`（音声プラグインのオブジェクト）であり、`Display` は `AutoGenerateField = true`（Order 131）で、編集欄はプラグイン自身の UI から生成される。テキスト項目ではない。Mac 側モデルも `PreservedObject?` の生保持であり、対応する音声プラグイン基盤（`IVoicePronounce` の実装・TTS 連携）は移植側に存在しない。したがって本単位では Pronounce へ記述子を付けず、生保持のまま据え置く。なお Hatsuon（発音。テキスト項目）は別項目であり、単位6で記述子追加済み（本ブランチの基点には未マージ）。
+
+**追加した記述子**（`Sources/YMM4Core/Editing/ItemPropertyMetadata.swift`）:
+
+- 共通ヘルパー `waveformDescriptor` / `playbackRateModeDescriptor` / `echoDescriptors` を新設し、VideoItem / AudioItem / VoiceItem の各分岐から使う。エコーと方式は3型で表示名・値域・選択肢が同一（本家の表示名キーは型別だが実文字列は同一）のため共通化した。
+- VoiceItem: 波形、方式、AdditionalTime、VoiceFadeIn、VoiceFadeOut、エコー3項目、Decorations（後述）。
+- VideoItem / AudioItem: 波形、方式、エコー3項目。
+- 値域は本家の `Range` 属性を記述子の `range` へそのまま入れた（AdditionalTime -100000〜100000、VoiceFadeIn/Out 0〜100000、EchoInterval 0〜2、EchoAttenuation 0〜90）。
+
+**エコー追随（別ブランチ）との関係。** エコー変更時の長さ追随（編集終了時調整の分岐 (2)）は別ブランチ `feat/fe-content-separations`（未マージ）でモデル層へ入る予定であり、本単位では実装していない。本単位で保ったのは「記述子の書き込みがモデルのプロパティ経由であること」のみ: 動画・音声では代入で didSet の `refreshContentLengthForEchoSettings`（FE-R15-006）が走り、素材長（エコー尾込み）が再計算される。Undo/Redo の適用も同じプロパティ書き戻しを通るため、値が戻る際は再計算が追随する（倍率の didSet 一元化と同じ前提）。回帰テストで「記述子経由の有効化→間隔変更→減衰変更→無効化」が直接代入と同じ素材長遷移（10秒素材で 10 → 10.6 → 11.2 → 10.6 → 10）になることを固定した。統合時はどちらの仕組みとも書き込み経路が競合しない。
+
+**Decorations（セリフ行の部分装飾）の判断。** モデル側の構造は存在する: `VoiceItem.decorations: [TextDecoration]` は本家 `TextDecoration` レコードと全項目一致（開始・長さ・太字・イタリック・拡大率・フォント・前景色・改行・オフセット・絶対配置・装飾色・回転・打ち消し線・下線・回転/位置グループ ID・文字間隔・スタイル種別＋計算項目2件）で、保存・再読み込みの往復も実装済みだった。本家の編集面はインスペクタの記述子行ではなく、セリフのリッチテキスト編集（選択範囲へ装飾を適用する編集部品）であり、`VoiceItem.Decorations` には `Display` 属性が無い。Mac 側にはリッチテキスト編集部品が無いため、本単位では編集経路をインスペクタのコレクション記述子（`.collection`）で提供した: セリフの直後（音声グループ）に置き、要素の追加・削除と項目別編集ができる。子記述子へ出したのは非オプショナルの16項目（Start / Length / IsBold / IsItalic / Scale / Font / IsLineBreak / OffsetX / OffsetY / IsAbsoluteX / IsAbsoluteY / RotationZ / IsStrikethrough / IsUnderline / RotationGroupId / PositionGroupId）。`Font` は空文字列を未指定（nil）として橋渡しする。`Foreground` / `DecorationColor`（`Color?`）と `CharacterSpacing`（`Double?`）/ `StyleType`（`Int?`）は「未指定」を表す手段が記述子の種別に無いため子へ出さないが、項目単位の読み書きのため他項目の編集で消えることはなく、保存往復も保たれる（テストで固定）。残る未実装は、本家と同じ「セリフの選択範囲へ装飾を適用する」編集そのものであり、これにはリッチテキスト編集部品の基盤が別途必要（本単位からは切り離す）。TextItem の `decorations` も同構造だが、本単位の対象はセリフ行（VoiceItem）であり未着手とした（同じヘルパーで追随可能）。
+
+**Undo 記録。** 新しい記録経路は作っていない。追加した記述子はすべて既存の記述子ベース編集（`PropertyDescriptor` ＋ `EditRecorder`）に乗り、コレクションの子行も既存のキー経路（親 ID＋要素位置）で記録される。コレクション要素の追加・削除は既存の複合コレクションと同じく未記録編集の通知扱い（FE-UNDO-WIRING で記録対象外として明記された制約と同一）。
+
+**検証。** Mac（~/ymm4-work/fe-voice-desc/YMM4Mac）で実施。Apps/DebugApp の `swift build` 成功（228ステップ）。対象を絞った `swift test`（`PropertyMetadata|MediaItemLength` フィルタ）で94件・失敗0 — 内訳: `PropertyMetadataTests` 29件（新規6件: VoiceItem 残り項目の往復・値域・表示名、VoiceItem のセクション順と音声グループ内順序、VideoItem / AudioItem の方式・波形・エコー、エコー記述子書き込みでの素材長再計算、Decorations コレクションの追加・削除・項目別編集・未公開項目の保持・保存往復）、`EffectPropertyMetadataTests` 17件、`MediaItemLengthTests` 48件。記述子 ID の一意性は既存テスト（全アイテム種）が新規分も覆う。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。ARCHITECTURE.md は処理経路・所有権の変更が無い（既存の記述子機構への追加のみ）ため未更新。
+
+**手動検証チェックリスト（未実施）**: (1) ボイスアイテムのインスペクタで、基本グループの末尾に「波形」、音声グループに セリフ → Decorations → 音量 → パン → 再生速度変更方式 → セリフ後の余韻 → フェードイン → フェードアウト の順で並ぶ。(2) 動画・音声アイテムでエコーグループ（有効・間隔・減衰）が表示され、有効化と間隔・減衰の編集で素材長が追随し、Undo で値と素材長が戻る。(3) 再生速度変更方式を「SOLA / 音程維持」へ変更し、保存・再読込で保持される。(4) Decorations で要素を追加し、範囲・太字・拡大率を編集して保存・再読込で保持される。(5) 追加した各項目の編集で未保存フラグが立つ。
+
+**PR 本文の下書き**:
+
+> ## 概要
+> フロントエンド監査の単位6と FE-R15-006 から分離された残件として、本家に編集項目があり Mac 版ではモデル保持のみだった項目へ、インスペクタの記述子を追加する。既存の記述子の意味・順序は変更していない（追加のみ）。
+>
+> ## 要件・本家根拠
+> - 対象項目のグループ・Order・編集部品・値域・表示名は、本家の逆コンパイル済みソースの属性と `Texts` リソースの実文字列で確認した（対応表は実装台帳 FE-VOICE-DESC に記載）。
+> - Pronounce は本家では `IVoicePronounce`（音声プラグインのオブジェクト）でありテキスト項目ではないため、記述子を付けず生保持のまま据え置いた（依頼前提の訂正。台帳に根拠を記録）。
+>
+> ## 変更したシンボル
+> - `Sources/YMM4Core/Editing/ItemPropertyMetadata.swift`: `waveformDescriptor` / `playbackRateModeDescriptor` / `echoDescriptors` / `decorationsDescriptor` / `decorationChildren` を追加し、VideoItem / AudioItem / VoiceItem の記述子列へ組み込んだ。選択肢 `playbackRateModeOptions` を追加。
+> - `Tests/YMM4CoreTests/Editing/PropertyMetadataTests.swift`: 回帰テスト6件を追加。
+>
+> ## 設計判断
+> - グループ名は既存の Mac 側統一（音声系は「音声」、全般は「基本」）へ寄せ、セクションが割れないようにした。エコーは新規グループのため本家どおり「エコー」。
+> - エコーの書き込みはモデルのプロパティ経由とし、didSet の素材長再計算（FE-R15-006）がそのまま走る。長さ追随（分岐 (2)）は別ブランチ `feat/fe-content-separations` の担当で、本 PR では実装しない。書き込み経路は両者と競合しない。
+> - Decorations はモデル構造が存在するため、インスペクタのコレクション記述子で編集経路を提供した（本家の選択範囲ベースの編集はリッチテキスト編集部品の基盤が別途必要で、本 PR の対象外）。nullable な4項目（Foreground / DecorationColor / CharacterSpacing / StyleType）は「未指定」を表す種別が無いため子記述子へ出さず、保持のみとする。
+> - Undo 記録は既存の記述子＋EditRecorder 経路に乗せ、新しい記録経路は作っていない。
+>
+> ## テスト
+> - Mac で DebugApp の `swift build` 成功。`swift test`（`PropertyMetadata|MediaItemLength` フィルタ）94件・失敗0（PropertyMetadataTests 29件＝新規6件を含む、EffectPropertyMetadataTests 17件、MediaItemLengthTests 48件）。全スイート・AudioDriftTests は未実施。
+> - 手動チェックリストは実装台帳 FE-VOICE-DESC に記載（未実施）。
+>
+> ## 実装記録
+> - docs/IMPLEMENTATION_LOG.md の FE-VOICE-DESC 節。
