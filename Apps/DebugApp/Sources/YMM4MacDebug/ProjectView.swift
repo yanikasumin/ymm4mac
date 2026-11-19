@@ -1649,7 +1649,8 @@ struct ProjectView: View {
         for entry in entries {
             guard let info = await MediaFileInfoFetcher.fetch(
                 path: entry.url.path, group: entry.group,
-                audioTrackIndex: 0, baseDirectory: baseDirectory
+                audioTrackIndex: 0, baseDirectory: baseDirectory,
+                mediaSupport: workspace.mediaSupport
             ) else { continue }
             let item = makeItem(kind: entry.kind)
             setFilePath(entry.url.path, on: item)
@@ -1811,12 +1812,14 @@ struct ProjectView: View {
             if previousOriginal == .zero, !oldPath.isEmpty {
                 previousOriginal = await MediaFileInfoFetcher.fetch(
                     path: oldPath, group: group,
-                    audioTrackIndex: audioTrackIndex, baseDirectory: baseDirectory
+                    audioTrackIndex: audioTrackIndex, baseDirectory: baseDirectory,
+                    mediaSupport: workspace.mediaSupport
                 )?.duration ?? .zero
             }
             let info = await MediaFileInfoFetcher.fetch(
                 path: newPath, group: group,
-                audioTrackIndex: audioTrackIndex, baseDirectory: baseDirectory
+                audioTrackIndex: audioTrackIndex, baseDirectory: baseDirectory,
+                mediaSupport: workspace.mediaSupport
             )
             guard fileChangeGenerations[key] == generation,
                   project.timelines.contains(where: { $0 === timeline }),
@@ -2721,6 +2724,9 @@ struct ProjectView: View {
     /// （古いセッション・編集前のモデルの結果は捨てる。それ以外は、
     /// 後続の要求があっても採用する — 第9ラウンドの二段階規則）。
     private func wirePreviewWorker() {
+        // プレビューの失敗状態はワークスペースの台帳へ一本化する
+        // （Issue #70 段階4）。セッション生成より前に差す。
+        previewWorker.mediaSupport = workspace.mediaSupport
         previewWorker.onImage = { image, identity, frame, failures, history in
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
@@ -2908,10 +2914,10 @@ struct ProjectView: View {
         peakMeterRight = .silent
         loudnessMeterValue = .silent
         // 音声のデコーダ選択は合成 Factory（Issue #70 段階3:
-        // AVFoundation → FFmpeg）を通す。基盤は再生成のたびに
-        // 作り直す（従来の Factory 生成と同じ単位。アプリセッション
-        // 単位への一本化は段階4の引き継ぎ）。
-        let pcmProviderFactory = FFmpegMediaSupport()
+        // AVFoundation → FFmpeg）を通す。基盤はワークスペースの
+        // 共有基盤（段階4でアプリセッション単位へ一本化済み）で、
+        // 再生の失敗もプレビュー・書き出しと同じ台帳へ記録される。
+        let pcmProviderFactory = workspace.mediaSupport
             .makePCMProviderFactory(baseDirectory: baseDirectory)
         let timelines = project.timelines
         let factory = AudioSourceFactory(
@@ -3136,7 +3142,8 @@ struct ProjectView: View {
             baseDirectory: baseDirectory,
             request: request,
             cancellation: cancellation,
-            state: exportState
+            state: exportState,
+            mediaSupport: workspace.mediaSupport
         )
         Task.detached { job.run() }
     }

@@ -36,6 +36,13 @@ public final class TimelineExportCancellation: @unchecked Sendable {
 public final class TimelineExporter {
     /// 対象タイムライン。
     public let timeline: Timeline
+    /// この書き出しが使うデコーダ選択の基盤（Issue #70 段階4）。
+    /// アプリはワークスペースの基盤を渡し、プレビュー・長さ取得と
+    /// 同じ台帳で素材の失敗を判定する。未指定なら書き出し専用の
+    /// 基盤を作る（単独利用・自動テスト）。
+    public let mediaSupport: FFmpegMediaSupport
+    private let timelines: [Timeline]
+    private let baseDirectory: URL?
     private let videoProvider: MetalExportVideoProvider
     private let audioProvider: TimelineExportAudioProvider
 
@@ -49,11 +56,15 @@ public final class TimelineExporter {
         timelines: [Timeline],
         baseDirectory: URL?,
         loudness: LoudnessNormalizationSettings = LoudnessNormalizationSettings(),
-        compressor: CompressorSettings = CompressorSettings()
+        compressor: CompressorSettings = CompressorSettings(),
+        mediaSupport: FFmpegMediaSupport? = nil
     ) throws {
-        // デコーダ選択の基盤（Issue #70 段階3）は映像・音声で1つを
-        // 共有し、プレビューと同じ選択規則にする。
-        let mediaSupport = FFmpegMediaSupport()
+        // デコーダ選択の基盤（Issue #70 段階3・4）は映像・音声で
+        // 1つを共有し、プレビューと同じ選択規則・同じ台帳にする。
+        let mediaSupport = mediaSupport ?? FFmpegMediaSupport()
+        self.mediaSupport = mediaSupport
+        self.timelines = timelines
+        self.baseDirectory = baseDirectory
         let videoProvider = try MetalExportVideoProvider(
             timeline: timeline, timelines: timelines, baseDirectory: baseDirectory,
             mediaSupport: mediaSupport

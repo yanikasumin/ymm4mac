@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import YMM4Core
+import YMM4GPU
 
 /// ワークスペース（開いているプロジェクト）の共有状態。
 /// メニューコマンド（App の .commands）からも操作できるよう、
@@ -37,6 +38,12 @@ final class WorkspaceState: ObservableObject {
     /// ここで保持し、プロジェクトの差し替えと履歴のリセットを同じ
     /// 順序で扱う（FE-UNDO-WIRING）。
     let editRecorder = EditRecorder()
+    /// 素材の利用可否（失敗状態）の所有（Issue #70 段階4）。
+    /// アプリのセッション単位（プロジェクトを開いている間）で
+    /// 1つにし、プレビュー・再生・書き出し・長さ取得の全経路が
+    /// 同じ台帳を参照する。プロジェクトの差し替えでは履歴と
+    /// 同じ時点でリセットし、旧プロジェクトの状態を持ち越さない。
+    let mediaSupport = FFmpegMediaSupport()
     /// 履歴の状態が変わるたびに増える版数。ツールバー／メニューの
     /// Undo・Redo の有効/無効を再評価させるための契機。
     @Published private(set) var editHistoryRevision = 0
@@ -91,6 +98,7 @@ final class WorkspaceState: ObservableObject {
         // プロジェクトの差し替え前に、未確定トランザクションを
         // 破棄してから履歴を消す（順序の統一。FE-UNDO-WIRING）。
         editRecorder.resetForProjectSwitch()
+        mediaSupport.resetForProjectSwitch()
         project = Self.makeNewProject()
         diagnostics = YmmpLoadDiagnostics()
         sourceURL = nil
@@ -109,6 +117,7 @@ final class WorkspaceState: ObservableObject {
             // 読み込みが成功した場合だけ、差し替え前に履歴を
             // リセットする（失敗時は旧プロジェクトと履歴を保つ）。
             editRecorder.resetForProjectSwitch()
+            mediaSupport.resetForProjectSwitch()
             project = loaded
             diagnostics = loadedDiagnostics
             sourceURL = url

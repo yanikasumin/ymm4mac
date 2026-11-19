@@ -87,18 +87,35 @@ enum MediaFileInfoFetcher {
     }
 
     /// メディア情報を取得する。対象ファイルが存在しない場合は nil。
+    /// 失敗の記録は共有基盤の台帳へ寄せる（Issue #70 段階4）:
+    /// ファイルが無いことは取得側でも同じ台帳へ記録し、プレビュー・
+    /// 書き出しの判定と食い違わせない。
     static func fetch(
         path: String, group: PropertyFileGroup,
-        audioTrackIndex: Int, baseDirectory: URL
+        audioTrackIndex: Int, baseDirectory: URL,
+        mediaSupport: FFmpegMediaSupport
     ) async -> MediaFileInfo? {
-        guard let url = resolveURL(path: path, baseDirectory: baseDirectory),
-              FileManager.default.fileExists(atPath: url.path)
+        guard let url = resolveURL(path: path, baseDirectory: baseDirectory)
         else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            mediaSupport.registry.markFailed(
+                for: MediaMaterialKey(filePath: url.path),
+                failure: MediaAvailabilityFailure(
+                    kind: .fileNotFound,
+                    detail: "長さ取得の時点でファイルが存在しない",
+                    occurredAt: Date()
+                )
+            )
+            return nil
+        }
         switch group {
         case .audio:
-            return await fetchAudio(path: path, audioTrackIndex: audioTrackIndex, baseDirectory: baseDirectory)
+            return await fetchAudio(
+                path: path, audioTrackIndex: audioTrackIndex,
+                baseDirectory: baseDirectory, mediaSupport: mediaSupport
+            )
         case .video:
-            return await fetchVideo(url: url)
+            return await fetchVideo(url: url, mediaSupport: mediaSupport)
         case .image:
             return fetchImage(url: url)
         }
@@ -106,19 +123,15 @@ enum MediaFileInfoFetcher {
 
     /// 音声は再生側と同じ合成 PCM 供給工場経由で duration を取る。
     /// 工場の生成は同期的に待つ実装のため、メインスレッドの外で
-    /// 実行する。台帳（MediaAvailabilityRegistry）は再生側の基盤が
-    /// 持つため、ここでは記録先なしで工場を組み立てる。
+    /// 実行する。工場は共有基盤から作り、供給の成否は再生側と
+    /// 同じ台帳へ記録される（Issue #70 段階4）。
     private static func fetchAudio(
-        path: String, audioTrackIndex: Int, baseDirectory: URL
+        path: String, audioTrackIndex: Int, baseDirectory: URL,
+        mediaSupport: FFmpegMediaSupport
     ) async -> MediaFileInfo {
         let duration = await Task.detached { () -> TimeSpanValue in
-            let factory = CompositePCMProviderFactory(
-                primary: AVFoundationPCMProviderFactory(baseDirectory: baseDirectory),
-                fallback: FFmpegPCMProviderFactory(
-                    baseDirectory: baseDirectory,
-                    resolution: FFmpegBinaryResolver().resolveAll(),
-                    registry: nil
-                )
+            let factory = mediaSupport.makePCMProviderFactory(
+                baseDirectory: baseDirectory
             )
             return factory.createProvider(
                 filePath: path, audioTrackIndex: audioTrackIndex
@@ -129,11 +142,13 @@ enum MediaFileInfoFetcher {
 
     /// 動画は映像トラックの提示区間と、変換行列を適用した寸法を取る。
     /// トラックが読めない場合は ffprobe プローブへ倒す。
-    private static func fetchVideo(url: URL) async -> MediaFileInfo {
+    private static func fetchVideo(
+        url: URL, mediaSupport: FFmpegMediaSupport
+    ) async -> MediaFileInfo {
         let asset = AVURLAsset(url: url)
         guard let track = try? await asset.loadTracks(withMediaType: .video).first
         else {
-            return probeFallback(url: url)
+            return probeFallback(url: url, mediaSupport: mediaSupport)
         }
         let timeRange = (try? await track.load(.timeRange)) ?? .invalid
         let segments = (try? await track.load(.segments)) ?? []
@@ -162,17 +177,43 @@ enum MediaFileInfoFetcher {
     /// プローブから取る（供給層と同じ素材情報）。長さが確定できない
     /// 場合は従来どおり再生時間 0 の情報へ倒す（本家で開けない素材の
     /// ContentLength 0 と同じ扱い）。
-    private static func probeFallback(url: URL) -> MediaFileInfo {
-        let resolution = FFmpegBinaryResolver().resolveAll()
-        guard let ffprobe = resolution.ffprobe,
-              let probe = try? FFmpegProber().probe(
-                  path: url.path, ffprobePath: ffprobe.path
-              ),
-              let info = probe.makeMediaFileInfo()
-        else {
+    /// プローブ自体が失敗した場合は共有台帳へ失敗を記録する
+    /// （Issue #70 段階4）。プローブ成功は復号成功ではないため、
+    /// 成功側の状態は変えない（判定はデコード経路が担う）。
+    private static func probeFallback(
+        url: URL, mediaSupport: FFmpegMediaSupport
+    ) -> MediaFileInfo {
+        let resolution = mediaSupport.resolution
+        guard let ffprobe = resolution.ffprobe else {
+            mediaSupport.registry.markFailed(
+                for: MediaMaterialKey(filePath: url.path),
+                failure: MediaAvailabilityFailure(
+                    kind: .ffmpegUnavailable,
+                    detail: "長さ取得のプローブに使う ffprobe が解決できない",
+                    occurredAt: Date()
+                )
+            )
             return MediaFileInfo(duration: .zero)
         }
-        return info
+        let probe: MediaProbeResult
+        do {
+            probe = try FFmpegProber().probe(
+                path: url.path, ffprobePath: ffprobe.path
+            )
+        } catch {
+            mediaSupport.registry.markFailed(
+                for: MediaMaterialKey(filePath: url.path),
+                failure: MediaAvailabilityFailure(
+                    kind: .unsupportedOrDecodeFailed,
+                    detail: "長さ取得のプローブで素材情報を読めなかった",
+                    occurredAt: Date()
+                )
+            )
+            return MediaFileInfo(duration: .zero)
+        }
+        // プローブ成功でも長さが確定できない素材（TS の長さ不定等）
+        // は失敗ではない。状態はデコード経路の判定に委ねる。
+        return probe.makeMediaFileInfo() ?? MediaFileInfo(duration: .zero)
     }
 
     /// 画像は寸法だけを読む。読めなくてもファイルが存在する以上は
