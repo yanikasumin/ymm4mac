@@ -4,16 +4,16 @@ import YMM4Core
 extension TimelineStripView {
     // MARK: - レイヤーラベル列
 
-    func layerLabels(rowCount: Int) -> some View {
+    /// ラベル列のコンテンツ。縦位置は専用 NSScrollView がキャンバス側へ
+    /// 同期させるため、ここではオフセットを持たず内容の高さだけを決める
+    /// （FE-TIMELINE 再構築。従来は表示側が手動オフセットで追従していた）。
+    func layerLabels(rowCount: Int, contentHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
             ForEach(0..<rowCount, id: \.self) { layer in
                 layerLabel(layer: layer)
             }
         }
-        .offset(y: -verticalOffset)
-        .frame(width: labelWidth, alignment: .leading)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .clipped()
+        .frame(width: labelWidth, height: contentHeight, alignment: .topLeading)
     }
 
     func layerLabel(layer: Int) -> some View {

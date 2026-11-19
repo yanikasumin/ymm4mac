@@ -22,9 +22,11 @@ public enum ItemPropertyMetadata {
         }
         if let video = item as? VideoItem {
             result += videoItemDescriptors(for: video)
+            result += audioDescriptors(volume: access(video, \.volume), pan: access(video, \.pan))
         }
         if let audio = item as? AudioItem {
             result += audioItemDescriptors(for: audio)
+            result += audioDescriptors(volume: access(audio, \.volume), pan: access(audio, \.pan))
         }
         if let image = item as? ImageItem {
             result += imageItemDescriptors(for: image)
@@ -256,6 +258,27 @@ public enum ItemPropertyMetadata {
                 id: "FilePath", displayName: "FilePath", group: "画像",
                 fileGroup: .image, showsThumbnail: true,
                 get: access.get, set: access.set
+            ),
+        ]
+    }
+
+    // MARK: - 音声プロパティ（VideoItem / AudioItem）
+
+    /// 音量・パンの記述子（グループ・表示名は `VoiceItem` の音声系と
+    /// 同一）。本家では両プロパティとも `VideoItem` / `AudioItem` の
+    /// 各具象型に宣言され、`AnimationSliderAttribute` も具象型ごとに
+    /// 付くため、スライダ仕様は具象型の宣言で解決される（FE-R8-001）。
+    private static func audioDescriptors(
+        volume: Access<Animation>, pan: Access<Animation>
+    ) -> [PropertyDescriptor] {
+        [
+            .animation(
+                id: "Volume", displayName: "音量", group: "音声",
+                get: volume.get, set: volume.set
+            ),
+            .animation(
+                id: "Pan", displayName: "パン", group: "音声",
+                get: pan.get, set: pan.set
             ),
         ]
     }

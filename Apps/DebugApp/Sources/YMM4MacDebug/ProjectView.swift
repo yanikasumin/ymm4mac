@@ -1272,7 +1272,16 @@ struct ProjectView: View {
     /// UI 側の選択（インデックス）を Core の選択へ同期する。
     /// Core の編集操作は `Timeline.selectedItems` を対象にするため、
     /// 操作の直前に必ず通す。
+    /// タイムライン側で作った複数選択（範囲選択・Commandトグル等）が
+    /// UI 選択のアイテムを含んでいる場合は、その複数選択を正として
+    /// 残す（FE-TIMELINE。再構築で Core 選択が複数を持てるようになった）。
+    /// 含んでいない場合（プレビュー側のクリック等で UI 選択だけが
+    /// 動いた場合）は従来どおり単一選択へ同期する。
     private func syncSelectionToTimeline(_ timeline: Timeline) {
+        if let item = selectedItem,
+           timeline.selectedItems.contains(where: { $0 === item }) {
+            return
+        }
         if let item = selectedItem {
             timeline.selectItems([item])
         } else {

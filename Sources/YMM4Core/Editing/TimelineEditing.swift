@@ -161,6 +161,20 @@ public extension Timeline {
         }
     }
 
+    /// 選択中アイテムとそのグループを、同じ位置へ衝突解決なしで複製する。
+    /// 本家 `UnsafeCloneWithoutCollision`（Alt ドラッグ複製の開始処理）。
+    ///
+    /// 複製は元の位置・レイヤーのまま追加され、選択は元の側に残る
+    /// （ドラッグで元の側が動き、複製が元の位置に残る形になる）。
+    /// グループ ID は複製側へ再発行されるため、複製は元のグループへ
+    /// 加わらない。FPS の再注入は `cloned()` が行う。
+    func unsafeCloneWithoutCollision() {
+        let clones = selectedAndGroupedItems.map { $0.cloned() }
+        if clones.isEmpty { return }
+        renewGroupIDs(clones)
+        addItems(clones)
+    }
+
     // MARK: - 追加（本家 TryAddItems）
 
     /// アイテム群を追加する。本家 `TryAddItems`。
