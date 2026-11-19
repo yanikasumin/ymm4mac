@@ -111,6 +111,14 @@ struct ProjectView: View {
     @State private var isPreviewHovering = false
     /// プレビュー表示倍率（フィット倍率への乗数。1.0 = フィット）。
     @State private var previewDisplayZoom: Double = 1.0
+    /// プレビューの表示中心オフセット（映像座標、映像中心からの
+    /// ずれ。本家 PreviewViewCenter、FE-PREVIEW-PAN）。プレビュー
+    /// セッションの表示状態であり、プロジェクトの編集データでは
+    /// ないため、未保存フラグ・Undo 履歴の対象にはしない。書き込み
+    /// は表示経路（スクロールバー、中ボタンパン、倍率・領域・映像
+    /// 寸法の変化に伴うクランプ同期）だけが行い、編集の記録経路
+    /// （EditRecorder / onEdited）は一切通らない。
+    @State private var previewViewCenter: CGPoint = .zero
     /// 音量（0–100%）とミュート。エンジンへ即時反映される。
     @State private var volume: Double = 100
     @State private var isMuted = false
@@ -567,7 +575,8 @@ struct ProjectView: View {
             let layout = PreviewCore.PreviewLayout(
                 areaSize: geometry.size,
                 videoSize: CGSize(width: info.width, height: info.height),
-                displayZoom: previewDisplayZoom
+                displayZoom: previewDisplayZoom,
+                viewCenter: previewViewCenter
             )
             let fittedWidth = layout.boxSize.width
             let fittedHeight = layout.boxSize.height
@@ -616,6 +625,26 @@ struct ProjectView: View {
                     // する（切り抜き時は原点が負になる）。
                     previewInteractionLayer(timeline: timeline, layout: layout)
 
+                    // スクロールバー（拡大時のみ、両軸。
+                    // FE-PREVIEW-PAN）。操作層より上に置き、帯の
+                    // 中ではバーの操作が優先される（本家もバー領域
+                    // ではアイテムの当たり判定を行わない）。
+                    if layout.hasHorizontalScrollBar
+                        || layout.hasVerticalScrollBar {
+                        PreviewScrollBarOverlay(
+                            layout: layout, viewCenter: $previewViewCenter
+                        )
+                        .frame(width: fittedWidth, height: fittedHeight)
+                    }
+
+                    // 中ボタンドラッグのパンの受け口。当たり判定を
+                    // 持たないイベントアダプタであり、操作経路は
+                    // 増やさない（FE-PREVIEW-PAN）。
+                    PreviewMiddleButtonPanAdapter(layout: layout) { center in
+                        previewViewCenter = center
+                    }
+                    .frame(width: fittedWidth, height: fittedHeight)
+
                     // 描画診断の通知（R6-06）。直近の描画で効果の失敗が
                     // あった場合だけ出す。詳細は診断タブの履歴を見る。
                     // 操作の邪魔をしないようヒットテストは無効にする。
@@ -643,6 +672,15 @@ struct ProjectView: View {
                 .clipped()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 倍率・領域・映像寸法の変化で表示中心が可動範囲から
+            // 外れたら、レイアウトがクランプした値へ同期する
+            // （本家は表示倍率の設定時と領域寸法の変更時に中心を
+            // 再クランプする。FE-PREVIEW-PAN）。
+            .onChange(of: layout) { _, newLayout in
+                if newLayout.viewCenter != previewViewCenter {
+                    previewViewCenter = newLayout.viewCenter
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onHover { isPreviewHovering = $0 }
@@ -1220,6 +1258,9 @@ struct ProjectView: View {
             .help(UIStrings.Transport.previewZoom)
             transportButton("aspectratio", help: UIStrings.Transport.fit) {
                 previewDisplayZoom = 1.0
+                // 倍率 1 では中心はクランプで 0 に固定されるが、
+                // 同期を待たずその場で戻す。
+                previewViewCenter = .zero
             }
 
             transportButton("backward.end.fill", help: UIStrings.Transport.seekToStart) {
@@ -1534,6 +1575,7 @@ struct ProjectView: View {
             timelineZoomPercent = 100
             layerRowHeight = 32
             previewDisplayZoom = 1.0
+            previewViewCenter = .zero
         case .userDictionaryChanged:
             // 辞書は描画の入力だがモデルには含まれないため、変更を
             // モデルの作り直しとして扱う（R18-02）。版数が上がること
