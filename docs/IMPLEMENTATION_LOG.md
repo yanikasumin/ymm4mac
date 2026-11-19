@@ -1481,6 +1481,12 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **追随修正（同ブランチで実施）。** 上記2箇所（`ProjectView.swift` の `writeAnimationProperty` / `writeItemPosition`）を `guard case .animation = descriptor.kind` のパターン照合へ置き換えた（意味は従来どおり「animation 種別か」の判定で不変）。Mac（同期先 ~/ymm4-work/fe-slider/YMM4Mac）で `Apps/DebugApp` の `swift build` 成功と `AnimationSliderSpecTests` の合格を確認済み。
 
+#### FE-R8-001 — VideoItem / AudioItem の Volume・Pan 記述子を追加（フロントエンド監査 Round 8、P2）
+
+**何を実装したか。** `ItemPropertyMetadata.descriptors(for:)` は音量・パンの記述子を `VoiceItem` にのみ追加しており、`volume` / `pan` をモデルとして保持する `VideoItem` と `AudioItem` ではインスペクタから編集できなかった（監査 Round 8 で FE-R8-001 として採番）。両型に対して、グループ「音声」・表示名「音量」「パン」（`VoiceItem` の音声系と同一）のアニメーション記述子を追加した。追加は共通ヘルパ `audioDescriptors(volume:pan:)` に寄せ、本家で両プロパティが各具象型に宣言され `AnimationSliderAttribute` も具象型ごとに付く実態に合わせ、スライダ仕様は FE-SLIDER-CORE の解決経路で具象型の宣言から引かれる。
+
+**検証。** Mac（同期先 ~/ymm4-work/fe-r8-001/YMM4Mac）で方式名フィルタ実行し全合格: `PropertyMetadataTests` 19 件（新規に両型の記述子の存在・get/set の結線・スライダ仕様の解決を固定）、`AnimationSliderSpecTests` 14 件、`EffectPropertyMetadataTests` 17 件。合計 50 件・失敗 0。AudioDrift は既定どおり除外。期待値（範囲・形式・単位）は抽出データ `slider-attributes.json` の両型 Volume / Pan で裏取り済み。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
