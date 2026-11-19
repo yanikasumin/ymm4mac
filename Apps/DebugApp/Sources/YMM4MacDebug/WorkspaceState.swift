@@ -209,9 +209,11 @@ final class WorkspaceState: ObservableObject {
     }
 
     /// プロジェクトを .ymmp として書き出す単一の経路。
-    /// 書き出し自体は YmmpCodec.save（一時ファイルへ書き出し →
-    /// 再読込で検証 → 本ファイルへコピー）が担うため、既存ファイルは
-    /// 検証済みの内容でのみ置き換わる。
+    /// 書き出し自体は YmmpCodec.save（保存先と同じフォルダの一時
+    /// ファイルへ書き出し → 再読込で検証 → 置換 API で安全に
+    /// 置き換え）が担うため、既存ファイルは検証済みの内容でのみ
+    /// 置き換わり、失敗時は元のファイルが残る。未保存フラグは
+    /// 成功した場合だけここで解除する（失敗時は立ったまま）。
     private func writeProject(to url: URL) -> Bool {
         do {
             try YmmpCodec.save(project, toFile: url.path)
