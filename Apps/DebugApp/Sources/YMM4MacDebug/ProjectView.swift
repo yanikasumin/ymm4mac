@@ -536,23 +536,16 @@ struct ProjectView: View {
     private func previewView(timeline: Timeline) -> some View {
         GeometryReader { geometry in
             let info = timeline.videoInfo
-            // 本家 PreviewViewModel の式そのまま:
-            // AreaZoom = min(領域幅/映像幅, 領域高/映像高)、
-            // 表示幅 = min(領域幅, 映像幅 × AreaZoom × 表示倍率)。
-            let areaScale = min(
-                geometry.size.width / Double(max(info.width, 1)),
-                geometry.size.height / Double(max(info.height, 1))
+            // 表示枠・描画寸法・座標変換は PreviewLayout が正本
+            // （本家 PreviewViewModel の表示枠の式 + 均一倍率での
+            // 描画と中心切り抜き。FE-R1-022）。
+            let layout = PreviewLayout(
+                areaSize: geometry.size,
+                videoSize: CGSize(width: info.width, height: info.height),
+                displayZoom: previewDisplayZoom
             )
-            let fittedWidth = min(
-                geometry.size.width,
-                Double(max(info.width, 1)) * areaScale * previewDisplayZoom
-            )
-            let fittedHeight = min(
-                geometry.size.height,
-                Double(max(info.height, 1)) * areaScale * previewDisplayZoom
-            )
-            // ヒットレイヤの逆変換に使う実効倍率（表示幅基準）。
-            let scale = fittedWidth / Double(max(info.width, 1))
+            let fittedWidth = layout.boxSize.width
+            let fittedHeight = layout.boxSize.height
 
             ZStack {
                 Rectangle()
@@ -560,47 +553,59 @@ struct ProjectView: View {
                     .frame(width: fittedWidth, height: fittedHeight)
                     .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 0)
 
-                if let previewImage {
-                    Image(previewImage, scale: 1, label: Text("合成プレビュー"))
-                        .resizable()
+                // 映像・操作層・診断通知は表示枠の中で重ね、映像が
+                // 枠からはみ出す分は切り抜く。
+                ZStack(alignment: .topLeading) {
+                    if let previewImage {
+                        Image(previewImage, scale: 1, label: Text("合成プレビュー"))
+                            .resizable()
+                            .frame(
+                                width: layout.imageSize.width,
+                                height: layout.imageSize.height
+                            )
+                            .offset(
+                                x: layout.imageOrigin.x, y: layout.imageOrigin.y
+                            )
+                    } else {
+                        Rectangle()
+                            .fill(.black)
+                            .frame(width: fittedWidth, height: fittedHeight)
+                        Text(
+                            previewError
+                                ?? (timeline.items.isEmpty ? "空のタイムライン" : "合成結果なし")
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.white)
                         .frame(width: fittedWidth, height: fittedHeight)
-                } else {
-                    Rectangle()
-                        .fill(.black)
-                        .frame(width: fittedWidth, height: fittedHeight)
-                    Text(
-                        previewError
-                            ?? (timeline.items.isEmpty ? "空のタイムライン" : "合成結果なし")
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.white)
-                }
-
-                // 選択輪郭とクリック選択／ドラッグ移動のヒットレイヤ。
-                // 映像の表示矩形とぴったり重ね、座標は表示倍率で
-                // 映像座標へ逆変換する（レターボックス分は含まない）。
-                previewInteractionLayer(timeline: timeline, scale: scale)
-                    .frame(width: fittedWidth, height: fittedHeight)
-
-                // 描画診断の通知（R6-06）。直近の描画で効果の失敗が
-                // あった場合だけ出す。詳細は診断タブの履歴を見る。
-                // 操作の邪魔をしないようヒットテストは無効にする。
-                if previewCurrentFailure {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Text("描画診断: 一部の効果の描画に失敗しました（詳細は下部の診断タブ）")
-                                .font(.caption)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.yellow.opacity(0.9))
-                                .foregroundStyle(.black)
-                            Spacer()
-                        }
                     }
-                    .frame(width: fittedWidth, height: fittedHeight)
-                    .allowsHitTesting(false)
+
+                    // 選択輪郭とクリック選択／ドラッグ移動のヒット
+                    // レイヤ。座標は PreviewLayout で映像座標へ変換
+                    // する（切り抜き時は原点が負になる）。
+                    previewInteractionLayer(timeline: timeline, layout: layout)
+
+                    // 描画診断の通知（R6-06）。直近の描画で効果の失敗が
+                    // あった場合だけ出す。詳細は診断タブの履歴を見る。
+                    // 操作の邪魔をしないようヒットテストは無効にする。
+                    if previewCurrentFailure {
+                        VStack {
+                            Spacer()
+                            HStack {
+                                Text("描画診断: 一部の効果の描画に失敗しました（詳細は下部の診断タブ）")
+                                    .font(.caption)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.yellow.opacity(0.9))
+                                    .foregroundStyle(.black)
+                                Spacer()
+                            }
+                        }
+                        .frame(width: fittedWidth, height: fittedHeight)
+                        .allowsHitTesting(false)
+                    }
                 }
+                .frame(width: fittedWidth, height: fittedHeight)
+                .clipped()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -634,26 +639,32 @@ struct ProjectView: View {
         var lastWrittenY: Double
     }
 
-    private func previewInteractionLayer(timeline: Timeline, scale: Double) -> some View {
-        ZStack(alignment: .topLeading) {
+    private func previewInteractionLayer(
+        timeline: Timeline, layout: PreviewLayout
+    ) -> some View {
+        let scale = layout.uniformScale
+        return ZStack(alignment: .topLeading) {
             if let item = selectedItem,
                let bounds = previewItemBounds(item: item, timeline: timeline) {
                 // 選択輪郭（白背景でも見えるよう黒と白の二重破線）。
+                let origin = layout.viewPoint(
+                    fromVideoPoint: CGPoint(x: bounds.minX, y: bounds.minY)
+                )
                 Rectangle()
                     .strokeBorder(style: StrokeStyle(lineWidth: 3, dash: [5, 4]))
                     .foregroundStyle(.black.opacity(0.55))
                     .frame(width: bounds.width * scale, height: bounds.height * scale)
-                    .offset(x: bounds.minX * scale, y: bounds.minY * scale)
+                    .offset(x: origin.x, y: origin.y)
                 Rectangle()
                     .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
                     .foregroundStyle(.white)
                     .frame(width: bounds.width * scale, height: bounds.height * scale)
-                    .offset(x: bounds.minX * scale, y: bounds.minY * scale)
+                    .offset(x: origin.x, y: origin.y)
             }
 
             Color.clear
                 .contentShape(Rectangle())
-                .gesture(previewDragGesture(timeline: timeline, scale: scale))
+                .gesture(previewDragGesture(timeline: timeline, layout: layout))
 
             // 操作ハンドル（本家: 四隅▢ = 拡大率、辺の中点◯ = 回転角）。
             // 移動ジェスチャの層より上に置き、ハンドル上では拡大率／
@@ -661,9 +672,12 @@ struct ProjectView: View {
             // 表示モードに従う（FE-R1-015）。
             if showsControlPoints, let item = selectedItem, !item.isLocked,
                let bounds = previewItemBounds(item: item, timeline: timeline) {
-                selectionHandles(item: item, bounds: bounds, scale: scale, timeline: timeline)
+                selectionHandles(
+                    item: item, bounds: bounds, layout: layout, timeline: timeline
+                )
             }
         }
+        .frame(width: layout.boxSize.width, height: layout.boxSize.height)
         .coordinateSpace(name: "previewArea")
     }
 
@@ -689,9 +703,8 @@ struct ProjectView: View {
 
     /// 選択アイテムの操作ハンドル群（表示は 9px、当たり判定は 18px）。
     private func selectionHandles(
-        item: BaseItem, bounds: CGRect, scale: Double, timeline: Timeline
+        item: BaseItem, bounds: CGRect, layout: PreviewLayout, timeline: Timeline
     ) -> some View {
-        let scale = CGFloat(scale)
         let corners: [(CGFloat, CGFloat)] = [
             (bounds.minX, bounds.minY), (bounds.maxX, bounds.minY),
             (bounds.minX, bounds.maxY), (bounds.maxX, bounds.maxY),
@@ -704,13 +717,13 @@ struct ProjectView: View {
             ForEach(Array(corners.enumerated()), id: \.offset) { _, point in
                 handleView(
                     isCorner: true, item: item, bounds: bounds,
-                    point: point, scale: scale, timeline: timeline
+                    point: point, layout: layout, timeline: timeline
                 )
             }
             ForEach(Array(edges.enumerated()), id: \.offset) { _, point in
                 handleView(
                     isCorner: false, item: item, bounds: bounds,
-                    point: point, scale: scale, timeline: timeline
+                    point: point, layout: layout, timeline: timeline
                 )
             }
         }
@@ -718,10 +731,13 @@ struct ProjectView: View {
 
     private func handleView(
         isCorner: Bool, item: BaseItem, bounds: CGRect,
-        point: (CGFloat, CGFloat), scale: CGFloat, timeline: Timeline
+        point: (CGFloat, CGFloat), layout: PreviewLayout, timeline: Timeline
     ) -> some View {
         let visualSize = 9.0
         let hitSize = 18.0
+        let viewPoint = layout.viewPoint(
+            fromVideoPoint: CGPoint(x: point.0, y: point.1)
+        )
         return ZStack {
             Color.clear
                 .frame(width: hitSize, height: hitSize)
@@ -739,13 +755,13 @@ struct ProjectView: View {
             .frame(width: visualSize, height: visualSize)
         }
         .offset(
-            x: point.0 * scale - hitSize / 2,
-            y: point.1 * scale - hitSize / 2
+            x: viewPoint.x - hitSize / 2,
+            y: viewPoint.y - hitSize / 2
         )
         .gesture(
             handleDragGesture(
                 kind: isCorner ? .zoom : .rotation,
-                item: item, bounds: bounds, scale: scale, timeline: timeline
+                item: item, bounds: bounds, layout: layout, timeline: timeline
             )
         )
         .help(isCorner ? "拡大率" : "回転角")
@@ -756,7 +772,7 @@ struct ProjectView: View {
     /// 移動ドラッグと同じ規則（writeAnimationValue の振り分け）。
     private func handleDragGesture(
         kind: HandleKind, item: BaseItem, bounds: CGRect,
-        scale: CGFloat, timeline: Timeline
+        layout: PreviewLayout, timeline: Timeline
     ) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named("previewArea"))
             .onChanged { value in
@@ -764,8 +780,8 @@ struct ProjectView: View {
                     guard let index = timeline.items.firstIndex(where: { $0 === item }),
                           let props = item as? VideoItemProperties else { return }
                     let context = animationContext(for: item, timeline: timeline)
-                    let center = CGPoint(
-                        x: bounds.midX * scale, y: bounds.midY * scale
+                    let center = layout.viewPoint(
+                        fromVideoPoint: CGPoint(x: bounds.midX, y: bounds.midY)
                     )
                     let dx = value.location.x - center.x
                     let dy = value.location.y - center.y
@@ -851,8 +867,11 @@ struct ProjectView: View {
         }
     }
 
-    private func previewDragGesture(timeline: Timeline, scale: Double) -> some Gesture {
-        DragGesture(minimumDistance: 0)
+    private func previewDragGesture(
+        timeline: Timeline, layout: PreviewLayout
+    ) -> some Gesture {
+        let scale = layout.uniformScale
+        return DragGesture(minimumDistance: 0)
             .onChanged { value in
                 if var drag = previewDrag {
                     guard drag.itemIndex >= 0,
@@ -875,10 +894,10 @@ struct ProjectView: View {
                 }
 
                 // 押し始め: 現在フレームで描画されているアイテムから
-                // 当たり判定し、選択とドラッグ基準を決める。
-                let startVideoPoint = CGPoint(
-                    x: value.startLocation.x / scale,
-                    y: value.startLocation.y / scale
+                // 当たり判定し、選択とドラッグ基準を決める。開始点は
+                // 切り抜きの原点を含む変換で映像座標へ戻す。
+                let startVideoPoint = layout.videoPoint(
+                    fromViewPoint: value.startLocation
                 )
                 if let index = hitTestPreviewItem(
                     timeline: timeline, videoPoint: startVideoPoint
