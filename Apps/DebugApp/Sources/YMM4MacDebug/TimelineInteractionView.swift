@@ -449,15 +449,21 @@ final class TimelineInteractionView: NSView {
             : item.length - grabbedStart.length
         var delta = totalFrames - applied
         if !modifierFlags.contains(.shift) {
-            // 素材内部の区切り（ContentSeparations）は Core に供給が無いため
-            // extraSnapPoints は空。本家の吸着先のうち現在フレーム・
+            // 追加の吸着先（素材内部の区切り）は本家どおり後端トリム
+            // のときだけ、ドラッグ中アイテム自身の区切りから供給する
+            // （本家 ResizeFootCommand。前端トリムの ResizeHeadCommand
+            // は区切りを使わない）。組み立ては Core の
+            // contentSeparationSnapPoints が担う。現在フレーム・
             // アイテム端・キーフレームは getSnappedDelta が候補に含む。
             delta = timeline.getSnappedDelta(
                 snapTargetFrames: [head ? item.frame : item.frame + item.length],
                 baseLayer: item.layer, frameDelta: delta,
                 frameDistance: snapFrameDistance,
                 layerDistance: snapLayerDistance,
-                ignoreItems: timeline.selectedAndGroupedItems)
+                ignoreItems: timeline.selectedAndGroupedItems,
+                extraSnapPoints: head ? [] : timeline.contentSeparationSnapPoints(
+                    for: item, frameDelta: delta,
+                    snapDistance: snapFrameDistance))
         }
         // 隣接影響は「設定の既定（未設定 = None） XOR Ctrl」で Stretch。
         // 設定画面が無いため既定は None 固定とし、Ctrl 中は Stretch。
@@ -485,12 +491,18 @@ final class TimelineInteractionView: NSView {
         let totalFrames = Int((point.x - startPoint.x) / pxPerFrame)
         var delta = totalFrames - (current - startKeyFrame)
         if !modifierFlags.contains(.shift) {
+            // 追加の吸着先は本家 DragDeltaCommand どおり、アイテム
+            // 自身の素材内部の区切りから供給する（後端トリムと同じ
+            // Core の組み立て）。
             delta = timeline.getSnappedDelta(
                 snapTargetFrames: [item.frame + current],
                 baseLayer: item.layer, frameDelta: delta,
                 frameDistance: snapFrameDistance,
                 layerDistance: snapLayerDistance,
-                ignoreItems: timeline.selectedAndGroupedItems)
+                ignoreItems: timeline.selectedAndGroupedItems,
+                extraSnapPoints: timeline.contentSeparationSnapPoints(
+                    for: item, frameDelta: delta,
+                    snapDistance: snapFrameDistance))
         }
         if item.moveKeyFrame(from: current, to: current + delta) {
             configuration.onModelChanged()
