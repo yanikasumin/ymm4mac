@@ -163,6 +163,12 @@ struct ProjectView: View {
             max(project.selectedTimelineIndex, 0),
             max(project.timelines.count - 1, 0)
         ))
+        // 前回終了時のレイアウトを初期値へ反映する（FE-R1-036）。
+        let layout = WorkspaceLayoutState.load()
+        _previewPaneHeight = State(initialValue: layout.previewPaneHeight)
+        _timelineZoomPercent = State(initialValue: layout.timelineZoomPercent)
+        _layerRowHeight = State(initialValue: layout.layerRowHeight)
+        _previewDisplayZoom = State(initialValue: layout.previewDisplayZoom)
     }
 
     /// ステータスバー等に出すプロジェクト名。
@@ -352,6 +358,22 @@ struct ProjectView: View {
             // ここでは立てない。
             project.selectedTimelineIndex = newIndex
         }
+        // レイアウト量が変わるたびにアプリ設定へ残す（FE-R1-036。
+        // 次回起動・次にプロジェクトを開いた際の初期値になる）。
+        .onChange(of: previewPaneHeight) { _, _ in persistLayout() }
+        .onChange(of: timelineZoomPercent) { _, _ in persistLayout() }
+        .onChange(of: layerRowHeight) { _, _ in persistLayout() }
+        .onChange(of: previewDisplayZoom) { _, _ in persistLayout() }
+    }
+
+    /// 現在のレイアウト量をアプリ設定へ保存する（FE-R1-036）。
+    private func persistLayout() {
+        WorkspaceLayoutState(
+            previewPaneHeight: previewPaneHeight,
+            timelineZoomPercent: timelineZoomPercent,
+            layerRowHeight: layerRowHeight,
+            previewDisplayZoom: previewDisplayZoom
+        ).save()
     }
 
     // MARK: - 上部ストリップ

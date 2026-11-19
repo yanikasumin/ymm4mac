@@ -186,6 +186,72 @@ final class WorkspaceState: ObservableObject {
     }
 }
 
+/// 画面レイアウトの保存・復元（FE-R1-036）。
+///
+/// 本家はドッキングレイアウト全体を AvalonDock の XML として
+/// プロジェクトの LayoutXml に保存し（MainModel.SaveProject）、
+/// 読み込み時に復元する（MainViewModel.RestoreLayout、失敗時は
+/// DefaultLayout）。Mac 側にドッキング基盤は無く、利用者が変えられる
+/// レイアウト量はレイアウトリセット（WorkspaceAction.resetLayout）が
+/// 対象とする4値だけのため、その保存先としてアプリ設定
+/// （UserDefaults）に前回終了時の値を残し、ProjectView の初期値へ
+/// 反映する。プロジェクトの LayoutXml は本家の XML をそのまま
+/// 往復保持し、Mac 側の値では上書きしない（本家で開いた際の
+/// レイアウトを壊さないため）。本家の LayoutXml 自体の解釈・適用は
+/// ドッキング基盤が無いため未対応（実装ログに未解決として記録）。
+struct WorkspaceLayoutState {
+    /// プレビュー帯の高さ（既定 400。スプリッタの可動域 120–900）。
+    var previewPaneHeight: CGFloat = 400
+    /// タイムラインのズーム倍率 %（既定 100。可動域 0.01–4000）。
+    var timelineZoomPercent: Double = 100
+    /// レイヤー行の高さ（既定 32。下限 14）。
+    var layerRowHeight: Double = 32
+    /// プレビュー表示倍率（既定 1.0。選択肢 0.25–4.0）。
+    var previewDisplayZoom: Double = 1.0
+
+    private static let keyPrefix = "YMM4Mac.Layout."
+
+    static func load() -> WorkspaceLayoutState {
+        let defaults = UserDefaults.standard
+        var state = WorkspaceLayoutState()
+        if defaults.object(forKey: keyPrefix + "previewPaneHeight") != nil {
+            state.previewPaneHeight = min(
+                max(CGFloat(defaults.double(forKey: keyPrefix + "previewPaneHeight")), 120),
+                900
+            )
+        }
+        if defaults.object(forKey: keyPrefix + "timelineZoomPercent") != nil {
+            state.timelineZoomPercent = min(
+                max(defaults.double(forKey: keyPrefix + "timelineZoomPercent"), 0.01),
+                4000
+            )
+        }
+        if defaults.object(forKey: keyPrefix + "layerRowHeight") != nil {
+            state.layerRowHeight = max(
+                defaults.double(forKey: keyPrefix + "layerRowHeight"), 14
+            )
+        }
+        if defaults.object(forKey: keyPrefix + "previewDisplayZoom") != nil {
+            state.previewDisplayZoom = min(
+                max(defaults.double(forKey: keyPrefix + "previewDisplayZoom"), 0.25),
+                4.0
+            )
+        }
+        return state
+    }
+
+    func save() {
+        let defaults = UserDefaults.standard
+        defaults.set(
+            Double(previewPaneHeight),
+            forKey: Self.keyPrefix + "previewPaneHeight"
+        )
+        defaults.set(timelineZoomPercent, forKey: Self.keyPrefix + "timelineZoomPercent")
+        defaults.set(layerRowHeight, forKey: Self.keyPrefix + "layerRowHeight")
+        defaults.set(previewDisplayZoom, forKey: Self.keyPrefix + "previewDisplayZoom")
+    }
+}
+
 /// メニューから ProjectView へ渡す編集アクション。
 /// ProjectView が現在のタイムライン・選択・再生ヘッドで実行する。
 /// 接続先（Core の編集操作等）が無いアクションはここに含めない
