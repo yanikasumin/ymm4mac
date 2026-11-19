@@ -26,7 +26,8 @@ public final class MetalExportVideoProvider: VideoFrameProviding {
     public init(
         timeline: Timeline, timelines: [Timeline], baseDirectory: URL?,
         dictionarySnapshot: UserDictionarySnapshot = UserDictionaryStore.shared
-            .snapshot()
+            .snapshot(),
+        mediaSupport: FFmpegMediaSupport? = nil
     ) throws {
         let devices = try MetalGraphicsDevices()
         self.devices = devices
@@ -37,6 +38,10 @@ public final class MetalExportVideoProvider: VideoFrameProviding {
         // 供給元は外側と内部合成器（シーン・合成グループ）で同じ
         // インスタンスを共有し、内部の子にも GPU エフェクトを効かせる
         // （MAC-0028。プレビュー側と同じ配線）。
+        // デコーダ選択（Issue #70 段階3）はプレビューと同じ基盤を
+        // 共有し、選択規則を分けない。未指定ならこの書き出し専用の
+        // 基盤を作る（規則自体は同じ）。
+        let support = mediaSupport ?? FFmpegMediaSupport()
         let effectProvider = MetalEffectPairProvider(devices: devices)
         let provider = MetalSourceProvider(
             devices: devices, baseDirectory: baseDirectory,
@@ -44,9 +49,10 @@ public final class MetalExportVideoProvider: VideoFrameProviding {
             timeline: timeline,
             effectProvider: effectProvider,
             tachieVolumeEnvelopeProvider: makeLipSyncEnvelopeProvider(
-                baseDirectory: baseDirectory
+                baseDirectory: baseDirectory, mediaSupport: support
             ),
-            dictionarySnapshot: dictionarySnapshot
+            dictionarySnapshot: dictionarySnapshot,
+            mediaSupport: support
         )
         self.composer = TimelineComposer(
             scene: TimelineScene(timeline: timeline),

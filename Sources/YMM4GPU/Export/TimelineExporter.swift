@@ -51,12 +51,18 @@ public final class TimelineExporter {
         loudness: LoudnessNormalizationSettings = LoudnessNormalizationSettings(),
         compressor: CompressorSettings = CompressorSettings()
     ) throws {
+        // デコーダ選択の基盤（Issue #70 段階3）は映像・音声で1つを
+        // 共有し、プレビューと同じ選択規則にする。
+        let mediaSupport = FFmpegMediaSupport()
         let videoProvider = try MetalExportVideoProvider(
-            timeline: timeline, timelines: timelines, baseDirectory: baseDirectory
+            timeline: timeline, timelines: timelines, baseDirectory: baseDirectory,
+            mediaSupport: mediaSupport
         )
         self.timeline = timeline
         self.videoProvider = videoProvider
-        let pcmProviderFactory = AVFoundationPCMProviderFactory(baseDirectory: baseDirectory)
+        let pcmProviderFactory = mediaSupport.makePCMProviderFactory(
+            baseDirectory: baseDirectory
+        )
         let factory = AudioSourceFactory(
             providerFactory: pcmProviderFactory,
             sceneTimelineResolver: { id in timelines.first { $0.id == id } },
@@ -84,8 +90,16 @@ public final class TimelineExporter {
         let settings = FFmpegExportSettings(
             videoInfo: timeline.videoInfo, length: range.count
         )
+        // 既定の "ffmpeg" はバイナリ解決層（Issue #70 段階1）で
+        // 解決できたパスへ寄せる。明示指定はそのまま使う。解決
+        // できない場合は従来どおり名前のまま渡し、writer 側の
+        // PATH 探索に委ねる。
+        let resolvedFFmpegPath = ffmpegPath == "ffmpeg"
+            ? (FFmpegBinaryResolver().resolve(tool: "ffmpeg")?.path ?? ffmpegPath)
+            : ffmpegPath
         let writer = try FFmpegProcessWriter(
-            settings: settings, outputPath: outputPath, executablePath: ffmpegPath
+            settings: settings, outputPath: outputPath,
+            executablePath: resolvedFFmpegPath
         )
         if let onProgress {
             videoProvider.onFrameRendered = { frame in

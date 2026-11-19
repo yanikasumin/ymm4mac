@@ -11,8 +11,9 @@ import YMM4Core
 /// フレームの表示区間はセッションが PTS 基準で確定したものを
 /// そのまま伝える。
 ///
-/// どの供給を使うかの選択（Factory 層）は次段階。本クラスは
-/// 接続点の実装であり、既存の生成経路からはまだ使われない。
+/// 供給の選択は段階3で Factory 層（`CompositeVideoDecoderSupply`、
+/// AVFoundation → FFmpeg）へ集約され、本供給はその第2候補として
+/// `FFmpegMediaSupport` 経由で生成経路へ接続されている。
 public final class FFmpegVideoDecoderSupply: MetalVideoDecoderSupply {
     private let devices: MetalGraphicsDevices
     private let manager: FFmpegVideoSessionManager
