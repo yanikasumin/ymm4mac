@@ -156,9 +156,20 @@ final class AnimationTests: XCTestCase {
 
     func testKeyFramesDistribute() {
         var keyFrames = KeyFrames(frames: [3, 7])
-        keyFrames.distribute(length: 30)
+        XCTAssertTrue(keyFrames.distribute(length: 30))
         // i * 30 / (2 + 1): 10, 20
         XCTAssertEqual(keyFrames.frames, [10, 20])
+    }
+
+    /// distribute の戻り値（FE-R33-131-02 の無変更判定用）:
+    /// 既に等間隔な場合と空の場合は false。
+    func testKeyFramesDistributeReportsNoChange() {
+        var distributed = KeyFrames(frames: [10, 20])
+        XCTAssertFalse(distributed.distribute(length: 30))
+        XCTAssertEqual(distributed.frames, [10, 20])
+        var empty = KeyFrames()
+        XCTAssertFalse(empty.distribute(length: 30))
+        XCTAssertEqual(empty.frames, [])
     }
 
     func testKeyFramesStaySortedAndUnique() {

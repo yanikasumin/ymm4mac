@@ -158,8 +158,11 @@ extension TimelineStripView {
             onEdited()
         }
         Button(UIStrings.Timeline.deleteAllTimelineSpaces) {
-            timeline.deleteAllTimelineSpaces()
-            onUnrecordedEdit()
+            // 空間の削除は Undo 記録の対象外。実際に詰めた場合だけ
+            // 未保存にする（単一空間の削除と同じ判定。FE-R33-131-02）。
+            if timeline.deleteAllTimelineSpaces() != 0 {
+                onUnrecordedEdit()
+            }
             onEdited()
         }
         Divider()
@@ -198,16 +201,22 @@ extension TimelineStripView {
             removeKeyFrame(item: item, atRelativeFrame: currentFrame - item.frame)
         }
         Button(UIStrings.Timeline.removeAllKeyFrames) {
-            item.removeAllKeyFrames()
             // キーフレーム操作は Undo 記録の対象外（FE-R32-131-03）。
-            onUnrecordedEdit()
+            // キーフレームが無いアイテムでは何も変わらないため、
+            // 実際に削除した場合だけ未保存にする（FE-R33-131-02）。
+            if item.removeAllKeyFrames() {
+                onUnrecordedEdit()
+            }
             onEdited()
         }
         Button(UIStrings.Timeline.distributeKeyFrames) {
             var keyFrames = item.keyFrames
-            keyFrames.distribute(length: item.length)
-            item.setKeyFrames(keyFrames)
-            onUnrecordedEdit()
+            // 既に等間隔なら位置は変わらないため、未保存にしない
+            // （FE-R33-131-02）。
+            if keyFrames.distribute(length: item.length) {
+                item.setKeyFrames(keyFrames)
+                onUnrecordedEdit()
+            }
             onEdited()
         }
         Divider()
@@ -337,6 +346,10 @@ extension TimelineStripView {
 
     /// レイヤーを挿入する（その位置以上のアイテムと設定を1つ下げる）。
     func insertLayer(at newLayer: Int) {
+        // ずれる対象が無ければモデルは何も変わらないため、未保存に
+        // しない（FE-R33-131-02）。
+        let changed = timeline.items.contains { $0.layer >= newLayer }
+            || timeline.layerSettings.items.contains { $0.layer >= newLayer }
         for item in timeline.items where item.layer >= newLayer {
             item.layer += 1
         }
@@ -344,7 +357,9 @@ extension TimelineStripView {
         timeline.refreshTimelineLengthAndMaxLayer()
         layerRevision += 1
         // レイヤー挿入は Undo 記録の対象外（FE-R32-131-03）。
-        onUnrecordedEdit()
+        if changed {
+            onUnrecordedEdit()
+        }
         onEdited()
     }
 
@@ -378,6 +393,12 @@ extension TimelineStripView {
     /// レイヤーの中身を隣と入れ替える。
     func swapLayers(_ a: Int, _ b: Int) {
         guard a != b else { return }
+        // どちらのレイヤーにも中身が無ければモデルは何も変わら
+        // ないため、未保存にしない（FE-R33-131-02）。
+        let changed = timeline.items.contains { $0.layer == a || $0.layer == b }
+            || timeline.layerSettings.items.contains {
+                $0.layer == a || $0.layer == b
+            }
         for item in timeline.items {
             if item.layer == a { item.layer = -1 }
         }
@@ -393,7 +414,9 @@ extension TimelineStripView {
         timeline.refreshTimelineLengthAndMaxLayer()
         layerRevision += 1
         // レイヤーの入れ替えは Undo 記録の対象外（FE-R32-131-03）。
-        onUnrecordedEdit()
+        if changed {
+            onUnrecordedEdit()
+        }
         onEdited()
     }
 
