@@ -85,12 +85,16 @@ public enum PropertyAccess {
     /// `setConstantValue` は補間種別を「なし」へ畳んで単一値にする
     /// （キーフレーム列は失われる）。`setFirstValue` は種別と値列を
     /// 保ったまま先頭値だけを書き換える。どちらも定義範囲へクランプする。
+    /// `restoreState` は種別変更の Undo/Redo 専用の復元経路であり、
+    /// 記録済みの状態（種別＋値列）を正規化なしで書き戻す。通常の
+    /// 編集経路では使わない（種別変更は `setType` を通す）。
     case animation(
         get: () -> Animation,
         setConstantValue: (Double) -> Void,
         setFirstValue: (Double) -> Void,
         setType: (AnimationType) -> Void,
-        setValueAtSegment: (Int, Double) -> Void
+        setValueAtSegment: (Int, Double) -> Void,
+        restoreState: (Animation.RecordedState) -> Void
     )
     /// 複合オブジェクト。子記述子は呼び出しのたびに現在の対象から
     /// 生成する（対象の内部型が切り替わりうるため、生成済みの列を
@@ -215,7 +219,7 @@ public struct PropertyDescriptor {
     }
 
     public var animationValue: Animation? {
-        guard case .animation(let get, _, _, _, _) = access else { return nil }
+        guard case .animation(let get, _, _, _, _, _) = access else { return nil }
         return get()
     }
 
@@ -229,7 +233,7 @@ public struct PropertyDescriptor {
     /// 定数値として書き込む（補間種別を「なし」へ畳む）。
     @discardableResult
     public func setAnimationConstantValue(_ value: Double) -> Bool {
-        guard case .animation(_, let setConstantValue, _, _, _) = access else { return false }
+        guard case .animation(_, let setConstantValue, _, _, _, _) = access else { return false }
         setConstantValue(value)
         return true
     }
@@ -237,7 +241,7 @@ public struct PropertyDescriptor {
     /// 先頭値だけを書き換える（補間種別と値列は保つ）。
     @discardableResult
     public func setAnimationFirstValue(_ value: Double) -> Bool {
-        guard case .animation(_, _, let setFirstValue, _, _) = access else { return false }
+        guard case .animation(_, _, let setFirstValue, _, _, _) = access else { return false }
         setFirstValue(value)
         return true
     }
@@ -246,19 +250,34 @@ public struct PropertyDescriptor {
     /// 他区間の値は保つ）。
     @discardableResult
     public func setAnimationValue(_ value: Double, atSegment segment: Int) -> Bool {
-        guard case .animation(_, _, _, _, let setValueAtSegment) = access else { return false }
+        guard case .animation(_, _, _, _, let setValueAtSegment, _) = access else { return false }
         setValueAtSegment(segment, value)
         return true
     }
 
-    /// 補間種別だけを書き換える（値列と定義範囲は保つ）。
-    /// 本家 AnimationSlider の種別切替メニュー（AnimationSliderMenuFactory）
-    /// が行う変更はこの種別のみであり、値列の増減はキーフレーム列の
-    /// 変更時に `Animation.setKeyFrames` 側で伝播する。
+    /// 補間種別を変更する。値列は Core の種別変更操作
+    /// （`Animation.changeAnimationType`、本家 EndEditAsync の種別
+    /// 変更分岐）で新しい種別へ組み替えられる（FE-R14-001）。
+    /// この変更は不可逆であるため、Undo では種別だけを戻すのでは
+    /// なく、変更前後の状態の写しを `restoreAnimationRecordedState`
+    /// で書き戻す形で記録する（FE-R23-127-01）。
     @discardableResult
     public func setAnimationType(_ type: AnimationType) -> Bool {
-        guard case .animation(_, _, _, let setType, _) = access else { return false }
+        guard case .animation(_, _, _, let setType, _, _) = access else { return false }
         setType(type)
+        return true
+    }
+
+    /// 記録済みの状態（種別＋値列）を正規化なしで書き戻す。
+    /// 種別変更の Undo/Redo 専用の復元経路であり、通常の編集では
+    /// 使わない（種別変更は `setAnimationType` を通す）。
+    @discardableResult
+    public func restoreAnimationRecordedState(
+        _ state: Animation.RecordedState
+    ) -> Bool {
+        guard case .animation(_, _, _, _, _, let restoreState) = access
+        else { return false }
+        restoreState(state)
         return true
     }
 
@@ -461,6 +480,11 @@ extension PropertyDescriptor {
                 setValueAtSegment: { segment, value in
                     var animation = get()
                     animation.setValue(value, atSegment: segment)
+                    set(animation)
+                },
+                restoreState: { state in
+                    var animation = get()
+                    animation.restoreRecordedState(state)
                     set(animation)
                 }
             )

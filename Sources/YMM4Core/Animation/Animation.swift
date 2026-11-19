@@ -587,6 +587,41 @@ public struct Animation: Equatable, Sendable {
         }
     }
 
+    // MARK: - 種別変更の Undo 記録用の状態写し
+
+    /// 種別変更の前後状態の写し（種別と値列のみ）。
+    ///
+    /// 種別変更（`changeAnimationType`）は値列を組み替える不可逆な
+    /// 操作であるため、Undo で種別だけを戻しても変更前の値列は
+    /// 復元できない。記録側はこの写しを変更前後の組として保持し、
+    /// Undo/Redo では `restoreRecordedState` でそのまま書き戻す
+    /// （FE-R23-127-01）。キーフレーム列・長さ等の評価文脈は所有
+    /// アイテムから注入されるもので種別変更では変わらないため、
+    /// 写しには含めない。
+    public struct RecordedState: Equatable, Sendable {
+        public var animationType: AnimationType
+        public var values: [AnimationValue]
+
+        public init(animationType: AnimationType, values: [AnimationValue]) {
+            self.animationType = animationType
+            self.values = values
+        }
+    }
+
+    /// 現在の種別と値列の写し（Undo 記録用）。
+    public var recordedState: RecordedState {
+        RecordedState(animationType: animationType, values: values)
+    }
+
+    /// 記録済みの状態をそのまま書き戻す。種別変更の Undo/Redo
+    /// 専用の復元経路であり、正規化（`changeAnimationType`）は
+    /// 再実行しない。通常の編集経路では使わない（種別変更は
+    /// `changeAnimationType`、値の書き込みは `setValue` 等を通す）。
+    public mutating func restoreRecordedState(_ state: RecordedState) {
+        animationType = state.animationType
+        values = state.values
+    }
+
     /// 再生ヘッド位置が属する区間のインデックス。区間は
     /// [0, キーフレーム..., 長さ] の境界で区切られ、`values` の
     /// インデックスと一致する（区間 i の開始値が values[i]）。
