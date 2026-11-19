@@ -204,10 +204,13 @@ struct YMM4MacDebugApp: App {
                     .disabled(true)
             }
 
-            // ツールメニュー（本家同梱ツールの並び）。各ツールの
-            // ウィンドウ／ドッキング基盤が無いため全て未接続。
+            // ツールメニュー（本家同梱ツールの並び）。キャラクター編集と
+            // ユーザー辞書は接続済み。その他のツールはウィンドウ／
+            // ドッキング基盤が無いため未接続。
             CommandMenu(UIStrings.Menu.tools) {
-                Button(UIStrings.Menu.characterEditor) {}.disabled(true)
+                Button(UIStrings.Menu.characterEditor) {
+                    workspace.isCharacterEditorPresented = true
+                }
                 Button(UIStrings.Menu.settingWindow) {}.disabled(true)
                 Button(UIStrings.Menu.toolSearch) {}.disabled(true)
                 Button(UIStrings.Menu.toolMaterials) {}.disabled(true)
