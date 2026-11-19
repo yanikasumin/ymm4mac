@@ -105,6 +105,22 @@ final class PropertyMetadataTests: XCTestCase {
         XCTAssertEqual(item.opacity.values.map(\.value), [80, 0])
     }
 
+    func testAnimationValueIndexEditWritesSecondValue() throws {
+        // FE-R13-003: 移動量指定の第2値は記述子のインデックス指定
+        // 経路で書く。クランプは呼び出し側が渡す対称範囲が効き、
+        // 定義範囲 [0, 100] では負値が 0 へ丸められない。
+        let item = TextItem()
+        item.x = Animation(
+            defaultValue: 0, minValue: 0, maxValue: 100,
+            animationType: .movementAmount,
+            values: [AnimationValue(10)]
+        )
+        let x = try descriptor(ItemPropertyMetadata.descriptors(for: item), "X")
+        XCTAssertTrue(x.setAnimationValue(-30, atValueIndex: 1, clampRange: -100...100))
+        XCTAssertEqual(item.x.values.map(\.value), [10, -30])
+        XCTAssertEqual(item.x.animationType, .movementAmount)
+    }
+
     func testAnimationEditClampsToDefinitionRange() throws {
         let item = TextItem()
         let opacity = try descriptor(ItemPropertyMetadata.descriptors(for: item), "Opacity")

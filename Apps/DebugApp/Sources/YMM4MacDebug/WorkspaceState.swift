@@ -41,6 +41,14 @@ final class WorkspaceState: ObservableObject {
     /// App の .commands はプロジェクトの編集状態を持たないため、
     /// 要求だけをここに積み、ProjectView が観測して実行する。
     @Published var pendingAction: (action: WorkspaceAction, sequence: Int)?
+    /// Undo 履歴の所有（プロジェクト＝ウィンドウごとに1つ）。
+    /// Core の EditCoordinator とアプリ層の記録集約（EditRecorder）を
+    /// ここで保持し、プロジェクトの差し替えと履歴のリセットを同じ
+    /// 順序で扱う（FE-UNDO-WIRING）。
+    let editRecorder = EditRecorder()
+    /// 履歴の状態が変わるたびに増える版数。ツールバー／メニューの
+    /// Undo・Redo の有効/無効を再評価させるための契機。
+    @Published private(set) var editHistoryRevision = 0
 
     /// 編集アクションを ProjectView へ要求する。
     func request(_ action: WorkspaceAction) {
@@ -97,6 +105,32 @@ final class WorkspaceState: ObservableObject {
         project = Self.makeNewProject()
         diagnostics = YmmpLoadDiagnostics()
         Self.current = self
+        // 履歴の変更を版数へ転送し、表示側の再評価を促す。Coordinator
+        // への投入は全て UI（メインアクタ）からのため、通知もその
+        // 文脈で届く前提で取り込む。
+        editRecorder.coordinator.onHistoryChanged = { [weak self] in
+            MainActor.assumeIsolated {
+                self?.editHistoryRevision += 1
+            }
+        }
+    }
+
+    /// Undo 履歴の統括（Core）。表示側の可否判定はこちらを見る。
+    var editCoordinator: EditCoordinator { editRecorder.coordinator }
+
+    /// ツールバー／メニューから Undo を実行できるか。履歴の有無に
+    /// 加え、編集中（未確定トランザクションあり）・復元中は不可と
+    /// する（監査 Round 7 の接続条件）。復元は同期実行であり、その
+    /// 間に表示が再評価されることは無いため、判定は未確定トラン
+    /// ザクションの有無で足りる（Coordinator 自身も状態に応じて
+    /// 実行を拒否する）。
+    var canPerformUndo: Bool {
+        editCoordinator.canUndo && editCoordinator.activeTransaction == nil
+    }
+
+    /// ツールバー／メニューから Redo を実行できるか（条件は Undo と同じ）。
+    var canPerformRedo: Bool {
+        editCoordinator.canRedo && editCoordinator.activeTransaction == nil
     }
 
     /// 起動時・「新規プロジェクト」で使う空プロジェクト。
@@ -111,6 +145,9 @@ final class WorkspaceState: ObservableObject {
 
     func newProject() {
         guard confirmDiscardUnsavedChanges() else { return }
+        // プロジェクトの差し替え前に、未確定トランザクションを
+        // 破棄してから履歴を消す（順序の統一。FE-UNDO-WIRING）。
+        editRecorder.resetForProjectSwitch()
         project = Self.makeNewProject()
         diagnostics = YmmpLoadDiagnostics()
         sourceURL = nil
@@ -127,6 +164,9 @@ final class WorkspaceState: ObservableObject {
         }
         do {
             let (loaded, loadedDiagnostics) = try YmmpCodec.load(fromFile: url.path)
+            // 読み込みが成功した場合だけ、差し替え前に履歴を
+            // リセットする（失敗時は旧プロジェクトと履歴を保つ）。
+            editRecorder.resetForProjectSwitch()
             project = loaded
             diagnostics = loadedDiagnostics
             sourceURL = url
@@ -257,6 +297,8 @@ struct WorkspaceLayoutState {
 /// 接続先（Core の編集操作等）が無いアクションはここに含めない
 /// （メニュー側で無効表示にし、理由は台帳に残す）。
 enum WorkspaceAction: Equatable {
+    case undo
+    case redo
     case addItem(AddItemKind)
     case splitAtCurrentPosition
     case deleteSelection

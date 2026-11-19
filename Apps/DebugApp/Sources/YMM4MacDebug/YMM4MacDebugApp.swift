@@ -107,7 +107,17 @@ struct YMM4MacDebugApp: App {
             }
 
             // 編集メニュー（本家のサブメニュー構成 —
-            // UI-FACTS-MENUS-CONTEXT.md §1.2）。
+            // UI-FACTS-MENUS-CONTEXT.md §1.2）。Undo/Redo は標準の
+            // UndoManager ではなく Core の EditCoordinator へ接続する
+            // （FE-UNDO-WIRING）。実行は ProjectView が担う。
+            CommandGroup(replacing: .undoRedo) {
+                Button(UIStrings.Toolbar.undo) { workspace.request(.undo) }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .disabled(!workspace.canPerformUndo)
+                Button(UIStrings.Toolbar.redo) { workspace.request(.redo) }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!workspace.canPerformRedo)
+            }
             CommandGroup(after: .undoRedo) {
                 Divider()
                 Button(UIStrings.Menu.splitAtCurrentPosition) {

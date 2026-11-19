@@ -1810,6 +1810,42 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **次の担当へ。** 単位リソースキー 38 件の実文字列は未解決のまま（FE-SLIDER-CORE から継続）。`ConditionalUnitAnimationSlider` 8 件も仕様なしのまま。ファイル参照（FE-R1-043、`PropertyKind.filePath`）は次単位。
 
+#### FE-R13-NUMERIC — アニメーション数値編集の残件（FE-R13-003 / FE-R13-004。FE-SLIDER-UI の分割残件）
+
+**本家規則の照合（逆コンパイル成果物で確認。根拠はファイル:行相当）。**
+
+- 確定処理（FE-R13-004）: 本家 `TextBoxSlider.FixValue`（TextBoxSlider.cs 末尾）は `digits = clamp((int)(1.0 / Delta / 10.0 + 1.0), 0, 15)` とし、`Math.Round(value, digits, MidpointRounding.AwayFromZero)` の後に `Math.Clamp(value, Min, Max)` する（丸め → クランプの順）。適用点はテキスト確定時（`InvokeEndEditForTextBox` が解釈できた数値へ `FixValue` を通す）と編集終了時（`OnEndEditing` が `Value = FixValue(Value)`。スライダ操作もこの経路で最終値が確定する）、および自動化経由の設定（`SetValueFromAutomation`）。
+- 桁数は表示書式の小数桁とは一致しない。Delta は属性が stringFormat から導出する（`AnimationSliderAttribute` / `TextBoxSliderAttribute` のコンストラクタ: "F<n>" → `Pow(0.1, n)`、"D" → 1）。式の実挙動: F0 → 1桁、F1 → 2桁、F3 以降は上限 15 桁。F2 は `Pow(0.1, 2)` が 0.01 ちょうどではなく 0.010000000000000002（0.1 の二乗に最も近い double）になるため式の値が 10.999… となり、切り捨てで **10桁**になる（Mac の Swift `pow` で実測して確認。本家も同じ Pow 経路のため同値になるはずだが、本家実機での桁数の直接確認は未実施）。
+- Min / Max はその値のスライダのものを使う。アニメーションでは `AnimationValueSliderViewModel` の MinValue / MaxValue = `Animation.MinValue / MaxValue` で、移動量指定の第2値だけは `AnimationSliderViewModel.UpdateAnimationValueViewModels` が基準範囲・絶対制限の双方を ±最大絶対値の対称範囲へ置き換える（Mac 側の `AnimationSliderScale.ranges(forValueAt:)` と同じ規則）。値の書き込み自体（`AnimationValueSliderViewModel.Value` setter）はクランプしない。
+- 仕様なしプロパティの扱い: 本家では `Animation` プロパティの編集コントロールは `AnimationSliderAttribute` が生成するものであり、属性が無いプロパティがどの編集経路で確定処理を受けるかは逆コンパイル成果物からは確認できなかった。そのため仕様なし項目では丸めを行わず、従来どおり記述子のクランプだけに委ねる（本単位の判断。未確認事項として残す）。
+
+**何を実装したか（FE-R13-004）。**
+
+- Core: `AnimationSliderScale.fixedValue(_:delta:minimum:maximum:)` を純粋関数として追加（Editing/AnimationSliderScale.swift）。式は本家のとおり再現し、`Int` 変換の溢れを避けるため Double のまま先に 0...15 へ頭打ちにする点だけ防御を足した。丸め規則は .NET `MidpointRounding.AwayFromZero` に対応する Swift の `.toNearestOrAwayFromZero` を使う（`.awayFromZero` は常に切り上げ方向で別物。当初こちらで実装してテストが落ち、原因を切り分けて修正した）。
+- 行側: `AnimationRowView.writeValue(_:segment:)` の入口で `fixedOnCommit` を通す。対象はテキスト確定とスライダの双方が通る集約経路であり、スライダは Mac では即時書き込みのためドラッグ中も同じ確定処理を通る（本家は編集終了時に1回。最終値は一致する）。クランプ範囲は定義範囲 [minValue, maxValue]。書き込み関数の構造（振り分けとコールバック経由の確定）は変えていないため、PR #126 の EditRecorder 接続点は維持される。
+- テスト: AnimationSliderScaleTests に5件追加（F0/F1/F2/F3 の桁数導出、丸め → クランプの順序）。Mac 実測で対象 88 件（AnimationSliderScaleTests 22、AnimationTests 19、PropertyMetadataTests 23、他フィルタ一致分）全て成功。
+
+**何を実装したか（FE-R13-003）。**
+
+- Core: `Animation.setValue(_:atValueIndex:clampRange:)` を追加（Animation/Animation.swift）。キーフレーム区間の `setValue(_:atSegment:)` は区間インデックスの上限がキーフレーム数であり、移動量指定（キーフレーム非対応）の第2値を書けないため、値インデックス専用の経路を分けた。値列が短い場合は読み取り側の代用規則（範囲外は末尾の値、無ければ既定値）と同じ値で実体化してから対象位置だけを書き換える。クランプ範囲は呼び出し側が渡す（第2値の対称範囲を定義範囲へ固定しないため）。
+- Core: `PropertyAccess.animation` に `setValueAtIndex` クロージャを追加し、記述子に `setAnimationValue(_:atValueIndex:clampRange:)` を追加（Editing/PropertyMetadata.swift）。構築は既存ファクトリ1箇所のみ。
+- 行側: `AnimationRowView` の body を縦積みへ変え、移動量指定のときだけ第2値の行（「移動量」ラベル＋数値入力＋単位＋スライダ）を追加した。スライダ範囲は `AnimationSliderScale.sliderRange(for:valueIndex: 1)`（対称置換済み）を再利用し、再実装していない。表示値は `editValue(of:valueIndex: 1)`、書き込みは `writeMovementAmount` が確定処理（FE-R13-004、対称範囲で丸め → クランプ）を通してから記述子のインデックス経路へ渡す。第2値の入力セッション（テキスト・未編集基準・フォーカス）は第1値と独立に持つ。仕様なし項目では第1値と同じくスライダを出さず数値入力のみ。
+- テスト: AnimationTests に4件（第2値への負値書き込み、短い値列の実体化、対称範囲でのクランプ、負インデックス無視）、PropertyMetadataTests に1件（記述子経由の書き込みが定義範囲で丸められないこと）を追加。Mac 実測は FE-R13-004 と同じ実行で全て成功。DebugApp の `swift build` も成功（224ステップ）。
+
+**手動検証チェックリスト（未実施。アプリ層のため目視確認が要る）。** (1) FE-R13-003: 移動量指定へ切り替えると第2値（移動量）の入力欄とスライダが出ること。(2) FE-R13-003: 第2値のスライダ範囲が ±の対称範囲であり、定義範囲が 0..100 の項目でも負の移動量をスライダ・数値入力の双方で設定できること。(3) FE-R13-003: 第2値を変えるとプレビューの動き（1フレームあたりの移動量）が変わること。(4) FE-R13-004: F1 の項目（例: 音量）で 1.234 と入力して確定すると 1.23 になること（Delta 由来の2桁）。(5) FE-R13-004: スライダをドラッグして離した後の値が同じ桁で丸まっていること。(6) FE-R13-003+004: 第2値へ 1.234 と入力して確定すると、対称範囲のまま 1.23 へ丸まること。
+
+**未確認事項。** 仕様なしプロパティに対する本家の確定処理の有無（上記のとおり確認できず、丸めなしとした）。F2 の桁数 10 は Mac 側の `pow` 実測に基づく推定であり、本家実機（Windows / .NET の `Math.Pow`）での直接確認は未実施。値列の正規化タイミングの差（FE-R14-001）は本単位でも扱っていない（第2値の書き込みは実体化を伴うが、種別切替時の正規化そのものは別単位）。
+
+**Round 25 処分（FE-R25-128-01 / 02 / 03）と main 統合。**
+
+- main 統合（3288d7a、PR #126 Undo 接続・PR #127 種別変更の正規化＋記録を含む）: `PropertyAccess.animation` は両側の要素を保持し、7要素（get / setConstantValue / setFirstValue / setType / setValueAtSegment / restoreState / setValueAtIndex）とした。`AnimationTypeMenuButton` の呼び出しは main 側の形（editRecorder / editTarget 引数つき）を正とし、本単位の旧い呼び出しでは上書きしていない（PR #127 の種別変更 Undo を保持）。第1値の書き込みは main の入口確認（記録可否の判定）と本単位の確定処理（FE-R13-004）の双方を通る形へ統合した（入口確認 → 確定処理 → 記述子書き込み → 実効値の読み戻し記録の順）。統合直後の状態で DebugApp のビルド成功を確認してから以下の処分へ入った。
+- FE-R25-128-01（P1）: 第2値の編集経路へ Undo を接続した。従来は記述子の `setAnimationValue(_:atValueIndex:clampRange:)` へ直接進み、記録も編集セッションも無かった。接続方式は第1値で成立している契約への準拠である: (1) テキスト確定は離散編集として入口確認（`EditRecorder.canRecordValueChange`、アプリ層の `editWriteAllowed`）を通し、記録できる場合だけモデルを変更してから記録する。(2) 第2値のスライダには第1値とは独立した `EditDragSession`（`movementSliderSession`）を設け、1ドラッグを履歴1エントリへまとめる。開始拒否されたドラッグは終了まで書き込み禁止のまま（FE-R21-126-01 と同じ規則）。(3) 履歴キーは対象キー＋「#movement」とし、第1値（#const / #first / #seg<n>）と種別変更（#type）から区別する。(4) 記録は第2値だけではなく変更前後の状態（種別＋値列、`Animation.RecordedState`）を一体で保持し、適用は記述子の復元経路（`restoreAnimationRecordedState`）でそのまま書き戻す。短い値列の実体化（値列の個数の変化）は編集の一部であり、値1つの記録では Undo で実体化前の個数へ戻せないため、種別変更の記録（FE-R23-127-01）と同じ考え方を採った。通常の値記録（第1値・区間値）とは記録の型が異なるため混ざらない。(5) `PropertyAccess.animation` の restoreState と setValueAtIndex は両方維持（上記の統合結果）。回帰テストとして AnimationMovementValueUndoTests を新設（4件）: [10, 5] → [10, -30] → Undo → Redo の往復、短い値列 [50] から第2値を実体化して書いた場合の完全復元（Undo で [50] の1個へ戻る）、セッション中の逐次書き込みが履歴1エントリへまとまること、他人のセッション有効中の離散編集の入口確認が拒否されること。アプリ層にテスト対象が無い点は従来どおり、記録手順を Core の記述子＋ EditRecorder で再現して固定した。
+- FE-R25-128-02（P2）: 種別切替直後の第2値の表示同期。`movementText` はビュー生成時に読み取り側の代用値（例: 定数 50 の先頭値）を取り込んで初期化されるため、種別を移動量指定へ切り替えて第2値の行が出現しても、行側の `.onChange(of: movementValue)` は初回表示では発火せず、テキスト欄に古い代用値（50）が残り得た（モデルの第2値は 0）。処分は監査の推奨どおりの同期方式とした: 行全体（body）の `.onChange(of: animationType)` で、種別が移動量指定へ変わった時点で `movementText` と基線 `movementUneditedText` を現在のモデル値から同期する（入力中は未確定の文字列を破棄しない）。基線も一緒に同期するのは、未編集のまま確定したときに古い代用値が書き戻されるのを防ぐためであり、FE バッチ1の数値欄の基線規則（未編集テキストを基線として保持する）と矛盾しない。専用ビューへの切り出し案は採らなかった: 第2値の状態（テキスト・基線・フォーカス・ドラッグセッション）は第1値と同じビューが所有する編集セッションの一部であり、切り出すとセッション状態の所有が分かれて既存の同期経路（行側の onChange 追随）と二重になるため、このファイルの既存の onChange 同期の形に揃える方が実コードに合う。
+- FE-R25-128-03（P3、記録のみ）: 極端に大きな値（例: 1e17 + 32）では、Swift 側の「倍率を掛けて丸めて割り戻す」方式（`AnimationSliderScale.fixedValue`）が .NET `Math.Round` の大きな値での早期返却（丸める桁より小さい小数部を持たない値はそのまま返す）と結果が異なり得る。今回は実装せず、既知の数値境界として記録に留める。通常のアニメーションプロパティの値域では実用上の影響が小さいという監査の評価を併記する。
+- 検証: Mac で DebugApp の `swift build` 成功。対象を絞った `swift test`（フィルタ Animation / PropertyMetadata / EditRecorder）で Executed 160 tests、0 failures（新規 AnimationMovementValueUndoTests 4件を含む。全スイート・AudioDriftTests は実行していない）。
+
+**手動検証チェックリストへの追加（未実施）。** (7) FE-R25-128-01: 移動量指定の第2値をテキスト入力で変えて Undo すると変更前の値へ戻り、Redo で再適用されること。(8) FE-R25-128-01: 第2値のスライダをドラッグして離すと履歴が1エントリだけ増え、1回の Undo でドラッグ開始前の値へ戻ること。(9) FE-R25-128-01: 値列が短い項目（例: 定数 50 から移動量指定へ切替）で第2値を設定して Undo すると、第2値が無かった状態へ戻ること。(10) FE-R25-128-02: 定数 50 の項目を移動量指定へ切り替えた直後、第2値の入力欄が 50 ではなくモデルの第2値（0）を表示すること。
+
 #### FE-FILEPATH — ファイル参照（FE-R1-043。監査 Round 2 設計の「ファイル参照」節の実装）
 
 **本家規則の照合（着工前に逆コンパイル成果物で確認。根拠はファイル:行）。**
@@ -1861,6 +1897,71 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 - 検証方式: アプリ層にはテストターゲットが無いため、確定手順（記録→調整→調整が起きた場合だけ再計算）を Core テストで再現し、キャッシュ整合の契約を固定した。MediaItemLengthTests へ4件追加: 調整だけではキャッシュが追随しないこと（再計算の必要性の根拠）、拡大（10秒→20秒でキャッシュ 300→600）、短縮（20秒→10秒で 600→300）、同長差し替え（調整なし・トリムとキャッシュ整合を保持）。いずれも確定後に `timeline.length == timeline.computeCurrentLength()` が成立することを確認する。残りは手動検証チェックリスト (8) で固定する。
 - 対象外として触っていないもの: FE-R16-002（別プロジェクト切り替え後の非同期継続）。別単位へ移管済み。
 - 検証: Mac（~/ymm4-work/fe-filepath/YMM4Mac）で Apps/DebugApp の `swift build` 成功。Core テストは方式名フィルタで実行し全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: MediaItemLengthTests 24 件（Round 16 の回帰試験で +4）、PropertyMetadataTests 20 件、EffectPropertyMetadataTests 17 件（方式名の部分一致で併せて実行）、TimelineEditingTests 20 件、TimelineEditingLengthTests 29 件。合計 110 件、失敗 0。手動検証チェックリスト (8) の追加分は未実施（目視確認待ち）。
+#### FE-R15-EDITEND — ファイル参照の編集終了時調整の残件（FE-R15-004 / FE-R15-006。IMPLEMENTED、Mac 検証済み）
+
+FE-FILEPATH 節で別単位へ移管した2件の処分。分岐 (3)（再生速度変更時の比率再計算）と FE-R15-006（エコー設定変更時の素材長再計算）を実装し、分岐 (2)（区切り終端追随）は供給が存在しないため設計メモのみとした。
+
+**本家規則の照合（着工前に逆コンパイル成果物で確認。根拠はファイル:行）。**
+
+- 編集終了時調整の全体（ItemEditorViewModel.cs:24-76 の `EditingValue`）: 基準値（旧 Frame / Layer / Length / 再生速度の先頭値 / 速度が定数か / ContentLength / OriginalContentLength、および区切り判定 `isLengthOnSeparator`）は編集開始時（`BeginEditCommand`）に捕捉され、`EndEdit` が else-if 連鎖で分岐する。(1) OriginalContentLength が変わった → `ResetLength(VideoInfo, resetContentOffset: true)`。(2) ContentLength が変わり、かつ `isLengthOnSeparator` → `ResetLength(VideoInfo)`。(3) 再生速度の先頭値が変わり、旧・新とも種別が「なし」（定数）→ 比率再計算。(1) は FE-FILEPATH で実装済み（`adjustLengthAfterFileChange`）。
+- 分岐 (3) の正確な規則（ItemEditorViewModel.cs:52-69）: 新速度 ≠ 0 のとき、消費量 = 旧速度が 0 なら `Length` そのもの、そうでなければ `Length × |旧速度| / 100`。新しい長さ = `(int)(消費量 / |新速度| × 100)`（double から int へのキャスト = 0 方向への切り捨て）。その後、長さが 1 未満なら 300 へ倒す（この判定は新速度が 0 で長さを換算しなかった場合にも走る）。符号反転（`旧速度 < 0` と `新速度 < 0` の排他）時は `ContentOffset = ContentLength − (ContentOffset + VideoInfo.GetTimeFrom(新しい長さ) × |旧速度| / 100)`。`GetTimeFrom` は `FrameTime.FrameToTime(frame, FPS)`（VideoInfo.cs:90-93）。付け替えには新しい長さと旧速度を使う。ContentOffset はクランプされない（負値になり得る）。
+- 区切り（ContentSeparations）の定義（IItem.cs:39、BaseItem.cs:192-213、VideoItem.cs:264-327、AudioItem.cs:264-327）: **素材ファイルの解析結果でも、アイテムの保持データでもなく、アイテムの現在値から都度計算されるプロパティ**である。入力は素材長（エコー尾込みの ContentLength と尾なしの実長）、ContentOffset、PlaybackRate2、Length、VideoFPS、IsLooped、エコー設定。動画・音声の override: ContentLength が Zero なら空。定数速度では区切りは「素材の終端（実長 × (i+1) − ContentOffset）/ |速度| × 100」（i はループ時の繰り返し分。非ループは1つ）と「最終位置 ＋ GetEchoLength() / |速度| × 100」（エコー有効時）。非定数速度では `PlaybackRateMap.EnumerateContentBoundaryCrossings`（ループ時）または `FindContentExhaustedTime` による素材消耗位置と、「最終位置 ＋ EchoEffect.AdditionalDuration（速度で割らない生の尾）」。基底（BaseItem）の規則は別で、定数時は `−ContentOffset + ContentLength × 先頭値`（先頭値の百分率をそのまま掛ける。本家の記述どおりに記録する）。EndEdit の `isLengthOnSeparator` は編集開始時点の値で計算され、区切りをフレーム換算（`FrameTime.TimeToFrame(time, fps)`）し、`Length + 1` を超えるものを打ち切ったうえで「いずれかの区切りフレームと Length の差が 1 以内」を見る（ItemEditorViewModel.cs:26）。
+- エコー再評価のタイミング（FE-R15-006）: 本家の `ContentLength` は取得プロパティで、ファイルの再生時間（FilePath 単位でキャッシュ）へ**取得時点のエコー設定**の尾を加える（VideoItem.cs:242-262、AudioItem.cs:243-262）。エコープロパティの setter は "ContentLength" と "ContentSeparations" の変更通知を出す（VideoItem.cs:176,192,208、AudioItem.cs:207,223,239）。つまり素材長の再計算はプロパティ変更の即時であり、長さ（Length）の追随だけが編集終了時の分岐 (2) 経由。SceneItem も同様にシーン長＋エコー尾の ContentLength を持つ（SceneItem.cs:63）。
+
+**分岐 (2) の扱い（設計メモ。実装しない）。**
+
+- Mac 側 Core に供給は存在しない: `ContentSeparations` 相当のプロパティは Sources 全体に無く（grep で 0 件。タイムライン単位でもスナップ対象として「Core に供給が無い」と記録済み）、`PlaybackRateMap` には `findContentExhaustedTime` はあるが `EnumerateContentBoundaryCrossings` 相当が無い。
+- 供給の新設に必要なもの: (a) `BaseItem` へ区切りの計算プロパティを追加すること（基底規則と動画・音声 override の2形。上記の本家規則どおり）。入力はすべて既存の保持値（originalContentLength / contentLength / contentOffset / playbackRate2 / length / videoFPS / isLooped / エコー設定）で足り、**新たな I/O や素材解析は不要**。(b) ループ＋非定数速度の場合に必要な `PlaybackRateMap.EnumerateContentBoundaryCrossings` 相当（素材境界を繰り返し横切る位置の列挙）。既存の `findContentExhaustedTime` は最初の消耗位置だけを返すため、その繰り返し適用か専用列挙が要る。(c) 分岐 (2) 本体は、編集開始時点の区切りで `isLengthOnSeparator` を捕捉する仕組みごと編集終了時調整へ組み込むこと（捕捉時点が編集開始である点が分岐 (3) の基準値捕捉と共通の土台になる）。(d) タイムラインのスナップ対象（タイムライン単位で未実装のまま残っている素材内部の区切り）も同じ供給を使うため、供給の新設はそちらと合わせて設計するのがよい。
+- したがって FE-R15-006 の長さ追随も分岐 (2) そのものであり、本単位では素材長の再計算までを実装し、長さ追随は供給新設の単位へ残す。代表的な未追随ケース: 長さを素材終端へ合わせてある（トリムしていない）アイテムでエコーを有効化しても、長さは旧素材長のままになる（本家では編集終了時に新しい素材長へ決め直される）。
+
+**何を実装したか。**
+
+- Core（`Editing/MediaItemLength.swift`）: `adjustLengthAfterPlaybackRateChange(previousFirstValue:previousIsConstant:fps:)` を追加（分岐 (3)。条件不成立・値不変では false、長さかオフセットを変えたら true を返し、呼び出し側のキャッシュ再計算判断に使う。FE-R16-001 と同じ契約）。`refreshContentLengthForEchoSettings()` を追加し、`recordMediaInfo` の素材長計算をこちらへ一本化した（規則の二重実装を避ける。素材長ゼロなら尾を付けない FE-R15-001 の規則を含む）。長さ自体は変えない（分岐 (2) 待ちである旨をドキュメントに明記）。
+- Core（`Items/VideoItem.swift` / `Items/AudioItem.swift`）: エコー3プロパティ（EchoIsEnabled / EchoInterval / EchoAttenuation）の didSet から `refreshContentLengthForEchoSettings()` を呼ぶ。これがエコー変更の検出点で、書き込み経路（デコード・将来の記述子・直接代入）を問わず追随する。デコード時は originalContentLength が常にゼロ（素材長は永続化されない）ため再計算はゼロのままで無害、複製（コーデック往復）も同じ。SceneItem は素材長の記録経路（recordMediaInfo）の対象外であり、本単位では対象外とした（シーン長の供給は別経路）。
+- アプリ層（接続は PR #122 のファイル参照と同じ型）: `AnimationRowView` に書き込み直前通知 `onAnimationWillChange`（`writeValue` の先頭で発火。スライダ・テキスト確定の両経路が通る単一点）と、セッション終了通知 `onEditSessionEnded`（テキスト入力のフォーカス喪失時 = 確定の後、スライダのドラッグ終了時 = `onEditingChanged` の false）を追加。`PropertyInspectorView` が両通知を子行へ伝播し、`ProjectView.itemDetail` だけが実ハンドラを渡す。`ProjectView` は再生速度の記述子（id "PlaybackRate2"）に限り、最初の書き込み直前に基準値（先頭値・定数か）を捕捉し（`capturePlaybackRateEditBaseline`。セッション内では上書きしない。本家の EditingValue と同じ）、セッション終了時に Core の分岐 (3) を実行して、変わればタイムライン長キャッシュを再計算する（`finishPlaybackRateEdit`）。記述子の書き込み関数自体の構造は変更していない（PR #126 のトランザクション接続と競合しない）。
+
+**本家との差分・未確認事項。**
+
+- セッションの粒度: 本家はアイテムエディタ全体の編集開始・終了（BeginEdit / EndEdit）で1回だが、Mac 側は行単位（フォーカス喪失 / ドラッグ終了）で1回。速度を 100 → 50 → 25 と分けて確定すると、本家は一括で ×(100/25)、こちらは ×(100/50) の後に ×(50/25) と2回に分かれ、切り捨ての分だけ最大で数フレームずれる場合がある。
+- アニメーション種別の変更（行内の種別メニュー）はセッション捕捉の対象外とした。種別だけを変えた直後の値編集では、本家（編集開始時点の種別で判定）とは分岐 (3) の可否が異なり得る。
+- 行が選択変更で破棄される場合、フォーカス喪失の通知が届かずセッション終了が発火しないことがある。その場合、基準値は保持されたままになり、次のセッション終了時にまとめて調整される（比率としては累積で正しいが、長さの追随が遅れる）。実機での発生有無は未確認。
+- 符号反転時のオフセット計算で、本家の `TimeSpan × double` の tick 丸め（.NET の演算子実装依存）は実機照合していない。こちらは tick を double 化して比例し Int64 へ切り捨てる。差は最大でも tick 単位（100ns）で、フレーム精度には届かない。
+- エコー設定のインスペクタ記述子は現状 Mac 側に存在しない（エコー3プロパティはモデルと保存だけがあり、UI から編集できない）。本単位の再計算はモデル層の検出までで、UI からの編集自体は記述子の追加が別途必要。
+
+**手動検証チェックリスト（未実施）。** (1) 動画・音声アイテムのインスペクタで再生速度（定数）を 100% → 50% へ変え、入力欄からフォーカスを外すと長さが 2 倍になること。スライダでドラッグした場合も、ドラッグを終えた時点で一度だけ長さが変わること。(2) 速度を負値へ反転させると、長さと ContentOffset が終端基準へ付け替わること（プレビューで素材の終端側が保たれること）。(3) 速度の種別が「なし」以外（直線移動など）では長さが変わらないこと。(4) 長さが変わったとき、タイムライン全体の長さ（スクロール範囲・書き出し範囲）が追随すること。(5) 速度変更後に保存→再読み込みしても、長さとオフセットが保持されること。
+
+**検証。** Mac（~/ymm4-work/fe-r15-editend/YMM4Mac）で Apps/DebugApp の `swift build` 成功（224 ステップ）。Core テストは方式名フィルタで実行し全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: MediaItemLengthTests 40 件（従来 24 件＋新規 16 件: エコー再計算 4 件 — 後からの有効化で素材長だけが追随し長さは不変、間隔・減衰の変更と無効化、素材長ゼロの保持、速度比例。分岐 (3) 12 件 — 比率換算の拡大・縮小、切り捨て、旧速度 0 の特殊分岐、新速度 0 で不変、1 未満で 300 へ、符号反転なしでオフセット不変、符号反転の付け替え（同率・倍率変更併用）、旧・新いずれか非定数での拒否、値不変での無動作）、関連スイート（YmmpCodecTests / VideoItemScopeTests / PropertyMetadataTests 系 / TimelineEditingTests / TimelineEditingLengthTests / ItemKeyFrameEditingTests）合計 135 件。いずれも失敗 0。全スイートは回していない。ARCHITECTURE.md のメディアアイテムのデータフローへ、分岐 (3) の接続とエコー再計算の経路を追記した。
+
+**監査 Round 27 の処分（FE-R27-129-01〜05）。**
+
+分岐 (3) の Core 数式は監査で全項目 PASS（作り直しなし）。指摘は「計算が実行される時点・分岐の優先関係・Undo の原子性」と周辺の不整合であり、本処分は main（3887f08、PR #126・#127・#128）統合のうえで接続を作り替えた。マージの競合は5ファイルで、アプリ層3ファイルは main 側の構造（Undo 接続済み）を正とし、本ブランチ固有の通知配線だけを新設計へ置換した（台帳と ARCHITECTURE は両側を統合）。
+
+- FE-R27-129-01（P1、編集終了時調整が Undo 記録に含まれない）: 再生速度の編集を「速度の値変更＋終了時調整が Undo/Redo 可能な一つの確定編集」へ作り替えた。行（`AnimationRowView`）が再生速度の記述子ではセッションを所有する: スライダはドラッグ開始で開始し、テキスト確定は開始→基点捕捉→書き込み→終了時調整→確定を1セッションとして同期的に完結させる。終了時調整はセッション確定の直前に `ProjectView.finishPlaybackRateEditSession` が実行し、長さ・オフセットの変更を同じセッション（トークン提示）へ記録する（対象キーは "Length" / "ContentOffset"、適用クロージャは配置値の書き戻しと同じく直後に `refreshTimelineLengthAndMaxLayer()` を呼ぶ）。調整は FixValue 確定後の実効値で行う（適用層が現在の先頭値を読むため、丸め前の要求値は使われない）。
+- FE-R27-129-02（P2、エコー有効中の速度変更が素材長へ反映されない）: 再計算の発火を `BaseItem.playbackRate2` の didSet へ集約した。エコーの尾は先頭値で比例するため、先頭値が変わる書き込みでは `refreshContentLengthForEchoSettings()` を呼ぶ。`Animation` は値型で、全書き込み経路（直接変更・記述子経由・Undo/Redo の適用・デコード）がこの setter を通るため、検出は分散しない。先頭値が変わらない書き込み（キーフレーム・文脈の伝播）では再計算しない。なお描画層の `MetalVideoSource` は素材を開く際に `contentLength` へ実 Duration を直接書く経路を持ち（`originalContentLength` を経由しない）、再計算の前提（素材本来の長さが正本）とは別経路である点は従来からの観測として残る（エコーの didSet も同じ前提で再計算していたため、本処分で新たに生じた不整合ではない）。
+- FE-R27-129-03（P2、基点の寿命）: 基点を Core の型 `PlaybackRateEditBaseline`（先頭値・定数判定・素材長・素材本来の長さ。監査の補足どおり本家の OldContentLength / OldOriginalContentLength を含む）へ切り出し、所有を行のセッション状態へ移した。旧実装の ProjectView 側の辞書は廃止。終了処理は一意に定めた: 同一プロジェクト内の選択変更・行の破棄は行の `.onDisappear` でセッションを「終了として確定」する（本家の編集画面を閉じる際の EndEdit に相当）。プロジェクト切替は PR #126 の規則どおりセッションが巻き戻しで破棄され、終了時ハンドラはトークンの失効（`canRecordValueChange` が false）を検出して調整自体を行わない。
+- FE-R27-129-04（P2、分岐 (1) と (3) の排他）: 分岐の優先を Core の適用層 `finishPlaybackRateEdit(baseline:fps:)` の一箇所へ集約した。素材本来の長さが基点から変わっていれば（編集中のファイル差し替え）、ファイル変更経路が既に長さを決め直しているため分岐 (3) を実行しない。分岐 (2) は従来どおり未実装（区切り供給待ち）で、基点には分岐 (2) の判定に要る素材長を含めてある。
+- FE-R27-129-05（P3、Int 変換のトラップ）: `adjustLengthAfterPlaybackRateChange` の換算結果に有限性と整数範囲の確認を入れ、範囲外（極小の新速度で商が溢れる場合）は 1 未満の場合と同じ既定の長さ（300）へ倒す。Mac 側の安全策であり、本家の範囲外キャストの結果とは照合していない。数式本体はこれ以外変更していない。
+- 統合時の接続条件（監査 Round 27 §6）への対応: 基点捕捉はセッション開始が受理された後・最初の書き込みより前だけ（開始拒否では捕捉しない。捕捉条件は「トークンを持つ、または記録先が無い構成」）。`PropertyInspectorView` と再帰的な `PropertyRowView` は editRecorder・editTargetOwner と新通知の双方を保持する。PR #128 の movementRow・movementSliderSession・#movement 記録と PR #127 の種別変更 #type 記録は変更していない（第2値の編集経路は再生速度セッションへ接続しておらず、分岐 (3) を誤発火させない）。
+- FE-R15-006 の扱い: 本処分で素材長再計算の不足（速度変更時の尾の再計算）が解消したため、「素材長再計算の統一」は部分完了とする。長さ（Length）の追随は分岐 (2) そのものであり、未実装を明示して ContentSeparations 供給の新設単位へ移管する。エコー設定のインスペクタ記述子が無い点も従来どおり別単位。
+- セッション粒度の注記: テキスト確定は確定ごとに1セッション（調整まで含む）となったため、速度を分けて確定した場合の切り捨ての累積は従来の記録（行単位で最大数フレーム）と同じ区分のままである。スライダはドラッグ全体で1回だけ調整する。
+
+**手動検証チェックリストへの追加（未実施）。** (6) 再生速度を 100% → 50% へ変えた直後に Undo すると、速度と長さが一緒に 100% / 300 フレームへ戻り、Redo で一緒に再適用されること。(7) 符号反転（100% → −50%）の Undo でオフセットも一緒に往復すること。(8) エコーを有効にしたまま速度だけを変えると、素材長（情報表示）がその場で変わること。(9) 速度の編集中にファイルを差し替えると、長さが二重に換算されないこと。(10) 速度のドラッグ中に別アイテムを選択すると、その編集が確定として扱われ（調整込み）、次のアイテムの編集へ基点が持ち越されないこと。
+
+**検証。** Mac（~/ymm4-work/fe-r15-editend/YMM4Mac）で統合直後・処分後の双方で Apps/DebugApp の `swift build` 成功。Core テストは方式名フィルタ（MediaItemLength / PlaybackRateEditSession / Animation / PropertyMetadata / EditRecorder）で実行し全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: 合計 216 件・失敗 0。内訳の新規分は MediaItemLengthTests 48 件（従来 40 件＋8 件: 速度だけの変更でのエコー再計算 2 件、範囲ガード 3 件、基点捕捉と分岐優先 3 件）と、監査の受け入れ試験 1〜8 を再現した PlaybackRateEditSessionTests 8 件（全件新規）。全スイートは回していない。
+
+**監査 Round 28 の処分（FE-R28-129-01）と記録（FE-R28-129-02）。**
+
+- FE-R28-129-01（P1、スライダ操作中のテキスト確定が既存セッションの所有トークンを失わせる）: 再入の機構は次のとおり。再生速度行は `sliderSession` をスライダとテキスト確定で共有し、`EditDragSession.begin(using:)` は状態を無条件に上書きしていた。(1) TextField に未確定の文字列が残ったまま (2) スライダ操作で `sliderSession = .owning(T)` になり、(3) フォーカス喪失で `commitPlaybackRateText` が再度 `begin` を呼ぶと、(4) `EditRecorder` は有効なセッション T があるため新しい開始を拒否し、(5) `begin` は状態だけを `.refused` へ上書きしてトークン T を失う。(6) ドラッグ終了時にも T を提示できず、記録側に未確定セッションが残り、後続の編集や Undo/Redo が継続的に拒否され得た。処分は2層で行った（`EditRecorder` の仕様は変更していない）。
+  - 土台（全行共通）: `EditDragSession.begin` は、既に自分が所有している場合に所有を維持したまま何もしないよう変更した。再入で所有を失う経路はこの1か所で断たれる。
+  - 再生速度行（統合方式を採用）: `commitPlaybackRateText` は新しいセッションを開始する前に状態を確認する。所有中なら、既存トークンを保持したままテキスト確定の書き込みをそのセッションへ統合する（新しい開始もセッション終了もしない。基点はドラッグ開始時点で捕捉済みであり、終了時調整と確定はドラッグ終了時に一度だけ行われる）。開始拒否のドラッグが進行中なら、テキスト確定を拒否し、所有状態には一切触らない（ドラッグは終了まで書き込み禁止のままで、表示は呼び出し側の `commit` が現在値へ戻す）。開始前なら従来どおり同期セッションで完結させる。統合方式を選んだ根拠: 拒否方式（ドラッグ中のテキスト確定を一律に捨てる）と違い、ユーザーが入力した値をドラッグ終了時の調整の対象として保持でき、本家の編集終了時調整（最終値で1回）がそのまま成立する。所有中のトークンを再度の begin で上書きしない・拒否されたテキスト編集がドラッグの所有権を破棄しない・ドラッグ終了で必ず確定または取消になる・Undo 履歴が速度・長さ・オフセットを一体で復元する、の4条件を満たす。
+  - 他行への波及確認: 同じ `begin` の無条件上書きが他行で同型の喪失を起こし得るかを確認した。具体的に同一セッションへ `begin` を2回呼ぶ経路は再生速度行のテキスト確定だけである。第1値のスライダ（`AnimationRowView.sliderSession`）・数値行・整数行・第2値の `movementSliderSession` は、テキスト確定が `begin` を呼ばずトークンなしの離散編集として入口で拒否されるため、所有は壊れない。プレビュー側の2セッション（`ProjectView` の移動・ハンドル）も、ドラッグ状態が nil のときだけ `begin` を呼ぶ構造で第2の呼び出し経路が無い。ただし終了通知の取りこぼし後に次のドラッグが始まる場合など、型として `begin` が所有中に再入する余地は全行に残っていたため、上記の土台の変更で一様に閉じた。
+  - 回帰テスト: PlaybackRateEditSessionTests へ受け入れ試験 9（スライダ所有中にテキスト確定が到着する順序）を追加した。ドラッグ開始→逐次書き込み→既存トークンでの統合書き込み→ドラッグ終了時の調整・確定を Core で再現し、履歴1エントリで速度・長さ・オフセットが Undo/Redo で一体に往復すること、未確定セッションが記録側に残らないこと、所有中の再入した開始が記録側で拒否されること（アプリ側は開始要求自体を送らない、という設計の前提）を固定した。アプリ層の状態分岐そのものはアプリ層にテスト対象が無いため従来どおり Core 再現で固定し、実機のイベント順序での発現は手動チェックリスト (11) で確認する。
+- FE-R28-129-02（P3、記録のみ・未実装）: 符号反転時のオフセット付け替え（`MediaItemLength.adjustLengthAfterPlaybackRateChange`）では、フレーム長の Int 変換には FE-R27-129-05 の範囲確認が入っているが、その後の時間変換には同等の確認が無い。具体的には `TimeSpanValue(seconds: FrameTime.time(fromFrame: length, fps: fps))` の tick 換算と、`Int64(Double(lengthTime.ticks) * |旧速度| / 100)` の変換である。極端な入力（例: 長さ 300 フレーム・旧速度 100%・新速度 −1e-12%）では新しい長さが約 3×10^16 フレームとなり Int の範囲内でも、30 FPS の tick 換算で Int64 の表現範囲（約 9.2×10^18 tick）を超えて実行時トラップが生じ得る。通常の UI 入力では FixValue の丸めによって到達しにくい条件であり、今回は別の数値境界として記録するに留め、実装はしない（FE-R27-129-05 とは別の境界である点に注意）。
+
+**手動検証チェックリストへの追加（未実施）。** (11) 再生速度の入力欄へ値を入力したまま（確定せず）スライダをドラッグし、その途中で入力欄のフォーカスが外れて確定が届く操作をした後も、ドラッグ終了で編集が1つの履歴エントリに確定し、Undo で速度・長さ・オフセットが一緒に巻き戻ること。続けて別の編集が通常どおり行えること（未確定セッションが残って拒否され続けないこと）。(12) 他のアイテムの編集セッションが有効な間に再生速度のスライダへ触れた（開始拒否）状態で入力欄の確定が届いても、ドラッグの書き込み禁止が維持され、終了後に通常の編集へ戻ること。(13) テキスト確定の統合が起きた場合、ドラッグ終了時の長さ調整が最終値（テキストで確定した値）で一度だけ行われること。
+
+**検証。** Mac（~/ymm4-work/fe-r15-editend/YMM4Mac）で Apps/DebugApp の `swift build` 成功。Core テストは方式名フィルタ（PlaybackRateEditSession / MediaItemLength / EditRecorder / Animation）で実行し全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: 合計 184 件・失敗 0（内訳の主要分は PlaybackRateEditSessionTests 9 件＝従来 8 件＋受け入れ試験 9、MediaItemLengthTests 48 件、EditRecorderTests 8 件、ほか Animation 系の一致分）。全スイートは回していない。
+
 
 #### FE-PREVIEW — プレビュー連携（フロントエンド監査 FE-R1-014 / 015 / 020 / 022 / 023 / 024 / 031 / 037）
 
@@ -1895,6 +1996,7 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 **手動検証チェックリスト（未実施）。** (1) レイヤーの目ボタンで非表示にすると、プレビューからそのレイヤーのアイテムが消え、再表示で戻ること。再生中も停止への遷移で反映されること。(2) コントロールポイント表示を「常に表示しない」にすると選択中でもハンドルが出ず、「マウスオーバー時」ではプレビューへカーソルを入れたときだけハンドルが出ること。(3) ロックしたアイテムはプレビューでクリックしても選択・移動できず、下に別のアイテムがあればそちらが掴めること。タイムライン上でキーフレームマーカーをドラッグしても動かないこと。(4) プレビュー倍率 200%・400% で映像の縦横比が崩れず、中央が拡大表示されること。選択輪郭とハンドルが見えている映像の位置と一致すること。(5) 合成で例外が起きる条件では、プレビューに理由を含む失敗文が出て、診断タブの履歴にも previewComposition の記録が残ること。(6) 倍率 200% で全画面のアイテムを選択したとき、映像の中心が表示枠の中心にあり、選択輪郭が映像の見えている範囲と一致し、アイテムをドラッグすると掴んだ位置からずれずに動き始めること（FE-R18-001）。(7) 倍率 400% でも同様に、映像中心・選択輪郭・ハンドルの表示位置が一致し、ハンドルのドラッグ開始位置と表示位置がずれないこと（FE-R18-001）。
 
 **未解決。** FE-R1-023（実描画矩形の供給経路の新設）と FE-R1-031（スナップショット生成の所有設計）は要設計判断として切り分け。拡大時のプレビューのパン、本家のコントローラ全種（エフェクト操作点・キーフレームマーカーのプレビュー表示）への対応は未実装。コンテキストメニュー操作に対するロック規則は本家確認待ちの申し送り。
+
 #### FE-UNDO-CORE — フロントエンド基盤（Undo/Redo）の Core 側新設（IMPLEMENTED、Mac 検証済み）
 
 フロントエンド監査 Round 2 の設計判断（FE-R2-DESIGN.md「Undo/Redo 基盤」）に基づき、履歴の土台だけを `Sources/YMM4Core/Editing/` へ新設した。アプリ層への接続と既存編集操作の移行は次単位で行う（本節の時点では参照元なし）。スナップショット方式は設計判断で不採用が確定しているため採っていない。
@@ -1953,3 +2055,96 @@ R6 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinato
 **手動検証チェックリスト（未実施）。** (1) 編集後に「新規プロジェクト」を選ぶと確認が出て、「キャンセル」で編集内容が残ること。(2) 確認で「保存」を選ぶと保存されてから新規プロジェクトになること。未保存プロジェクトでは保存ダイアログが出て、それをキャンセルすると確認へ戻ること。(3) 編集後に「開く」で確認が出て、「保存しない」で選んだファイルが開くこと。ファイル選択をキャンセルした場合は元のプロジェクトがそのまま残ること。(4) 編集後に保存すると、以後は新規・開くで確認が出ないこと。(5) 開いたファイルで編集して ⌘S を押すとダイアログが出ず、同じファイルが更新されること（更新時刻と内容で確認）。(6) 「名前を付けて保存…」で別ファイルへ保存した後は、⌘S がその新しいファイルへ上書きすること。(7) .ymmp をタイムラインへドロップしたときも、未保存なら確認が出ること。(8) 編集後にウィンドウを閉じる／⌘Q で確認が出て、「キャンセル」で終了しないこと。(9) シーンを切り替えて保存し、開き直すとそのシーンが表示されること（FE-R1-012）。(10) 表示中より前のシーンを削除しても表示中のシーンが変わらず、表示中のシーンを削除すると次のシーンが表示されること（FE-R1-013）。(11) プレビュー帯の高さ・ズーム・レイヤー行の高さ・プレビュー倍率を変えて再起動すると、前回のレイアウトで表示されること（FE-R1-036）。(12) 本家で作ったプロジェクト（LayoutXml 入り）を開いて保存しても、LayoutXml がそのまま保持されること。
 
 **未解決。** (a) FE-R1-036 の残り: 本家の LayoutXml（AvalonDock のドッキング配置そのもの）の解釈・適用は、Mac 側にドッキング基盤が無いため未対応。レイアウトメニューのプリセット保存・ツール表示切替（本家 DockingLayoutPreset 相当）も未接続のまま（ダイアログ単位の範囲）。(b) シーン削除時の確認: 本家はアイテムのあるシーンの削除で確認を出す（MainViewModel.DeleteSceneAsync、Texts.ConfirmDeleteMessage の OKCancel）が、FE-R1-013 の台帳範囲（選択の帳簿付け）外のため本単位では入れていない。観測した差分として記録する。(c) 破棄時のバックアップ作成（本家 CreateBackup）はバックアップ機能自体が無いため未対応。(d) 複数ウィンドウ時は `WorkspaceState.current` が最後に生成されたワークスペースを指すため、終了確認の対象が単一前提である（複数ウィンドウの重複実行は FE-R1-002 の範囲）。
+#### FE-R14-001 — アニメーション種別変更時の値列正規化を Core 操作として実装（フロントエンド監査 Round 14、P2）
+
+**症状。** Mac の記述子種別セッターは `animationType` を素の代入で書き換えるだけで値列を正規化しなかった。そのため、既定値 100 の拡大率を定数 50 にした状態で「ランダム移動」へ切り替えると、終端値が未実体化のまま残り、評価側の代用規則（不足分は既定値で補う）で 100 と評価され、表示・評価が 50→100 に化け得た。スライダ単位（FE-R13-002）で表示側の `AnimationSliderScale.activeValues` は本家の `ActiveValues`（既存の値だけを取る）に合わせたが、モデル側の値列そのものの正規化は未実装で残っていた（Round 13 で残存として記録、Round 14 で本件として採番）。
+
+**本家規則（逆コンパイル済みコードで確定。仕様抽出の参照に留め写経はしていない）。** 正規化は `Animation` 自身の編集終了処理にある: `BeginEdit`（`YukkuriMovieMaker.Commons/Animation.cs:600`）が旧種別を記録し、`EndEditAsync`（同 605–686）が編集終了時に値列を組み替える。有効な値の数は `GetActiveValueCount`（同 136–148。キーフレーム対応型 = キーフレーム数 + 2、なし = 1、それ以外 = 2）、`ActiveValues = Values.Take(GetActiveValueCount())`（同 85）。変換に使う長さは `Length`（同 47。`SetAnimationParameters`、同 754 で所有アイテムから注入）。種別変更時の分岐は次のとおり:
+
+- 新種別が「なし」: 先頭の値だけ残す（同 633–637）。
+- 旧種別が「なし」: 先頭だけ残し、移動量指定なら移動量 0 を追加、それ以外は先頭の値の複製を有効な値の数まで補う（同 638–644）。定数 50 → ランダム移動で終端値も 50 になるのはこの規則。
+- 旧種別が「移動量指定」: 開始値と移動量から、非対応の新種別なら終端値 = 開始値 + 移動量 × 長さ、キーフレーム対応なら等分位置へ線形に割り付け（同 645–658）。
+- 旧種別がキーフレーム非対応（ランダム移動・反復移動）: 移動量指定なら移動量 =（終了値 − 開始値）/ 長さ、キーフレーム対応なら開始値→終了値を等分位置へ線形に割り付け、非対応同士（ランダム ⇔ 反復）は値列不変（同 659–673）。
+- 旧種別がキーフレーム対応: 移動量指定なら移動量 =（値列の末尾の値 − 先頭の値）/ 長さ、非対応の新種別なら終端値 = 末尾の値、対応同士は値列不変（同 674–685）。
+
+**設計。** Mac の記述子書き込みは即時反映で編集セッション境界（BeginEdit/EndEdit）が無いため、監査 Round 14 の指定どおり「種別変更＋値列正規化」を1つの Core 操作 `Animation.changeAnimationType(to:)`（`Sources/YMM4Core/Animation/Animation.swift`）として実装し、記述子の種別セッター（`PropertyDescriptorFactory.animation` の `setType`、`Sources/YMM4Core/Editing/PropertyMetadata.swift`）は必ずこの操作を通す形にした。種別を直接書き換える他の経路は編集経路ではないことを確認済み: 形式層のデコード／複写（`AnimationCodecSupport`。読み込みデータは本家でも EndEdit を通らない）、GPU 層のパラメータ解釈（`MetalEffectProcessorsNoise`。描画用の解釈であり編集ではない）。定数値書き込み（`setConstantValue`）は種別「なし」＋単一値という正規化済みの状態を直接構築するため対象外とした。変換に使う長さは `Animation.length`（所有アイテムが `refreshAnimationContext` で伝播する注入値）で、本家の `Length` と同じ供給経路である。表示側の導出状態である `AnimationSliderScale` には触っていない（正規化はモデル側の操作であり、役割が異なる）。
+
+**本家との差異（意図的）。** (1) 本家 `EndEditAsync` の「種別不変」側分岐（有効な値の数への切り詰め・末尾値での補充、Animation.cs:608–632）は実装していない。Mac では値列の個数はキーフレーム追加・削除の連動（`insertKeyFrame` / `removeKeyFrame` / `removeAllKeyFrames`）と値書き込み（`setValue` の実体化）で維持されており、読み込みデータに超過分があっても評価は先頭 `activeValueCount` 個だけを使う。超過分を編集のたびに切り捨てると保存時の往復保全（未知・超過データの保持）を損なうため、種別変更時に限る正規化とした。(2) 値列が空の異常データでは本家は `Values.First()` 等で例外になるが、Mac 側は既定値で代用して処理を続ける（防御的な相違）。
+
+**テスト対応表**（`Tests/YMM4CoreTests/Animation/AnimationTypeChangeTests.swift`、15件）:
+
+| テスト | 本家分岐 |
+|---|---|
+| testNoneToRandomFillsEndValueWithFirstValue | 旧「なし」→ ランダム移動。監査の具体症状（既定値100・定数50 → 終端も50、評価も全区間50） |
+| testNoneToRepetitiveFillsEndValueWithFirstValue | 旧「なし」→ 繰り返し移動（同規則） |
+| testNoneToMovementAmountAppendsZeroAmount | 旧「なし」→ 移動量指定（移動量 0） |
+| testNoneToKeyFrameSupportedFillsAllValuesWithFirstValue | 旧「なし」→ キーフレーム対応（キーフレーム数 + 2 まで複製） |
+| testKeyFrameSupportedToNoneKeepsOnlyFirstValue | 新種別「なし」（先頭だけ残す） |
+| testMovementAmountToRandomConvertsEndValue | 旧・移動量指定 → 非対応（終端 = 開始 + 移動量 × 長さ） |
+| testMovementAmountToKeyFrameSupportedDistributesLinearly | 旧・移動量指定 → 対応（等分位置へ線形割付） |
+| testRandomToMovementAmountConvertsAmount | 旧・非対応 → 移動量指定（（終了 − 開始）/ 長さ） |
+| testRepetitiveToKeyFrameSupportedDistributesLinearly | 旧・繰り返し移動 → 対応（等分位置へ線形割付） |
+| testRandomToRepetitiveKeepsValues | 非対応同士は値列不変 |
+| testKeyFrameSupportedToMovementAmountUsesLastValue | 旧・対応 → 移動量指定（末尾の値を使用） |
+| testKeyFrameSupportedToRandomUsesLastValueAsEndValue | 旧・対応 → 非対応（終端 = 末尾の値） |
+| testKeyFrameSupportedToKeyFrameSupportedKeepsValues | 対応同士は値列不変 |
+| testSameTypeChangeIsNoOp | 同一種別は無操作 |
+| testDescriptorSetTypeNormalizesValues | 記述子セッターが操作を迂回しないことの固定 |
+
+検証: Mac（~/ymm4-work/fe-r14-001/YMM4Mac）で実施。`AnimationTypeChangeTests` 15件全合格。関連する既存スイートもフィルタ実行で全合格（`Animation|PropertyMetadata` フィルタで 131件・失敗0 — AnimationTests / AnimationEvaluationTests / AnimationTypeTests / AnimationSliderScaleTests / AnimationSliderSpecTests / PropertyMetadataTests / EffectPropertyMetadataTests を含む。`ItemKeyFrameEditingTests` 8件も別途全合格）。Apps/DebugApp の swift build 成功（224ステップ）。全スイートは回していない。ARCHITECTURE.md は処理経路・所有権の変更ではなく既存の記述子経路内部の操作差し替えのため未更新。
+
+##### Round 23 処分（FE-R23-127-01 P1 / FE-R23-127-02 P3）
+
+監査 Round 23（PR #127 レビュー）の指摘2件の処分。着手前に現在の main（`9226995`、PR #126 Undo 接続マージ済み）をマージした（競合は本ファイルの追記同士のみで、両側を保持して解消）。統合後に Mac で DebugApp ビルド成功を確認してから処分に入った。
+
+- **FE-R23-127-01（種別変更の Undo で元の値列が失われる）**: 本単位の `setAnimationType` は種別変更と値列の再構成を同時に行うが、PR #126 の Undo 記録（`AnimationTypeMenu`）は変更前後の種別だけを記録していた。再構成は一般に不可逆なため、Undo で種別だけ戻しても値列は戻らない（例: 直線移動 [0, 50, 100] →「なし」[0] → Undo で直線移動 [0, 0, 0] になる）。本単位の着地で、メニュー側コメントの前提（「現行の setter は種別の差し替えのみを行うため往復は対称」）が崩れたことが根本原因であり、当該コメントも実態へ修正した。処分: (1) Core に状態の写し `Animation.RecordedState`（種別＋値列のみ。キーフレーム列・長さ等の評価文脈は所有アイテムから注入されるもので種別変更では変わらないため含めない）と、その捕捉 `Animation.recordedState`・書き戻し `Animation.restoreRecordedState` を新設した。(2) 記述子に復元経路 `PropertyDescriptor.restoreAnimationRecordedState`（`PropertyAccess.animation` の `restoreState`）を追加した。正規化を伴わない書き戻しであり、用途（種別変更の Undo/Redo 専用）は名前とコメントで明示し、通常の編集経路（`setAnimationType`）とは分離した。併せて `setAnimationType` の従来のドキュメント（「種別だけを書き換える」）は FE-R14-001 以前の記述で実態とずれていたため修正した。(3) `AnimationTypeMenu` の記録を変更前後の `RecordedState` の一体記録へ変更した（対象キーは従来どおり `#type`。適用クロージャは復元経路を呼ぶ）。入口確認（`canRecordValueChange`）・記録の単一入口・セッション所有権の契約は変更していない。回帰テストは `Tests/YMM4CoreTests/Animation/AnimationTypeChangeUndoTests.swift`（4件）: キーフレーム対応型 [0, 50, 100] → 定数 → Undo/Redo（Undo の完全一致は、変換の再実行では [0, 0, 0] になるため、記録した状態の書き戻しであることの証明を兼ねる）、定数 50 → ランダム移動 → Undo/Redo、移動量指定（移動量 0.3・長さ 11。再導出すると浮動小数の丸めで 0.3 へ戻らない組合せ）→ キーフレーム対応型 → Undo/Redo、復元経路が記録した状態をそのまま書き込むこと（有効な値の数と異なる本数も正規化しない）。
+- **FE-R23-127-02（空の値リストへの防御の契約整理）**: 「値列自体を既定値で実体化する」側へ倒した。`changeAnimationType` の入口（種別の差し替え直後）で値列が空なら `[defaultValue]` を種として実体化してから再構成に入り、全分岐で結果の値列が空にならないことを保証する。再構成の数式・分岐自体には触っていない。本節の従来の記述（「本家との差異（意図的）」(2) の「既定値で代用して処理を続ける」）は、この保証に合わせて読み替える（コード側のドキュメントも更新済み）。テストは `AnimationTypeChangeTests` へ3件追加: 空 →「なし」で [既定値]、空のランダム移動 → 反復移動（値列を変えない分岐）でも [既定値]、空の「なし」→ 移動量指定で [既定値, 0]。
+
+検証（Round 23）: Mac（~/ymm4-work/fe-r14-001/YMM4Mac）で実施。統合直後と最終形で DebugApp の `swift build` 成功（228ステップ）。対象テストは全合格・失敗0 — `AnimationTypeChange|EditRecorder|PropertyMetadata` フィルタで69件（内訳: `AnimationTypeChangeTests` 18件（従来15件＋FE-R23-127-02 の3件）、`AnimationTypeChangeUndoTests` 4件（新規）、`EditRecorderTests` 8件、`PropertyMetadataTests` 22件、`EffectPropertyMetadataTests` 17件）、`Animation` フィルタで105件、`ItemKeyFrameEditing|EditCoordinator|UndoHistory|TimelineEditSnapshot|ListAddRemove` フィルタで48件。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。ARCHITECTURE.md は Undo のデータフローへ種別変更の記録と復元の1項を追加した（復元経路という処理経路の追加のため）。
+#### FE-UNDO-WIRING — Undo のアプリ層接続（IMPLEMENTED、Mac 検証済み）
+
+FE-UNDO-CORE（PR #119）で新設した履歴基盤をアプリ層へ接続し、主要な編集経路を明示トランザクション方式で移行した単位。設計条件は監査 Round 2 の設計判断（FE-R2-DESIGN.md「Undo/Redo 基盤」）と、Round 5・7・10 で蓄積された接続条件（リスト追加・削除は非 Action、適用クロージャは対象を強参照、ツールバーの可否は操作状態と組み合わせる、プロジェクト切り替え時はトランザクション終了→履歴消去の順序統一、ドラッグは接続側が開始の所有を追跡し開始失敗時はモデル変更へ進まない契約）に従う。既存の Core Undo API の契約変更は行っていない。
+
+- **Core 追加: リスト追加・削除コマンド**（`Sources/YMM4Core/Editing/ListAddRemoveCommand.swift`、新規）。本家 `UndoRedoAddRemoveListItemsCommand` は IsAction=false のため、`isAction = false` として値変更コマンドと同じ実行順グループに入れた（`ActionEditCommand` へ寄せると値変更との混在時に Undo の適用順が本家と逆転する。Round 5 の接続条件）。追加・削除された要素と変更適用時点の位置を保持し、Undo は追加分を同一性で取り除いて削除分を記録位置（範囲内へ丸め）へ戻し、Redo はその逆を行う。統合（canConnect）は常に行わない。リストの読み書きクロージャと保持要素が所有者・要素を強く保持する（接続側契約）。テストは `Tests/YMM4CoreTests/Editing/ListAddRemoveCommandTests.swift`（9件: 追加のみ／記録位置への復元／削除のみの元位置復元／混在／空コマンドの破棄／非統合／値変更との混在順序（登録逆順・正順）／同一要素の値変更＋削除／実 Timeline への適用と長さキャッシュの追随）。
+- **所有と集約点**（アプリ層、新規 `Apps/DebugApp/Sources/YMM4MacDebug/EditRecorder.swift`）: `EditRecorder` が `EditCoordinator` を保持し、記録の投入経路を1か所へ集約する。所有は `WorkspaceState`（プロジェクト＝ウィンドウごとに1つ）。履歴変更通知は `WorkspaceState.editHistoryRevision` へ転送し、ツールバー／メニューの再評価の契機とする。プロジェクト切り替え（`newProject` / `load`）では、プロジェクト差し替えの直前に `EditRecorder.resetForProjectSwitch()`（未確定セッションの破棄＝巻き戻し→ `UndoHistory.clear()`）を呼ぶ順序に統一した。読み込み失敗時はリセットしない（旧プロジェクトと履歴を保つ）。
+- **記録の3形態**（`EditRecorder`）: (1) 離散編集 — `recordValueChange` がセッション外ではその変更だけのトランザクションとして即時確定する。他経路のトランザクションが有効な間は記録しない。(2) 連続編集 — `beginSession` / `commitSession` / `cancelSession` によるセッション。開始の所有は接続側（呼び出し側のフラグと Recorder 内の所有トランザクション）で追跡し、自分が開始していないセッションの終了処理は行わない。(3) タイムライン構造変更 — `recordTimelineChange` と `TimelineEditSnapshot`（同じファイル）による変更前後の差分捕捉。メンバーシップの変化はリスト追加・削除コマンド1件にまとめ、残った要素の配置値（Frame / Layer / Length / ContentOffset / KeyFrames / IsLocked）の変化は値変更コマンドにする。操作層自身の復元用スナップショット（TimelineInteractionView）とは責務が別の、記録専用の写しである。
+- **ツールバー／メニュー**: タイムライン帯の編集ツールバーの Undo/Redo ボタンを実接続し、有効条件は `WorkspaceState.canPerformUndo` / `canPerformRedo`（履歴の有無＋未確定トランザクションが無いこと）とした。復元処理中は同期実行で表示が再評価される機会が無いため、状態判定は未確定トランザクションの有無で足りる（Coordinator 自身も状態に応じて実行を拒否する）。アプリメニューの編集メニューは標準の UndoManager を `CommandGroup(replacing: .undoRedo)` で置き換え、Cmd+Z / Cmd+Shift+Z を `WorkspaceAction.undo` / `.redo` 経由で ProjectView が実行する形にした。Undo/Redo の適用後は `afterHistoryApplied` が選択の写し戻し、インスペクタの作り直し（`historyApplyRevision` を識別子へ含める）、タイムライン帯の再評価（`displayRevision`）、プレビュー再合成を行う。
+- **移行した経路**:
+  - インスペクタ（アイテム）の記述子書き込み: 数値（確定＋スライダ）、整数（確定＋ステッパ＋スライダ）、テキスト（単一行・複数行）、列挙、真偽トグル、アニメーション値（定数／先頭値／区間の3経路をキーと適用クロージャで区別）、アニメーション種別（値列の正規化は FE-R14-001 の別単位であり、現行 setter は種別の差し替えのみで往復は対称）。スライダはドラッグ開始・終了（onEditingChanged）でセッションを開閉し、ドラッグ全体を1エントリにまとめる。複合オブジェクト／コレクションの子行も対象とし、対象キーは所有者（アイテム）＋記述子 ID の経路（親 ID とコレクション位置を含む）で区別する。
+  - プレビュー操作: 移動ドラッグとハンドル（拡大率／回転角）の書き込み（`ProjectView.writeAnimationValue` の集約点で捕捉）。ドラッグ開始でセッションを開き、終了で確定する。
+  - アイテムの追加・削除: ツールバー／メニュー／セリフ行からの追加（`addItem` / `addVoiceItem`）、メディア追加（ダイアログ・ドロップ共通の `addMediaFiles`。写しは確定直前に取る）、選択削除（`deleteSelection`）、削除して全て詰める（`deleteAndMoveAll`。後続アイテムのフレーム移動も差分に含まれる）、コンテキストメニューの追加（`addItemAtPlayhead`）・単体削除・レイヤー削除・右クリック移動（`moveMenuItem`）。
+  - タイムラインドラッグ: TimelineStripView の `onDragBegan` / `onDragCommitted` / `onDragCancelled` へ接続。開始でトランザクションと写しを取り、確定で差分を記録する。キャンセル時はモデルを操作層が復元済みのため、トランザクションの破棄のみ（こちらに蓄積されるコマンドは通常は無く、巻き戻しは空振りになる）。
+- **制約・意図的な差異**:
+  - ドラッグフックの形状（戻り値なし）上、`beginTransaction()` の拒否を操作層へ veto として返せない。開始が拒否されたセッションではドラッグ自体は通常どおり進み、その変更は無記録になる（接続側の所有追跡により、終了通知で他セッションを誤って確定・破棄することはない）。→ **Round 20（FE-R20-126-02）で解消**: フックは戻り値つきになり、拒否時は操作層がセッション自体を開始しない。
+  - レイヤー削除はアイテム列とレイヤー詰めを記録するが、`layerSettings` の付け替えは差分捕捉の対象外であり、Undo でレイヤー設定側は戻らない。→ **Round 20（FE-R20-126-04）で解消**: 差分捕捉に `layerSettings` を含め、完全復元に変更した。
+  - ファイル参照（FilePathRowView）は記録対象外。パスの書き換えに伴う素材情報の取得と長さ調整が非同期で対にならず、パスだけを戻すと長さと不整合になるため。
+  - 色（ColorPicker）は記録対象外。連続変化の開始・終了の信号が部品に無く、確定単位を切れないため。
+- **未移行の経路（Undo 対応と見せない）**: エフェクトのプロパティ編集と追加・削除（書き戻しが EffectInspectorRow のローカル状態に閉じており、Undo 適用時の書き戻しを保証できないため）、複合コレクションの要素追加・削除、分割（ツールバー／コンテキストメニュー）、グループ化／解除、ロック／クリッピングのトグル（ツールバー・メニュー・コンテキストメニュー経由。ドラッグ中のロックボタンの切替はタイムラインドラッグの差分に含まれる）、キーフレームの追加・削除・均等配置、空間の削除（deleteTimelineSpace 系）、シーンの追加・削除・名前変更、「動画の設定」ダイアログ（VideoInfo の変更）、レイヤーラベルの表示切替・音量、書き出し設定。これらは従来どおり動作するが履歴には残らない。
+- **手動検証チェックリスト（未実施）**: (1) 数値・アニメーション・テキストの各行で編集→ツールバー Undo で値と表示が戻り、Redo で再適用される。(2) スライダのドラッグが履歴1エントリで往復する。(3) アイテム追加・削除（ツールバー／コンテキストメニュー／レイヤー削除）が往復し、選択とプレビューが追随する。(4) タイムラインの移動・トリム・キーフレームドラッグが往復し、Escape のキャンセルでは履歴が増えない。(5) 背景クリック・範囲選択の Escape で履歴が誤作動しない。(6) プレビューの移動・拡大率・回転角ドラッグが往復する。(7) プロジェクトを開き直すと履歴が消え、旧プロジェクトのアイテムへ Undo が及ばない。(8) Cmd+Z / Cmd+Shift+Z と編集メニューの有効/無効が履歴と一致する。
+
+検証: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功（226ステップ）。対象を絞った `swift test` を2回に分けて実行し全合格 — `ListAddRemoveCommandTests` 9件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件（計34件）、および Editing 関連の既存スイート `TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件（計154件）、いずれも失敗0。全スイートは回していない。AudioDriftTests は実行していない（本単位は音声クロック・リサンプリング中核の変更を含まない）。アプリ層にはテスト対象が無いため、接続の振る舞いは上記の手動チェックリストで確認する（未実施）。
+
+##### Round 20 処分（FE-R20-126-01〜04、全て P1）
+
+PR #126 の Round 20 指摘4件の処分。着手前に現在の main（`5f9cd5d`、PR #125 プレビュー統合済み）をマージし、競合なし・DebugApp ビルド成功を確認してから処分に入った。Core の `EditCoordinator` / `UndoHistory` の既存契約は変更していない。
+
+- **配置の変更（処分の前提）**: `EditRecorder` と `TimelineEditSnapshot` をアプリ層（`Apps/DebugApp/Sources/YMM4MacDebug/EditRecorder.swift`）から Core（`Sources/YMM4Core/Editing/EditRecorder.swift` / `TimelineEditSnapshot.swift`）へ移設した。理由は、アプリ層にはテスト対象が無く、01〜03 のいずれも「記録の振る舞いを回帰テストで固定する」ことが修正条件に含まれていたためであり、監査の修正条件が例示した「形状差分の記録そのものを Core の型へ移す」形に合わせた。所有（`WorkspaceState` がプロジェクトごとに1つ保持）と接続の形は変えていない。ARCHITECTURE.md の構成・データフローも追随させた。
+- **FE-R20-126-01（Undo/Redo でタイムライン長キャッシュが壊れる）**: `TimelineEditSnapshot.recordDiff` の配置値コマンドの適用クロージャが、値を書き戻した直後に `timeline.refreshTimelineLengthAndMaxLayer()` を呼ぶ形にし、「差分コマンドの適用後はどの経路（Undo / Redo / キャンセルの巻き戻し）でも `length == computeCurrentLength()` と maxLayer の整合が保たれる」ことを型の契約とした。メンバーシップの書き戻しは従来から再計算していたため、欠けていたのは配置値側だった。回帰テストは `Tests/YMM4CoreTests/Editing/TimelineEditSnapshotTests.swift`（6件。監査の再現＝Frame=60・Length=30 の移動往復で長さ 90 が戻ること、レイヤー移動の maxLayer、先頭・末尾リサイズ、削除＋後続移動、レイヤー削除の完全復元）。
+- **FE-R20-126-04（レイヤー削除の Undo が操作全体を復元しない）**: 完全復元を選択した。`TimelineEditSnapshot` が `layerSettings.items` の変更前後を保持し、差分があれば列全体を1件の値変更コマンド（対象は Timeline、キー `LayerSettings`）として同じトランザクションへ登録する。根拠: `LayerSetting` は値型で `Equatable` であり、列全体の保持・比較・書き戻しが素直に成立する。型の都合で不合理という事情は無かったため、「記録対象から外す」代替は採らなかった。従来の制約（上記「制約・意図的な差異」の該当項）は解消として注記した。レイヤー挿入・入れ替え（`insertLayer` / `swapLayers`）は従来どおり未移行（記録対象外）のままであり、本処分の対象は記録済みのレイヤー削除のみ。
+- **FE-R20-126-02（トランザクション開始拒否後も編集が実行される）**: (1) `EditRecorder.recordTimelineChange` は開始拒否時に変更本体を実行せず false を返す形に変更し、全呼び出し箇所を追随させた — ProjectView の選択削除・削除して詰める（拒否時は後続処理も行わない）、追加系3経路（`addItem` / `addMediaFiles` / `addVoiceItem` は既存の `added` フラグで拒否時も実行されないことが保証される）、`TimelineContextMenus.recordTimelineEdit`（戻り値つきに変更。単体削除・右クリック移動・レイヤー削除は拒否時に選択復元・再描画を行わない）。(2) ドラッグ開始フックを戻り値つきへ変更した（`TimelineStripView.onDragBegan: () -> Bool` → `TimelineInteractionConfiguration.onDragBegan` → ProjectView `beginTimelineDragUndo` が記録開始の可否を返す）。拒否された場合、`TimelineInteractionView.mouseDown` はセッション自体を開始しない（複製・衝突解決・移動のいずれも起こらず、終了通知も送らない）。クリック選択だけは残す — 根拠: 選択は本家でも Undo の対象外の状態であり、監査の修正条件も「モデルを変更しない扱いは従来どおりでよい」としている。ロックボタンのセッションも同じ経路で開始されるため、拒否時は MouseUp のロック切替も行われない（モデル変更を伴うため一貫する）。(3) テストの分担: Core で固定できる部分（拒否時に本体が実行されず、モデル・履歴とも不変）は `EditRecorderTests` に追加した。ドラッグの veto はアプリ層（AppKit のマウス処理）にテスト対象が無いため、コード形状（フックの戻り値を mouseDown の分岐で消費し、開始処理より前に畳む）で固定し、下記の手動チェックリストへ追加した。
+- **FE-R20-126-03（別の編集が進行中のセッションへ混入する）**: セッションに所有権トークン（`EditSessionToken`、`beginSession` が発行）を結び付けた。確定・破棄・差分投入（`sessionTransaction(for:)`）はトークン一致の場合だけ作用する。`recordValueChange` はセッション有効中は所有者のトークンを提示した記録だけを受け付ける（入口をすり抜けた投入への二重の防壁）。モデル変更の防止は入口確認 `canRecordValueChange(sessionToken:)` が担い、全書き込み経路を追随させた: インスペクタ各行（数値・整数・テキスト・複数行・列挙は離散として入口確認、スライダ3種は自セッションのトークンを各書き込みで提示）、真偽トグル、アニメーション種別メニュー、プレビュー操作（`ProjectView.writeAnimationValue` の集約点で入口確認し、移動・拡大率・回転角の各ドラッグが自セッションのトークンを渡す）、タイムラインドラッグ（所有フラグをトークン保持へ置換）。影響する呼び出し箇所は `recordValueChange` / `recordDescriptorValueChange` / セッション開閉の全箇所を grep で洗い出して追随させた（残存する旧 API 呼び出しは無い）。記録先（EditRecorder）が無い構成では従来どおり無記録で書き込む（入口確認は記録先が在る場合にだけ効く）。回帰テストは `EditRecorderTests`（所有者の蓄積と1エントリ化、非所有者の投入が履歴へ混入しないこと、失効トークンの無効、確定・破棄のトークン照合、離散編集の即時記録）。
+- **残る制約**: ドラッグ veto とアプリ層の入口確認の配線は、アプリ層にテスト対象が無いため自動テストでは固定できていない（Core 側の契約はテスト済み）。実機での確認項目として手動チェックリストへ追加する: (9) レイヤー削除を Undo すると、レイヤー名・色・表示状態とアイテムが一体で戻り、Redo で再び削除状態になる。(10) スライダのドラッグ中に他の編集部品（数値確定・トグル・種別変更）が値を変えない（実操作ではドラッグ中の同時操作はほぼ発生しないため、コード形状での固定が主で、再現できた場合のみ確認する）。(11) タイムラインドラッグの開始拒否時にアイテムが複製・移動しない（同上、競合状態の再現が前提）。
+
+検証（Round 20）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。統合直後・各処分の節目・最終形で DebugApp の `swift build` 成功。最終形の対象テストは Editing 関連12スイート計199件・失敗0（内訳: `EditRecorderTests` 5件・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+##### Round 21 処分（FE-R21-126-01、P1）
+
+PR #126 の Round 21 新規指摘「失効したセッショントークンが再び編集を許可する」の処分。Round 20 の FE-R20-126-03 は有効セッション中の所有権照合までは処分できていたが、入口確認 `canRecordValueChange` のセッション不存在分岐が、提示されたトークンの有効性も Coordinator の操作状態も見ていなかった（`coordinator.activeTransaction == nil` のみで判定）。`EditCoordinator` / `UndoHistory` の既存の操作契約（開始・確定・キャンセル・Undo/Redo の可否と意味）は変更していない。追加したのは読み取り専用の照会1件のみである。
+
+- **契約（監査の指定どおり）**: (a) Core が idle かつセッションなしのときは、トークンなしの離散編集のみ許可する。(b) セッション有効時は現在の所有者トークンを持つ編集のみ許可する（Round 20 から不変）。(c) セッション終了・取消・プロジェクト切り替え後は、失効トークンによる編集を拒否する（セッション不存在時に非 nil トークンを提示されたら拒否）。(d) Coordinator が復元処理中（キャンセルの巻き戻し中）・編集中のときは、すべての新規編集を拒否する。(e) UI のドラッグ開始拒否後は、そのドラッグが終了するまで書き込み禁止のままにする。
+- **Core 側の処分**: 受け付け可否の判定を `EditRecorder.acceptsValueChange(sessionToken:)` の1か所へ寄せ、入口確認（`canRecordValueChange`）と記録側（`recordValueChange`）が同じ判定を共有する形にした（両者で結論がずれない）。セッション不存在分岐は「非 nil トークンは失効として拒否」＋「`EditCoordinator.isIdle`（新規の読み取り専用照会。操作状態が `.idle` の場合だけ真）で本当に idle かを確認する」に変更した。従来判定（`activeTransaction == nil`）は復元処理中も真になるため、巻き戻しの適用クロージャから再入した編集が入口を通り、記録だけが開始拒否で破棄される不整合があった。`isIdle` の追加は読み取り専用の照会であり、Coordinator の既存契約は変えていない。なお Undo/Redo の適用中は Coordinator の操作状態は idle のままで、記録の抑制は従来どおり `UndoHistory.isApplying` が担う（PR #119 の契約、本処分では不変）。
+- **UI 側の処分**: ドラッグ／スライダの状態を表す `EditDragSession`（開始前 `idle`・所有中 `owning(token)`・開始拒否 `refused`）をアプリ層の共通部品として新設した（`PropertyEditorRows.swift`、記録ヘルパー `editWriteAllowed` の隣）。開始拒否になったドラッグは `refused` を保持し、`writeAllowed` が常に false を返すため、他のセッションが終了してもそのドラッグの継続書き込みがトークンなしの離散編集として受理されることはない。付け替えた経路: スライダ3種（数値・整数・アニメーションの各行。状態変数を `sliderSessionToken` から `sliderSession` へ置換）、プレビューの移動ドラッグとハンドルドラッグ（拡大率・回転角。`previewDragSession` / `handleDragSession` へ置換し、集約点 `writeAnimationValue` は生トークンではなく `EditDragSession` を受けて入口確認と記録トークンの提示を行う）。タイムラインドラッグは Round 20 の veto 形状（開始フックが可否を返し、拒否時は操作層がセッション自体を開始しない）により、拒否されたドラッグの継続書き込みという形自体が存在しないため付け替え対象外（差分記録は確定時にトークン照合つきで行われる）。記録先（EditRecorder）が無い構成では従来どおり無記録で書き込む（`begin(using: nil)` は開始前のまま）。
+- **テストの分担**: Core で固定できる部分は `EditRecorderTests` に3件追加した — 失効トークンの拒否（確定で閉じた場合。入口・記録の双方と、トークンなし離散編集が過剰に拒否されないこと）、失効トークンの拒否（破棄で閉じた場合とプロジェクト切り替えで破棄された場合。切り替え時の巻き戻しと履歴消去を含む）、復元処理中の編集拒否（キャンセルの巻き戻しの適用クロージャから再入し、入口確認が false を返し記録も受理されないこと。再入を再現するコマンドで検証）。「拒否されたドラッグの継続書き込み」については、Core 側で固定できるのは提示トークンの扱い（失効トークンの拒否・復元中の拒否）までであり、ドラッグ側が `refused` 状態を保持して書き込み自体を行わない部分はアプリ層のコード形状で固定する（アプリ層にテスト対象が無いため）。手動チェックリストへの追加: (12) スライダのドラッグが開始拒否された状態（他のセッション有効中にドラッグを開始）を再現できた場合、そのドラッグを継続しても値が変わらず、他のセッション終了後も変わらないこと（競合状態の再現が前提で、コード形状での固定が主）。
+- **残る論点（本処分の範囲外として明記）**: プロジェクト切り替え後の遅延イベントのうち、トークンを提示する経路は本契約で断たれる。トークンを持たない離散編集の遅延イベントはビューの破棄（プロジェクト切り替えで画面が作り直される既存構造）に依存しており、本処分では扱っていない。
+
+検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
