@@ -359,7 +359,7 @@ public enum ItemPropertyMetadata {
         ]
     }
 
-    // MARK: - VoiceItem 固有
+    // MARK: - VoiceItem 固有／部分装飾（TextItem と共有）
 
     private static func voiceDescriptors(for voice: VoiceItem) -> [PropertyDescriptor] {
         var result: [PropertyDescriptor] = [
@@ -367,7 +367,9 @@ public enum ItemPropertyMetadata {
                 id: "Serif", displayName: "セリフ", group: "音声", multiline: true,
                 get: { voice.serif }, set: { voice.serif = $0 }
             ),
-            decorationsDescriptor(for: voice),
+            decorationsDescriptor(
+                group: "音声", decorations: access(voice, \.decorations)
+            ),
             .animation(
                 id: "Volume", displayName: "音量", group: "音声",
                 get: { voice.volume }, set: { voice.volume = $0 }
@@ -416,14 +418,18 @@ public enum ItemPropertyMetadata {
         return result
     }
 
-    /// セリフの部分装飾（本家 `VoiceItem.Decorations`）。
+    /// テキストの部分装飾（本家 `VoiceItem.Decorations` /
+    /// `TextItem.Decorations`）。両アイテムで同じ構造のため、
+    /// 装飾列へのアクセスとグループを受け取る形で共有する。
     ///
-    /// 本家では `Display` 属性が無く、セリフのリッチテキスト編集の
-    /// 中で選択範囲へ装飾を適用して編集する。Mac にはリッチテキスト
-    /// 編集部品が無いため、本単位では編集経路をインスペクタの
+    /// 本家では両方とも `Display` 属性が無く、本文のリッチテキスト
+    /// 編集の中で選択範囲へ装飾を適用して編集する（VoiceItem は
+    /// セリフ欄、TextItem は `Text` の `RichTextEditor` 属性が
+    /// `DecorationPropertyName = "Decorations"` を指す）。Mac には
+    /// リッチテキスト編集部品が無いため、編集経路をインスペクタの
     /// コレクション記述子で提供する（要素の追加・削除と項目別編集）。
-    /// セリフの直後に置くのは、本家で装飾がセリフ編集の一部である
-    /// ことに対応する。
+    /// 本文の直後に置くのは、本家で装飾が本文編集の一部であること
+    /// と、宣言順（本文 → Decorations → 外観）に対応する。
     ///
     /// 子記述子へ出すのは非オプショナルの項目のみとする。
     /// `Foreground` / `DecorationColor`（`Color?`）と
@@ -436,37 +442,47 @@ public enum ItemPropertyMetadata {
     /// 表示名は `VoiceItem*Name` に根拠があるもの（太字・
     /// イタリック・下線・打ち消し線・フォント）はその文言を使い、
     /// 根拠が無いものはプロパティ名そのままにする。
-    private static func decorationsDescriptor(for voice: VoiceItem) -> PropertyDescriptor {
+    private static func decorationsDescriptor(
+        group: String, decorations: Access<[TextDecoration]>
+    ) -> PropertyDescriptor {
         .collection(
-            id: "Decorations", displayName: "Decorations", group: "音声",
-            count: { voice.decorations.count },
-            elements: { index in decorationChildren(of: voice, at: index) },
+            id: "Decorations", displayName: "Decorations", group: group,
+            count: { decorations.get().count },
+            elements: { index in
+                decorationChildren(decorations: decorations, group: group, at: index)
+            },
             insert: {
-                voice.decorations.append(TextDecoration(start: 0, length: 0))
+                var values = decorations.get()
+                values.append(TextDecoration(start: 0, length: 0))
+                decorations.set(values)
                 return true
             },
             remove: { index in
-                guard voice.decorations.indices.contains(index) else { return false }
-                voice.decorations.remove(at: index)
+                var values = decorations.get()
+                guard values.indices.contains(index) else { return false }
+                values.remove(at: index)
+                decorations.set(values)
                 return true
             }
         )
     }
 
     private static func decorationChildren(
-        of voice: VoiceItem, at index: Int
+        decorations: Access<[TextDecoration]>, group: String, at index: Int
     ) -> [PropertyDescriptor] {
-        guard voice.decorations.indices.contains(index) else { return [] }
-        let group = "音声"
+        guard decorations.get().indices.contains(index) else { return [] }
         // 要素は値型のため、読み書きは位置経由で行う。削除と競合して
         // 位置が無効になった読み取りは既定値、書き込みは何もしない。
         func read<T>(_ keyPath: KeyPath<TextDecoration, T>, fallback: T) -> T {
-            voice.decorations.indices.contains(index)
-                ? voice.decorations[index][keyPath: keyPath] : fallback
+            let values = decorations.get()
+            return values.indices.contains(index)
+                ? values[index][keyPath: keyPath] : fallback
         }
         func write<T>(_ keyPath: WritableKeyPath<TextDecoration, T>, _ newValue: T) {
-            guard voice.decorations.indices.contains(index) else { return }
-            voice.decorations[index][keyPath: keyPath] = newValue
+            var values = decorations.get()
+            guard values.indices.contains(index) else { return }
+            values[index][keyPath: keyPath] = newValue
+            decorations.set(values)
         }
         return [
             .integer(
@@ -548,6 +564,12 @@ public enum ItemPropertyMetadata {
             .text(
                 id: "Text", displayName: "テキスト", group: "テキスト", multiline: true,
                 get: { text.text }, set: { text.text = $0 }
+            ),
+            // 本家では `Text` の `RichTextEditor` 属性が装飾の編集先を
+            // 指し、宣言順も Text の直後（外観一式より前）。VoiceItem
+            // 側と同じく本文と同じグループへ本文の直後に置く。
+            decorationsDescriptor(
+                group: "テキスト", decorations: access(text, \.decorations)
             ),
         ]
         result += appearanceDescriptors(group: "フォント", accesses: appearanceAccesses(of: text))
