@@ -270,21 +270,26 @@ struct AnimationRowView: View {
         self.onEdited = onEdited
         let animation = descriptor.animationValue
         let value: Double
-        if let animation,
-           animation.animationType.isKeyFrameSupported,
-           !animation.keyFrames.frames.isEmpty {
-            // キーフレームがある場合は、再生ヘッドの属する区間の
-            // 開始値を表示する（編集対象と一致させる）。
-            let segment = animation.segmentIndex(atFrame: animationContext.frame)
-            value = animation.values.indices.contains(segment)
-                ? animation.values[segment].value
-                : (animation.values.last?.value ?? animation.defaultValue)
+        if let animation {
+            // 初期表示は編集対象値（キーフレームがある場合は再生
+            // ヘッドの属する区間の開始値、それ以外は先頭値）。
+            // 再生ヘッド位置での評価値ではない（FE-R13-001）。
+            let segment = animation.animationType.isKeyFrameSupported
+                && !animation.keyFrames.frames.isEmpty
+                ? animation.segmentIndex(atFrame: animationContext.frame)
+                : 0
+            value = AnimationSliderScale.editValue(of: animation, valueIndex: segment)
         } else {
-            value = animation.map { animationContext.value(of: $0) } ?? 0
+            value = 0
         }
-        let initial = formatNumber(value)
+        let initial = formatAnimationValue(value, spec: descriptor.sliderSpec)
         _text = State(initialValue: initial)
         _uneditedText = State(initialValue: initial)
+    }
+
+    /// 表示用の数値書式（スライダ表示仕様の stringFormat に従う）。
+    private func formatValue(_ value: Double) -> String {
+        formatAnimationValue(value, spec: descriptor.sliderSpec)
     }
 
     /// キーフレーム編集の対象区間。キーフレーム対応型でキーフレーム
@@ -296,16 +301,15 @@ struct AnimationRowView: View {
         return animation.segmentIndex(atFrame: animationContext.frame)
     }
 
-    /// 表示・編集の対象値（区間編集中は区間の開始値、それ以外は
-    /// 文脈での評価値）。
-    private var displayedValue: Double {
+    /// 表示・編集の対象値（区間編集中はその区間の開始値、それ以外は
+    /// 先頭値）。スライダと数値入力の表示・書き込みはこの値で一致
+    /// させる。本家の各スライダは担当する AnimationValue.Value を
+    /// 直接編集し、再生ヘッド位置での評価値は編集対象ではない
+    /// （FE-R13-001）。
+    private var editTargetValue: Double {
         guard let animation = descriptor.animationValue else { return 0 }
-        if let segment = editingSegment {
-            return animation.values.indices.contains(segment)
-                ? animation.values[segment].value
-                : (animation.values.last?.value ?? animation.defaultValue)
-        }
-        return animationContext.value(of: animation)
+        return AnimationSliderScale.editValue(
+            of: animation, valueIndex: editingSegment ?? 0)
     }
 
     var body: some View {
@@ -320,7 +324,7 @@ struct AnimationRowView: View {
                 // 文字列を破棄しない。
                 .onChange(of: editingSegment) { _, _ in
                     if !isFocused {
-                        text = formatNumber(displayedValue)
+                        text = formatValue(editTargetValue)
                         uneditedText = text
                     }
                 }
@@ -338,13 +342,31 @@ struct AnimationRowView: View {
                 }
             if let animation = descriptor.animationValue {
                 // 本家と同様、入力欄の横にスライダを並べる。範囲は
-                // アニメーション自身の定義値（minValue / maxValue）。
-                if animation.maxValue > animation.minValue {
-                    Slider(
-                        value: sliderBinding,
-                        in: animation.minValue...animation.maxValue
-                    )
-                    .frame(minWidth: 60)
+                // 表示仕様（AnimationSliderSpec）の基準範囲を、同一
+                // Animation の全有効値で共有するスケールで広げたもの
+                // （AnimationSliderScale）。絶対制限（minValue /
+                // maxValue）全域をそのまま範囲にすると、基準範囲に
+                // 対して刻みが粗くなりドラッグで値が跳ぶ（FE-R1-042）。
+                // 仕様が無い項目ではスライダを出さず数値入力のみ。
+                if let spec = descriptor.sliderSpec {
+                    // 単位は入力欄の横へ出す。単位が本家リソースの
+                    // キー名のまま（未解決）の場合は、キー名を
+                    // ユーザーへ見せず単位なしとして扱う。
+                    if !spec.unitIsResourceKey, !spec.unit.isEmpty {
+                        Text(spec.unit)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    let range = AnimationSliderScale.sliderRange(
+                        for: animation,
+                        valueIndex: editingSegment ?? 0, spec: spec)
+                    if range.max > range.min {
+                        Slider(
+                            value: sliderBinding,
+                            in: range.min...range.max
+                        )
+                        .frame(minWidth: 60)
+                    }
                 }
                 // アニメーション種別の切替メニュー（本家は
                 // AnimationSlider の右クリックメニュー）。
@@ -357,16 +379,17 @@ struct AnimationRowView: View {
         }
     }
 
-    /// スライダの現在値は表示対象値（区間編集中は区間の開始値、
-    /// それ以外は文脈での評価値）。ドラッグは入力欄の確定と同じ
-    /// 書き込み経路で即時反映し、入力欄の表示も追従させる。
+    /// スライダの現在値は編集対象値（区間編集中はその区間の開始値、
+    /// それ以外は先頭値）で、書き込み先と一致する（FE-R13-001）。
+    /// ドラッグは入力欄の確定と同じ書き込み経路で即時反映し、
+    /// 入力欄の表示も追従させる。
     private var sliderBinding: Binding<Double> {
         Binding(
-            get: { displayedValue },
+            get: { editTargetValue },
             set: { newValue in
                 guard descriptor.animationValue != nil else { return }
                 writeValue(newValue)
-                text = formatNumber(displayedValue)
+                text = formatValue(editTargetValue)
                 uneditedText = text
                 onEdited()
             }
@@ -413,14 +436,14 @@ struct AnimationRowView: View {
             // "inf"）は確定せず、表示をモデルの現在値へ戻す
             // （未確定の入力が残って見えないように。非有限値をモデルへ
             // 入れると保存時に 0.0 へ化ける。FE-R3-118-02）。
-            text = formatNumber(displayedValue)
+            text = formatValue(editTargetValue)
             uneditedText = text
             return
         }
         // 確定先はセッションが所有する区間（フォーカス取得時点）。
         // 現在の再生ヘッド位置の区間ではない（R20-114-01）。
         writeValue(value, segment: focusedSegment ?? editingSegment)
-        text = formatNumber(displayedValue)
+        text = formatValue(editTargetValue)
         uneditedText = text
         onEdited()
     }
@@ -457,5 +480,19 @@ func formatNumber(_ value: Double) -> String {
         return String(Int(value))
     }
     return String(format: "%.4g", value)
+}
+
+/// アニメーション行の表示書式。スライダ表示仕様がある場合はその
+/// stringFormat（"F<n>" = 小数第 n 位まで）で整形する（本家の
+/// TextBoxSlider のテキスト表示と同じ規則）。仕様が無い、または
+/// 形式を解釈できない場合は従来の formatNumber に落とす。
+func formatAnimationValue(_ value: Double, spec: AnimationSliderSpec?) -> String {
+    guard let spec,
+          spec.stringFormat.hasPrefix("F"),
+          let digits = Int(spec.stringFormat.dropFirst()),
+          (0...10).contains(digits) else {
+        return formatNumber(value)
+    }
+    return String(format: "%.\(digits)f", value)
 }
 
