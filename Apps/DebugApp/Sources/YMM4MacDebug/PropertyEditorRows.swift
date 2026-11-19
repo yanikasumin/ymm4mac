@@ -506,6 +506,10 @@ struct AnimationRowView: View {
     @State private var movementText: String
     @State private var movementUneditedText: String
     @FocusState private var isMovementFocused: Bool
+    /// 第2値のスライダのドラッグについての Undo セッションの状態。
+    /// 第1値の `sliderSession` とは独立に開閉し、1ドラッグを履歴
+    /// 1エントリへまとめる（FE-R25-128-01）。
+    @State private var movementSliderSession: EditDragSession = .idle
 
     init(
         descriptor: PropertyDescriptor, animationContext: AnimationEvaluationContext,
@@ -858,7 +862,8 @@ struct AnimationRowView: View {
                 if range.max > range.min {
                     Slider(
                         value: movementSliderBinding,
-                        in: range.min...range.max
+                        in: range.min...range.max,
+                        onEditingChanged: movementSliderEditingChanged
                     )
                     .frame(minWidth: 60)
                 }
@@ -871,7 +876,13 @@ struct AnimationRowView: View {
             get: { movementValue },
             set: { newValue in
                 guard descriptor.animationValue != nil else { return }
-                writeMovementAmount(newValue)
+                // 開始拒否されたドラッグの継続書き込みは、他の
+                // セッションが終わっても許可されない（第1値と
+                // 同じ規則。FE-R21-126-01）。
+                guard movementSliderSession.writeAllowed(recorder: editRecorder)
+                else { return }
+                writeMovementAmount(
+                    newValue, sessionToken: movementSliderSession.token)
                 movementText = formatValue(movementValue)
                 movementUneditedText = movementText
                 onEdited()
@@ -879,14 +890,30 @@ struct AnimationRowView: View {
         )
     }
 
-    /// 第2値の書き込み。クランプ範囲は本家の第2値のスライダの
-    /// Min/Max（絶対制限の対称範囲 ±最大絶対値）であり、定義範囲
-    /// [minValue, maxValue] ではクランプしない（定義範囲が 0..100 の
-    /// 項目でも移動量は負値を取りうる）。確定処理（FE-R13-004）も
-    /// 同じ対称範囲で適用する。
-    private func writeMovementAmount(_ value: Double) {
+    /// 第2値のスライダのドラッグ開始・終了で Undo セッションを
+    /// 開閉し、ドラッグ全体を履歴1エントリへまとめる。第1値の
+    /// セッションとは独立である（FE-R25-128-01）。
+    private func movementSliderEditingChanged(_ editing: Bool) {
+        if editing {
+            movementSliderSession.begin(using: editRecorder)
+        } else {
+            movementSliderSession.endCommitting(to: editRecorder)
+        }
+    }
+
+    /// 第2値の書き込みと Undo 記録。クランプ範囲は本家の第2値の
+    /// スライダの Min/Max（絶対制限の対称範囲 ±最大絶対値）であり、
+    /// 定義範囲 [minValue, maxValue] ではクランプしない（定義範囲が
+    /// 0..100 の項目でも移動量は負値を取りうる）。確定処理
+    /// （FE-R13-004）も同じ対称範囲で適用する。
+    /// 書き込みは第1値と同じく入口で記録可否を確認し、記録できる
+    /// 場合だけモデルを変更してから記録する（FE-R25-128-01）。
+    private func writeMovementAmount(_ value: Double, sessionToken: EditSessionToken?) {
         guard let animation = descriptor.animationValue,
               animation.animationType == .movementAmount else { return }
+        guard editWriteAllowed(recorder: editRecorder, sessionToken: sessionToken)
+        else { return }
+        let oldState = animation.recordedState
         let radius = max(abs(animation.minValue), abs(animation.maxValue))
         let clampRange = (-radius)...radius
         var value = value
@@ -896,6 +923,31 @@ struct AnimationRowView: View {
                 minimum: clampRange.lowerBound, maximum: clampRange.upperBound)
         }
         descriptor.setAnimationValue(value, atValueIndex: 1, clampRange: clampRange)
+        recordMovementChange(oldState: oldState, sessionToken: sessionToken)
+    }
+
+    /// 第2値の変更を Undo へ登録する。記録は変更前後の状態
+    /// （種別＋値列、`Animation.RecordedState`）を一体で保持し、
+    /// 適用は `restoreAnimationRecordedState` でそのまま書き戻す。
+    /// 値列全体を一体で記録するのは、短い値列の実体化（値列の
+    /// 個数の変化）まで含めて復元するためであり、第2値だけの
+    /// 記録では実体化前の個数へ戻せない（FE-R25-128-01。考え方は
+    /// 種別変更の記録 FE-R23-127-01 と同じ）。対象キーは第1値
+    /// （#const / #first / #seg<n>）と種別変更（#type）から
+    /// 区別する。
+    private func recordMovementChange(
+        oldState: YMM4Core.Animation.RecordedState,
+        sessionToken: EditSessionToken?
+    ) {
+        guard let editRecorder, let editTarget else { return }
+        let newState = descriptor.animationValue?.recordedState
+        recordDescriptorValueChange(
+            recorder: editRecorder,
+            target: EditTargetKey(
+                object: editTarget.object, key: editTarget.key + "#movement"),
+            oldValue: oldState, newValue: newState,
+            apply: { descriptor.restoreAnimationRecordedState($0) },
+            sessionToken: sessionToken)
     }
 
     private func commitMovementAmount() {
@@ -908,7 +960,10 @@ struct AnimationRowView: View {
             movementUneditedText = movementText
             return
         }
-        writeMovementAmount(value)
+        // テキスト確定は離散編集であり、Undo セッションのトークンは
+        // 持たない（第1値の commit と同じ。他人のセッションが有効
+        // なら writeMovementAmount の入口で拒否される）。
+        writeMovementAmount(value, sessionToken: nil)
         movementText = formatValue(movementValue)
         movementUneditedText = movementText
         onEdited()
