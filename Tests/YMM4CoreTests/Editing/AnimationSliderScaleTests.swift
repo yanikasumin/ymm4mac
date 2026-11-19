@@ -183,12 +183,77 @@ final class AnimationSliderScaleTests: XCTestCase {
         }
     }
 
-    func testActiveValuesPadsWithDefaultValue() {
-        // 値列が短い不完全なデータでは既定値で補う（評価側と同じ規則）。
+    func testActiveValuesReturnsOnlyExistingValues() {
+        // 本家 ActiveValues（Values.Take(GetActiveValueCount())）は
+        // 存在する値だけを列挙し、不足分を既定値で作らない
+        // （FE-R13-002）。
         let animation = Animation(
             defaultValue: 7, minValue: 0, maxValue: 100,
             animationType: .linear, values: [AnimationValue(5)])
-        XCTAssertEqual(AnimationSliderScale.activeValues(of: animation), [5, 7])
+        XCTAssertEqual(AnimationSliderScale.activeValues(of: animation), [5])
+        // 有効個数を超える分は切り詰める。
+        let constant = Animation(
+            defaultValue: 7, minValue: 0, maxValue: 100,
+            animationType: .none,
+            values: [AnimationValue(5), AnimationValue(9)])
+        XCTAssertEqual(AnimationSliderScale.activeValues(of: constant), [5])
+    }
+
+    func testSharedScaleIsNotInflatedByMissingMovementAmountValue() {
+        // FE-R13-002 の回帰: 既定値 100 の拡大率を定数 50 へ変更して
+        // 移動量指定へ切り替えると、値列は [50] のまま保持される。
+        // 存在しない第2値を既定値 100 で補うと、対称範囲（±100）の
+        // 端点として共有スケールが 2 倍へ膨らんでしまう。本家の
+        // 列挙では第2値は参加せず、スケールは 1 のままになる。
+        let animation = Animation(
+            defaultValue: 100, minValue: 0, maxValue: 10000,
+            animationType: .movementAmount, values: [AnimationValue(50)])
+        XCTAssertEqual(AnimationSliderScale.activeValues(of: animation), [50])
+        let r = AnimationSliderScale.sliderRange(
+            for: animation, valueIndex: 0, spec: spec(0, 100))
+        XCTAssertEqual(r.min, 0)
+        XCTAssertEqual(r.max, 100)
+    }
+
+    // MARK: - FE-R13-001: 表示値 = 編集対象値（評価値ではない）
+
+    func testEditValueIsAnimationValueNotEvaluatedValue() {
+        // 移動量指定（開始値 0、移動量 1）では、相対フレーム 600 の
+        // 評価値は 600 になるが、先頭のスライダが表示・編集するのは
+        // 開始値 0 そのもの（本家は AnimationValue.Value を直接
+        // 編集する）。
+        let animation = Animation(
+            defaultValue: 0, minValue: -10000, maxValue: 10000,
+            animationType: .movementAmount,
+            values: [AnimationValue(0), AnimationValue(1)])
+        XCTAssertEqual(animation.value(atFrame: 600, length: 1200, fps: 30), 600)
+        XCTAssertEqual(AnimationSliderScale.editValue(of: animation, valueIndex: 0), 0)
+        XCTAssertEqual(AnimationSliderScale.editValue(of: animation, valueIndex: 1), 1)
+    }
+
+    func testEditValueForKeyFrameSegments() {
+        // キーフレーム区間では、その区間の開始値がそのまま編集対象。
+        let animation = Animation(
+            defaultValue: 0, minValue: -10000, maxValue: 10000,
+            animationType: .linear,
+            values: [AnimationValue(10), AnimationValue(20), AnimationValue(30)],
+            keyFrames: KeyFrames(frames: [10]))
+        XCTAssertEqual(AnimationSliderScale.editValue(of: animation, valueIndex: 0), 10)
+        XCTAssertEqual(AnimationSliderScale.editValue(of: animation, valueIndex: 1), 20)
+        XCTAssertEqual(AnimationSliderScale.editValue(of: animation, valueIndex: 2), 30)
+    }
+
+    func testEditValueFallsBackWhenValueNotMaterialized() {
+        // 値列が短い場合は末尾値、空の場合は既定値へ落とす
+        // （書き込み時に記述子側が実体化する）。
+        let short = Animation(
+            defaultValue: 7, minValue: 0, maxValue: 100,
+            animationType: .linear, values: [AnimationValue(5)])
+        XCTAssertEqual(AnimationSliderScale.editValue(of: short, valueIndex: 1), 5)
+        let empty = Animation(
+            defaultValue: 7, minValue: 0, maxValue: 100,
+            animationType: .linear, values: [])
+        XCTAssertEqual(AnimationSliderScale.editValue(of: empty, valueIndex: 0), 7)
     }
 
     // MARK: - R2-A04: 移動量指定の第2値は対称範囲へ置き換える

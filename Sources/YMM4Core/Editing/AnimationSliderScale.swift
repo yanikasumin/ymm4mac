@@ -131,14 +131,35 @@ public enum AnimationSliderScale {
             adjustedScale: shared)
     }
 
-    /// `Animation` の有効値列（不足分は既定値で補う。本家
-    /// `GetActiveValueCount` と同じ個数）。
+    /// `Animation` の有効値列。本家 `ActiveValues`
+    /// （`Values.Take(GetActiveValueCount())`）と同じ列挙で、現在
+    /// 存在する値だけを有効個数まで取り出す。存在しない値を既定値で
+    /// 作らない（FE-R13-002）。
+    ///
+    /// 値列の正規化（個数の切り詰め・補充）は本家では編集終了時の
+    /// `EndEditAsync` が担い、移動量指定の第2値は 0 で補われる。
+    /// Mac 側の記述子書き込みには編集セッションの境界が無く即時に
+    /// 確定するため、その正規化はここでは再現せず、スケール計算の
+    /// 列挙だけを本家の意味論へ揃える。存在しない移動量が既定値
+    /// として共有スケールへ参加すると、対称範囲の端点になって
+    /// 不要なスケール拡張を誘発する。
     public static func activeValues(of animation: Animation) -> [Double] {
-        (0..<animation.activeValueCount).map { index in
-            index < animation.values.count
-                ? animation.values[index].value
-                : animation.defaultValue
+        animation.values.prefix(animation.activeValueCount).map(\.value)
+    }
+
+    /// `valueIndex` のスライダ／数値入力が表示・編集する値。
+    ///
+    /// 本家では各スライダが担当する `AnimationValue.Value` を直接
+    /// 編集する（`AnimationValueSliderViewModel`）ため、表示値と
+    /// 編集対象値は同一であり、再生ヘッド位置での評価値ではない
+    /// （FE-R13-001）。値列が `valueIndex` まで実体化していない
+    /// 場合は末尾値（無ければ既定値）へ落とす。書き込み側は記述子の
+    /// `setAnimationValue` が不足分を実体化する。
+    public static func editValue(of animation: Animation, valueIndex: Int) -> Double {
+        if animation.values.indices.contains(valueIndex) {
+            return animation.values[valueIndex].value
         }
+        return animation.values.last?.value ?? animation.defaultValue
     }
 
     /// `Animation` の値インデックスを編集するスライダの表示範囲。

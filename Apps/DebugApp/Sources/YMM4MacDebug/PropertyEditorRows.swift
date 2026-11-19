@@ -270,17 +270,17 @@ struct AnimationRowView: View {
         self.onEdited = onEdited
         let animation = descriptor.animationValue
         let value: Double
-        if let animation,
-           animation.animationType.isKeyFrameSupported,
-           !animation.keyFrames.frames.isEmpty {
-            // キーフレームがある場合は、再生ヘッドの属する区間の
-            // 開始値を表示する（編集対象と一致させる）。
-            let segment = animation.segmentIndex(atFrame: animationContext.frame)
-            value = animation.values.indices.contains(segment)
-                ? animation.values[segment].value
-                : (animation.values.last?.value ?? animation.defaultValue)
+        if let animation {
+            // 初期表示は編集対象値（キーフレームがある場合は再生
+            // ヘッドの属する区間の開始値、それ以外は先頭値）。
+            // 再生ヘッド位置での評価値ではない（FE-R13-001）。
+            let segment = animation.animationType.isKeyFrameSupported
+                && !animation.keyFrames.frames.isEmpty
+                ? animation.segmentIndex(atFrame: animationContext.frame)
+                : 0
+            value = AnimationSliderScale.editValue(of: animation, valueIndex: segment)
         } else {
-            value = animation.map { animationContext.value(of: $0) } ?? 0
+            value = 0
         }
         let initial = formatAnimationValue(value, spec: descriptor.sliderSpec)
         _text = State(initialValue: initial)
@@ -301,16 +301,15 @@ struct AnimationRowView: View {
         return animation.segmentIndex(atFrame: animationContext.frame)
     }
 
-    /// 表示・編集の対象値（区間編集中は区間の開始値、それ以外は
-    /// 文脈での評価値）。
-    private var displayedValue: Double {
+    /// 表示・編集の対象値（区間編集中はその区間の開始値、それ以外は
+    /// 先頭値）。スライダと数値入力の表示・書き込みはこの値で一致
+    /// させる。本家の各スライダは担当する AnimationValue.Value を
+    /// 直接編集し、再生ヘッド位置での評価値は編集対象ではない
+    /// （FE-R13-001）。
+    private var editTargetValue: Double {
         guard let animation = descriptor.animationValue else { return 0 }
-        if let segment = editingSegment {
-            return animation.values.indices.contains(segment)
-                ? animation.values[segment].value
-                : (animation.values.last?.value ?? animation.defaultValue)
-        }
-        return animationContext.value(of: animation)
+        return AnimationSliderScale.editValue(
+            of: animation, valueIndex: editingSegment ?? 0)
     }
 
     var body: some View {
@@ -325,7 +324,7 @@ struct AnimationRowView: View {
                 // 文字列を破棄しない。
                 .onChange(of: editingSegment) { _, _ in
                     if !isFocused {
-                        text = formatValue(displayedValue)
+                        text = formatValue(editTargetValue)
                         uneditedText = text
                     }
                 }
@@ -380,16 +379,17 @@ struct AnimationRowView: View {
         }
     }
 
-    /// スライダの現在値は表示対象値（区間編集中は区間の開始値、
-    /// それ以外は文脈での評価値）。ドラッグは入力欄の確定と同じ
-    /// 書き込み経路で即時反映し、入力欄の表示も追従させる。
+    /// スライダの現在値は編集対象値（区間編集中はその区間の開始値、
+    /// それ以外は先頭値）で、書き込み先と一致する（FE-R13-001）。
+    /// ドラッグは入力欄の確定と同じ書き込み経路で即時反映し、
+    /// 入力欄の表示も追従させる。
     private var sliderBinding: Binding<Double> {
         Binding(
-            get: { displayedValue },
+            get: { editTargetValue },
             set: { newValue in
                 guard descriptor.animationValue != nil else { return }
                 writeValue(newValue)
-                text = formatValue(displayedValue)
+                text = formatValue(editTargetValue)
                 uneditedText = text
                 onEdited()
             }
@@ -436,14 +436,14 @@ struct AnimationRowView: View {
             // "inf"）は確定せず、表示をモデルの現在値へ戻す
             // （未確定の入力が残って見えないように。非有限値をモデルへ
             // 入れると保存時に 0.0 へ化ける。FE-R3-118-02）。
-            text = formatValue(displayedValue)
+            text = formatValue(editTargetValue)
             uneditedText = text
             return
         }
         // 確定先はセッションが所有する区間（フォーカス取得時点）。
         // 現在の再生ヘッド位置の区間ではない（R20-114-01）。
         writeValue(value, segment: focusedSegment ?? editingSegment)
-        text = formatValue(displayedValue)
+        text = formatValue(editTargetValue)
         uneditedText = text
         onEdited()
     }
