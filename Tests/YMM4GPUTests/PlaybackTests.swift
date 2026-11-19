@@ -337,4 +337,131 @@ final class RealtimePlaybackRepeatTests: XCTestCase {
         engine.dispose()
     }
 }
+
+/// Issue #106: 音声モデルの差し替え（スナップショット化）の検証。
+///
+/// 供給元の replaceModel が「位置を保ったまま内容だけを切り替え、
+/// 旧モデルの先読み蓄積を漏らさない」こと、エンジンの
+/// updateAudioModel が停止中は即時・再生中は停止まで保留される
+/// ことを固定する。再生中の保留は Mac 実機で実再生して確認する
+/// （RealtimePlaybackRepeatTests と同じ方式）。
+final class PlaybackModelSwapTests: XCTestCase {
+
+    private final class MapFactory: PCMProviderFactory {
+        var providers: [String: PCMProvider] = [:]
+        func createProvider(filePath: String?, audioTrackIndex: Int) -> PCMProvider? {
+            guard let filePath else { return nil }
+            return providers[filePath]
+        }
+    }
+
+    private func constantAnimation(_ value: Double) -> Animation {
+        Animation(
+            defaultValue: value, minValue: -100_000, maxValue: 100_000,
+            animationType: .none, values: [AnimationValue(value)]
+        )
+    }
+
+    private func makeTimeline(
+        filePath: String, itemFrame: Int, itemLength: Int
+    ) -> Timeline {
+        let item = AudioItem()
+        item.frame = itemFrame
+        item.length = itemLength
+        item.layer = 0
+        item.filePath = filePath
+        item.volume = constantAnimation(100)
+        item.pan = constantAnimation(0)
+        let timeline = Timeline()
+        var info = VideoInfo()
+        info.fps = 30
+        info.hz = 48_000
+        timeline.videoInfo = info
+        timeline.items = [item]
+        timeline.refreshTimelineLengthAndMaxLayer()
+        return timeline
+    }
+
+    private func makeFactory() -> MapFactory {
+        let factory = MapFactory()
+        factory.providers["a"] = InMemoryPCMProvider(
+            samples: [Float](repeating: 0.5, count: 48_000 * 2 * 10), hz: 48_000
+        )
+        factory.providers["b"] = InMemoryPCMProvider(
+            samples: [Float](repeating: 0.25, count: 48_000 * 2 * 10), hz: 48_000
+        )
+        return factory
+    }
+
+    private func makeSource(
+        timeline: Timeline, factory: MapFactory
+    ) -> PlaybackAudioSource {
+        let sourceFactory = AudioSourceFactory(providerFactory: factory)
+        let mixer = TimelineAudioMixer(timeline: timeline, factory: sourceFactory)
+        return PlaybackAudioSource(mixer: mixer, levelMeter: SoundLevelMeter())
+    }
+
+    /// A（全区間 0.5）で 1 秒読み、B（1 秒地点から 0.25）へ差し替える。
+    /// 差し替え直後の読み取りが 0.25 であれば、位置の保持（0 へ戻れば
+    /// B の前半の無音になる）と蓄積の破棄（漏れれば先頭が 0.5 に
+    /// なる）の双方が成立している。
+    func testReplaceModelSwitchesContentAtSamePosition() {
+        let factory = makeFactory()
+        // A: 3 秒全区間が素材 a。B: 1 秒地点から 2 秒間が素材 b。
+        let timelineA = makeTimeline(filePath: "a", itemFrame: 0, itemLength: 90)
+        let timelineB = makeTimeline(filePath: "b", itemFrame: 30, itemLength: 60)
+        let source = makeSource(timeline: timelineA, factory: factory)
+        source.seek(toTime: .zero)
+        var buffer = [Float](repeating: 0, count: 48_000 * 2)
+        XCTAssertEqual(source.read(into: &buffer, offset: 0, count: buffer.count), buffer.count)
+        XCTAssertEqual(buffer[0], 0.5, accuracy: 1e-6)
+
+        source.replaceModel(timeline: timelineB, sceneTimelines: [timelineB])
+        XCTAssertTrue(source.mixer.timeline === timelineB)
+        var next = [Float](repeating: 0, count: 48_000 * 2)
+        XCTAssertEqual(source.read(into: &next, offset: 0, count: next.count), next.count)
+        XCTAssertEqual(next[0], 0.25, accuracy: 1e-6)
+        XCTAssertEqual(next[next.count - 1], 0.25, accuracy: 1e-6)
+    }
+
+    /// 停止中の updateAudioModel は即時に適用される。
+    func testUpdateAudioModelWhileStoppedAppliesImmediately() {
+        let factory = makeFactory()
+        let timelineA = makeTimeline(filePath: "a", itemFrame: 0, itemLength: 90)
+        let timelineB = makeTimeline(filePath: "b", itemFrame: 0, itemLength: 90)
+        let source = makeSource(timeline: timelineA, factory: factory)
+        let engine = RealtimePlaybackEngine(timeline: timelineA, source: source)
+
+        engine.updateAudioModel(timeline: timelineB, timelines: [timelineB])
+        XCTAssertTrue(engine.source.mixer.timeline === timelineB)
+        engine.dispose()
+    }
+
+    /// 再生中の updateAudioModel は保留され、停止（一時停止）で
+    /// 適用される。映像側が再生中にモデルを確定しない規則との
+    /// 一致を固定する。
+    func testUpdateAudioModelWhilePlayingIsDeferredUntilStop() {
+        let factory = makeFactory()
+        // 10 秒のタイムライン（再生が途中で終わらない長さ）。
+        let timelineA = makeTimeline(filePath: "a", itemFrame: 0, itemLength: 300)
+        let timelineB = makeTimeline(filePath: "b", itemFrame: 0, itemLength: 300)
+        let source = makeSource(timeline: timelineA, factory: factory)
+        let engine = RealtimePlaybackEngine(timeline: timelineA, source: source)
+
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+        engine.updateAudioModel(timeline: timelineB, timelines: [timelineB])
+        XCTAssertTrue(
+            engine.source.mixer.timeline === timelineA,
+            "再生中にモデルが差し替わってはならない"
+        )
+        engine.pause()
+        XCTAssertFalse(engine.isPlaying)
+        XCTAssertTrue(
+            engine.source.mixer.timeline === timelineB,
+            "停止時に保留されたモデルが適用されていない"
+        )
+        engine.dispose()
+    }
+}
 #endif
