@@ -74,11 +74,13 @@ extension BaseItem {
     /// にかかわらず 0 とする規則に従い、エコー尾を加えない
     /// （FE-R15-001）。
     ///
-    /// 長さ（`length`）自体はここでは変えない。本家で長さが素材長
-    /// の変化へ追随するのは編集終了時調整の分岐 (2)（長さの終端が
-    /// 区切り上にある場合の `ResetLength`）であり、区切り
-    /// （`ContentSeparations`）の供給が Mac 側 Core に無いため
-    /// 未実装（実装台帳 FE-R15-EDITEND の設計メモ参照）。
+    /// 長さ（`length`）自体はここでは変えない。長さの追随は
+    /// 分岐 (2) の役割であり、エコープロパティの書き込み経路では
+    /// `refreshContentLengthAfterEchoSettingsChange` がこの再計算と
+    /// 組み合わせて担い、再生速度の編集セッションでは適用層
+    /// `finishPlaybackRateEdit` が担う。素材情報の記録
+    /// （`recordMediaInfo`）と再生速度の書き込みは分岐 (1)・(3)
+    /// の管轄であるため、ここでは再計算だけを行う。
     public func refreshContentLengthForEchoSettings() {
         switch self {
         case is VideoItem, is AudioItem:
@@ -88,6 +90,52 @@ extension BaseItem {
         default:
             break
         }
+    }
+
+    /// エコー設定の書き込みに対する素材長の再計算と長さの追随
+    /// （FE-R15-006 の残件。編集終了時調整の分岐 (2) のモデル層形）。
+    ///
+    /// 本家では、エコーを含むアイテム編集はエディタのセッション
+    /// として行われ、終了時に分岐 (2)（素材長が変わり、かつ編集
+    /// 開始時点で長さの終端が区切り上にあれば `ResetLength` で
+    /// 決め直し）が適用される。Mac 側にはエコー設定のインスペクタ
+    /// 記述子が無く（モデル＋保存のみで、記述子の追加は本単位の
+    /// 範囲外）、編集セッションが存在しないため、書き込みのたびに
+    /// 「変更前の終端判定 → 再計算 → 条件を満たせば決め直し」を
+    /// 1回の変更として適用する形に置き換える（Mac 側の適応。
+    /// 実装台帳 FE-CONTENTSEP に記録）。
+    ///
+    /// 終端判定は変更前の状態で行う必要があるため、区切りは
+    /// 変更前のエコー値で再構成する（引数）。呼び出し時点では
+    /// 素材長・素材本来の長さ・速度・長さ・オフセットはいずれも
+    /// 変更前の値であり、書き込み済みなのは対象のエコー値だけ
+    /// である。決め直しの FPS はアイテムへ注入済みの `videoFPS`
+    /// を使う（基点捕捉と同じ前提）。
+    ///
+    /// - Parameter isLooped: 書き込み時点のループ設定（区切りの
+    ///   形の入力。ループ設定自体の書き込みは追随の対象外）。
+    /// - Parameter previousEchoIsEnabled: 変更前のエコー有効。
+    /// - Parameter previousEchoInterval: 変更前のエコー間隔（秒）。
+    /// - Parameter previousEchoAttenuation: 変更前のエコー減衰（%）。
+    public func refreshContentLengthAfterEchoSettingsChange(
+        isLooped: Bool,
+        previousEchoIsEnabled: Bool,
+        previousEchoInterval: Double,
+        previousEchoAttenuation: Double
+    ) {
+        let previousContentLength = contentLength
+        let separationsBeforeChange = mediaContentSeparations(
+            isLooped: isLooped,
+            echoIsEnabled: previousEchoIsEnabled,
+            echoInterval: previousEchoInterval,
+            echoAttenuation: previousEchoAttenuation
+        )
+        let wasLengthEndOnSeparator = isLengthEndOnContentSeparator(
+            fps: videoFPS, separations: separationsBeforeChange)
+        refreshContentLengthForEchoSettings()
+        guard contentLength != previousContentLength,
+              wasLengthEndOnSeparator else { return }
+        resetLength(fps: videoFPS)
     }
 
     /// 再生速度を適用した素材の消費時間。本家
@@ -190,9 +238,8 @@ extension BaseItem {
     /// `adjustLengthAfterFileChange` が分岐 (1) を担うため、こちらは
     /// 素材そのものの長さが変わっていない編集（速度だけの変更）で
     /// 呼ぶこと。分岐 (2)（素材長が変わり、かつ長さの終端が区切り
-    /// 上にある場合の決め直し）は、区切り（`ContentSeparations`）
-    /// の供給が Mac 側 Core に無いため未実装（実装台帳
-    /// FE-R15-EDITEND の設計メモ参照）。
+    /// 上にある場合の決め直し）は、適用層
+    /// `finishPlaybackRateEdit` がこの分岐より先に判定する。
     ///
     /// - Parameter previousFirstValue: 編集開始時点の再生速度の
     ///   先頭値（%）。
@@ -252,12 +299,19 @@ extension BaseItem {
     /// 基点の所有は呼び出し側（アプリ層の行のセッション状態）へ
     /// 移り、寿命はセッションと一致させる。捕捉し直しや後続
     /// セッションへの持ち越しはしない（FE-R27-129-03）。
+    ///
+    /// 分岐 (2) の判定に使う「長さの終端が区切り上にあるか」も
+    /// ここで捕捉する。本家 `EditingValue` はタイムラインの FPS
+    /// で判定するが、こちらはアイテムへ注入済みの `videoFPS`
+    /// （所属タイムラインの FPS と一致する運用であり、
+    /// `contentLengthAppliedPlaybackRate` も同じ前提に立つ）を使う。
     public func capturePlaybackRateEditBaseline() -> PlaybackRateEditBaseline {
         PlaybackRateEditBaseline(
             firstValue: playbackRate2.firstValue,
             isConstant: playbackRate2.animationType == .none,
             contentLength: contentLength,
-            originalContentLength: originalContentLength)
+            originalContentLength: originalContentLength,
+            isLengthEndOnSeparator: isLengthEndOnContentSeparator(fps: videoFPS))
     }
 
     /// 編集終了時の長さ調整の適用（FE-R15-004 の編集終了時調整の
@@ -266,19 +320,21 @@ extension BaseItem {
     /// - 分岐 (1): 素材本来の長さが基点から変わっていれば、編集の
     ///   途中でファイルが差し替わり、ファイル変更の経路
     ///   （`adjustLengthAfterFileChange`）が既に長さを決め直して
-    ///   いるため、分岐 (3) を重ねて実行しない（FE-R27-129-04。
+    ///   いるため、後続の分岐を重ねて実行しない（FE-R27-129-04。
     ///   本家は else-if 連鎖で分岐が排他）。
-    /// - 分岐 (2): 素材長が変わり、かつ長さの終端が区切り上に
-    ///   ある場合の決め直しは、区切り（`ContentSeparations`）の
-    ///   供給が Mac 側 Core に無いため未実装（実装台帳
-    ///   FE-R15-EDITEND の設計メモ参照）。基点には分岐 (2) の
-    ///   判定に要る素材長を含めてある。
+    /// - 分岐 (2): 素材長が基点から変わり、かつ編集開始時点で
+    ///   長さの終端が区切り（`contentSeparations`）の ±1 フレーム
+    ///   以内にあった場合は、`resetLength` で長さを素材長へ
+    ///   決め直す（オフセットは付け替えない。本家 `EndEdit` の
+    ///   第2分岐。終端が区切り上にあったかは基点の
+    ///   `isLengthEndOnSeparator` が保持する）。
     /// - 分岐 (3): `adjustLengthAfterPlaybackRateChange` による
     ///   比率再計算。
     ///
     /// - Parameter baseline: 編集セッション開始時点の基点
     ///   （`capturePlaybackRateEditBaseline`）。
-    /// - Parameter fps: オフセット付け替えの時間換算に使う FPS。
+    /// - Parameter fps: 長さの決め直しとオフセット付け替えの
+    ///   時間換算に使う FPS。
     /// - Returns: 長さまたはオフセットを変えたら true。
     @discardableResult
     public func finishPlaybackRateEdit(
@@ -286,6 +342,13 @@ extension BaseItem {
     ) -> Bool {
         guard originalContentLength == baseline.originalContentLength
         else { return false }
+        if contentLength != baseline.contentLength,
+           baseline.isLengthEndOnSeparator {
+            let oldLength = length
+            let oldContentOffset = contentOffset
+            resetLength(fps: fps)
+            return length != oldLength || contentOffset != oldContentOffset
+        }
         return adjustLengthAfterPlaybackRateChange(
             previousFirstValue: baseline.firstValue,
             previousIsConstant: baseline.isConstant,
@@ -299,9 +362,9 @@ extension BaseItem {
 /// うち、編集終了時調整の分岐判定に要るもの。旧再生速度の先頭値
 /// と定数かどうかは分岐 (3) の入力であり、素材本来の長さは
 /// 分岐 (1) の成立判定（編集の途中でのファイル差し替えの検出）
-/// に、素材長は分岐 (2)（未実装）の判定に使う（本家も
-/// `OldContentLength` / `OldOriginalContentLength` を保持する。
-/// 監査 Round 27 の補足）。
+/// に、素材長と区切り上の終端判定は分岐 (2) の判定に使う
+/// （本家も `OldContentLength` / `OldOriginalContentLength` と
+/// `isLengthOnSeparator` を保持する。監査 Round 27 の補足）。
 public struct PlaybackRateEditBaseline: Equatable, Sendable {
     /// 編集開始時点の再生速度の先頭値（%）。
     public var firstValue: Double
@@ -312,14 +375,22 @@ public struct PlaybackRateEditBaseline: Equatable, Sendable {
     public var contentLength: TimeSpanValue
     /// 編集開始時点の素材本来の長さ（エコー尾なし）。
     public var originalContentLength: TimeSpanValue
+    /// 編集開始時点で、アイテムの長さの終端が区切り
+    /// （`contentSeparations`）の ±1 フレーム以内にあったか
+    /// （本家 `EditingValue.isLengthOnSeparator`）。分岐 (2) の
+    /// 発火条件。直接構築する場合の既定は false（分岐 (2) を
+    /// 発火させない側）。
+    public var isLengthEndOnSeparator: Bool
 
     public init(
         firstValue: Double, isConstant: Bool,
-        contentLength: TimeSpanValue, originalContentLength: TimeSpanValue
+        contentLength: TimeSpanValue, originalContentLength: TimeSpanValue,
+        isLengthEndOnSeparator: Bool = false
     ) {
         self.firstValue = firstValue
         self.isConstant = isConstant
         self.contentLength = contentLength
         self.originalContentLength = originalContentLength
+        self.isLengthEndOnSeparator = isLengthEndOnSeparator
     }
 }
