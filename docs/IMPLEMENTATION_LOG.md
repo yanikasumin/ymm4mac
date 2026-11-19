@@ -1481,6 +1481,12 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 
 **追随修正（同ブランチで実施）。** 上記2箇所（`ProjectView.swift` の `writeAnimationProperty` / `writeItemPosition`）を `guard case .animation = descriptor.kind` のパターン照合へ置き換えた（意味は従来どおり「animation 種別か」の判定で不変）。Mac（同期先 ~/ymm4-work/fe-slider/YMM4Mac）で `Apps/DebugApp` の `swift build` 成功と `AnimationSliderSpecTests` の合格を確認済み。
 
+#### FE-R8-001 — VideoItem / AudioItem の Volume・Pan 記述子を追加（フロントエンド監査 Round 8、P2）
+
+**何を実装したか。** `ItemPropertyMetadata.descriptors(for:)` は音量・パンの記述子を `VoiceItem` にのみ追加しており、`volume` / `pan` をモデルとして保持する `VideoItem` と `AudioItem` ではインスペクタから編集できなかった（監査 Round 8 で FE-R8-001 として採番）。両型に対して、グループ「音声」・表示名「音量」「パン」（`VoiceItem` の音声系と同一）のアニメーション記述子を追加した。追加は共通ヘルパ `audioDescriptors(volume:pan:)` に寄せ、本家で両プロパティが各具象型に宣言され `AnimationSliderAttribute` も具象型ごとに付く実態に合わせ、スライダ仕様は FE-SLIDER-CORE の解決経路で具象型の宣言から引かれる。
+
+**検証。** Mac（同期先 ~/ymm4-work/fe-r8-001/YMM4Mac）で方式名フィルタ実行し全合格: `PropertyMetadataTests` 19 件（新規に両型の記述子の存在・get/set の結線・スライダ仕様の解決を固定）、`AnimationSliderSpecTests` 14 件、`EffectPropertyMetadataTests` 17 件。合計 50 件・失敗 0。AudioDrift は既定どおり除外。期待値（範囲・形式・単位）は抽出データ `slider-attributes.json` の両型 Volume / Pan で裏取り済み。
+
 ## 以降の記載テンプレート
 
 #### MAC-XXXX — [機能名]（IMPLEMENTED / VERIFIED / UNKNOWN）
@@ -1714,3 +1720,36 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 **手動検証チェックリストへの追加（未実施）。** (7) FE-R13-001: 移動量指定の項目（例: X、開始値 0・移動量 1）で再生ヘッドを進めた位置でも、入力欄とスライダが開始値 0 を示し、スライダ操作で開始値を変えると入力欄の値がそのまま一致すること。(8) FE-R13-002: 拡大率を定数 50 にしてから移動量指定へ切り替え、開始値側のスライダ範囲が不必要に広がっていない（基準範囲のまま）こと。
 
 **次の担当へ。** 単位リソースキー 38 件の実文字列は未解決のまま（FE-SLIDER-CORE から継続）。`ConditionalUnitAnimationSlider` 8 件も仕様なしのまま。ファイル参照（FE-R1-043、`PropertyKind.filePath`）は次単位。
+#### FE-UNDO-CORE — フロントエンド基盤（Undo/Redo）の Core 側新設（IMPLEMENTED、Mac 検証済み）
+
+フロントエンド監査 Round 2 の設計判断（FE-R2-DESIGN.md「Undo/Redo 基盤」）に基づき、履歴の土台だけを `Sources/YMM4Core/Editing/` へ新設した。アプリ層への接続と既存編集操作の移行は次単位で行う（本節の時点では参照元なし）。スナップショット方式は設計判断で不採用が確定しているため採っていない。
+
+- **新設ファイル・型**: `EditCommand.swift`（`EditTargetKey`、`EditCommand` プロトコル、`ValueChangeCommand<Value: Equatable>`、`ActionEditCommand`）、`EditCommandCollector.swift`（`EditCommandCollector`、モジュール内）、`EditTransaction.swift`（`EditTransaction`）、`UndoHistory.swift`（`UndoHistory`）、`EditCoordinator.swift`（`EditCoordinator`）。
+- **コマンドの表現（設計判断と根拠）**: 本家 `UndoRedoPropertyChangedCommand` は「対象インスタンス＋プロパティ名＋旧値/新値」を保持し、Undo/Redo 時にリフレクションで値を戻す。Mac 版 Core にはリフレクション相当が無く、既存の `PropertyAccess` も get/set クロージャ方式のため、対象の同一性は `EditTargetKey`（`ObjectIdentifier`＋プロパティ識別子）で表し、値の適用はコマンドの `apply` クロージャが担う形にした。対象が参照型（`BaseItem` はクラス）であることとも整合する。クロージャは対象を保持する（本家も対象インスタンスを保持する）。値で表せない変更（追加・削除等）は本家 `UndoRedoActionCommand` に対応する `ActionEditCommand`（Undo/Redo クロージャ対）で表す。
+- **本家意味論の再現範囲**（逆コンパイル結果は仕様抽出の参照に留め、写経はしていない）: (1) コマンド収集時の統合 — 空コマンド（旧値=新値）の破棄、同一対象＋値の連鎖がつながる場合だけ統合（`CanConnect`/`Connect` 相当）、統合結果は収集の末尾へ移動、統合結果が空になれば除去（相殺）。(2) 実行順 — Undo は値変更コマンドを逆順→手続き型コマンドを逆順、Redo はその正順。(3) 履歴 — 確定済みトランザクションを1エントリとして蓄積、容量の既定100（本家 `UndoRedoLimit` 既定値）、超過時は最古を破棄、新規確定で Redo を破棄、実質的変更が無い確定はエントリを作らず Redo も破棄しない（本家の空の `Record()` 相当）、Undo/Redo 適用中の確定は記録しない（`isUndoRedoing` 相当の記録抑制）。
+- **変更の捕捉は明示トランザクション方式**（本家の `UndoRedoable` 自動監視は模倣しない）: 変更の適用は呼び出し側が行い、`EditTransaction` へは適用済みの変更をコマンドとして登録する。確定で履歴1エントリ、キャンセルは登録済みコマンドの Undo で開始状態へ巻き戻す。ドラッグ型の逐次変更は収集時の統合により「開始値→最終値」の1エントリにまとまる。同時に有効なトランザクションは1つだけ（本家のコレクタが全体で1つであることに対応）とし、開始時に前のトランザクションが残っていればキャンセル（巻き戻し）して置き換える — 放棄されたドラッグ等で半端な変更を残さないための仕様。
+- **EditCoordinator の範囲**: トランザクションの開始/確定/キャンセル、履歴への登録、Undo/Redo の実行、履歴変更通知の転送だけを統括する薄い層。編集操作の実体は既存の Core 編集操作の責務のまま。対象の実在検証（例: アイテムがタイムラインに残っているか）はアプリ接続の単位で意味を持つため、本単位では入れていない。
+- **変更通知**: Core には一元的な変更通知の仕組みが無い（モデルの伝播は `Timeline.items` や `BaseItem.keyFrames` 等の `didSet` フックが担う）ため、履歴側の通知は `UserDictionaryStore.onSaveResult` の前例と同じクロージャ方式（`UndoHistory.onHistoryChanged`）とし、既存の仕組みと競合させない。
+- **本家との意図的な差異**: (1) 本家の Undo/Redo は非同期コマンドを含むため非同期だが、Mac 版のコマンドは全て同期のため同期 API とした。(2) 本家は履歴が空の Undo/Redo を想定しないが、こちらは `false` を返して安全に倒す。(3) スレッド保護は行わない（モデル全体が UI スレッド前提の設計であることに合わせる。本家コレクタのロックは自動監視が複数経路から発火し得るためのもの）。
+
+検証: Mac で新規テストを方式名フィルタで実行し全合格 — `EditCoordinatorTests` 10件（R2-U01 の往復、R2-U02 の逐次変更の1エントリ化、連鎖しない変更の非統合、統合コマンドの末尾移動と Undo/Redo 適用順、手続き型コマンドの実行順、相殺・同値変更の破棄、キャンセルの巻き戻し、開始による前トランザクションの置き換え、二重確定の無視）、`UndoHistoryTests` 8件（R2-U03 の容量3での最古破棄と既定容量100、R2-U04 の新規確定による Redo 破棄・適用中の記録抑制、無変更確定での Redo 保持、空履歴での false、全消去、履歴変更通知）。関連する既存テストも方式名フィルタで実行し全合格（PropertyMetadataTests 系34件、TimelineEditingTests 20件、いずれも失敗0）。全スイートは回していない。ARCHITECTURE.md は既存の処理経路・所有権に変更が無いため未更新（接続の単位で更新する）。
+
+##### FE-UNDO-CORE R5 処分 — 監査 Round 5 指摘4件への対応（IMPLEMENTED、Mac 検証済み）
+
+監査 Round 5（PR #119 レビュー）で、基盤の境界条件とライフサイクル管理に4件の指摘を受けた。いずれも本節の新設ファイル内での処分であり、アプリ層・既存編集操作への影響はない。
+
+- **FE-R5-119-01（P1）未確定トランザクション中の Undo で履歴とモデルが乖離する**: `EditCoordinator.undo()` が `activeTransaction` を見ずに履歴の Undo を実行していた（A確定→B開始・未確定→Undo→B確定、の順で値と履歴が食い違う）。処分: (1) アクティブなトランザクションがある間は Coordinator の `undo()` / `redo()` を実行せず `false` を返す（排他）。(2) 履歴操作の入口を Coordinator へ一本化 — `UndoHistory.undo()` / `redo()` を `public` からモジュール内（internal）へ変更し、`record` と合わせてアプリ層からは Coordinator 経由でのみ操作できる形にした（テストは `@testable import` で従来どおり呼び出し可能）。回帰テスト `testUndoRedoAreBlockedDuringActiveTransaction`（A確定→B未確定で Undo/Redo が false・値と履歴が不変、B確定後に初めて Undo が効く）を追加。
+- **FE-R5-119-02（P2）Undo/Redo の再入防止**: `UndoHistory.undo()` / `redo()` は適用中フラグを記録抑制にしか使っておらず、適用クロージャからの再入で別のエントリを取り出せた。処分: 両メソッドの入口で適用中なら `false` を返し、フラグの復帰は `defer` に集約（内側の呼び出しが外側のフラグを解除しない）。`EditCoordinator.cancel` も、巻き戻しの適用クロージャからの再入で再帰的な巻き戻しが起きないよう、コマンド実行前に `finish()` とアクティブ解除で終了状態を確定させてから `rollback()` する順序へ変更した。回帰テスト `testUndoReentryFromApplyClosureIsRejected`（適用クロージャ内からの Undo 試行が拒否され、外側の Undo/Redo が完了して履歴が壊れない）、`testCancelReentryDoesNotRecurse`（巻き戻し中の再キャンセル・新規開始でも巻き戻しは1回だけ）を追加。
+- **FE-R5-119-03（P2）容量の不変条件**: `UndoHistory.capacity` は公開された stored プロパティで、`init` の `max(0, capacity)` 補正が後からの代入に効かず、負値だと切り詰め側（`excess = count - capacity`）で空配列への `removeFirst` が trap し得た。処分: 容量の実値を非公開ストレージ（`capacityStorage`）へ移し、公開アクセサの setter で代入の全経路に `max(0, …)` の検証を通す形にした。回帰テスト `testNegativeCapacityOnEmptyHistoryBehavesAsZero` / `testNegativeCapacityOnNonEmptyHistoryTrimsAll`（空・非空の両方で負の容量を指定しても trap せず容量0として振る舞う）を追加。
+- **FE-R5-119-04（P2・契約変更）開始時の暗黙キャンセルを廃止**: 従来の `beginTransaction()` は既存のアクティブなトランザクションを巻き戻して置き換えていたが、「新しい編集要求が発生した」ことだけでは前の編集を破棄してよい根拠にならない（終了イベント未処理のドラッグ結果が黙って失われる）。処分: `beginTransaction()` の戻り値を `EditTransaction?` とし、アクティブな編集がある場合は新規開始を拒否して nil を返す契約へ変更。中断は `cancel`、確定は `commit` を呼び出し側が明示する。既存テスト `testBeginReplacesActiveTransactionWithRollback` は新契約の `testBeginIsRefusedWhileTransactionIsActive` へ書き換え（拒否・無巻き戻し・明示キャンセル後の再開始を確認）。契約変更の影響範囲は Core 内とテストのみ（アプリ層は未接続のため影響なし）。併せて、適用クロージャが対象を強参照する前提（`EditTargetKey` 自体は対象を保持しない）を `EditCommand.swift` の `EditTargetKey` ドキュメントへ接続側の契約として明記した。
+
+R5 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinatorTests` 13件（従来10件のうち置き換え前提の1件を新契約へ書き換え、R5 回帰3件を追加）、`UndoHistoryTests` 10件（従来8件＋容量の回帰2件）。関連する既存テストも全合格（PropertyMetadataTests 系34件、TimelineEditingTests 20件、いずれも失敗0）。全スイートは回していない。ARCHITECTURE.md は処理経路・所有権に変更が無いため未更新。
+
+##### FE-UNDO-CORE R6 処分 — 監査 Round 6 指摘2件への対応（IMPLEMENTED、Mac 検証済み）
+
+監査 Round 6（PR #119 再レビュー）で、R5 処分の残存として再入・通知まわりの2件（いずれも P1）の指摘を受けた。いずれも本節の新設ファイル内での処分であり、アプリ層・既存編集操作への影響はない。
+
+- **FE-R6-119-01（P1）キャンセル巻き戻し中の操作排他**: R5 処分の `cancel` は巻き戻し開始前に `finish()` とアクティブ解除で終了状態を確定させていたため、巻き戻し中は Undo の排他条件（有効なトランザクションの存在）が消えており、巻き戻し途中の適用クロージャから過去の履歴エントリの Undo が実行できて履歴とモデルが乖離した（レビュアーの再現条件: A確定で Frame 0→10、B開始で Frame 20・Length 2、Bキャンセルの Length 巻き戻し中に A を Undo すると、B の残りの巻き戻しが A の変更後の値へ復元してしまう）。巻き戻し中の `beginTransaction` も成功していた。処分: `EditCoordinator` に操作状態（`OperationState`: idle / editing / restoring）を導入して一元管理し、「編集中」と「復元処理中」を区別する形にした。`activeTransaction` は状態からの算出プロパティへ変更。`cancel` は巻き戻し中、状態を restoring に保持し（`defer` で idle へ復帰）、その間は開始（nil）・確定・キャンセル・Undo/Redo（false）を全て拒否する。場当たり的な個別ガードではなく、操作の可否を操作状態の1か所で判定する。回帰テスト `testCancelRollbackBlocksUndoAndBegin`（レビュアーの再現条件そのもの: 巻き戻し中の Undo・開始が拒否され、完了後は (Frame 10 / Length 1) へ戻り、A が Undo 可能な状態で履歴が整合）を追加。既存の `testCancelReentryDoesNotRecurse` は新契約に合わせて見直し（巻き戻し中の開始が nil を返すこと、完了後は通常どおり開始できることを確認）。
+- **FE-R6-119-02（P1）履歴変更通知の発火時点で記録抑制が残っている**: `UndoHistory.undo()` / `redo()` は `isApplying = true` の後 `defer` で関数終了時に復帰させていたため、`onHistoryChanged` の発火時点でも抑制が有効なままだった。通知クロージャから新しい編集を確定させると、`record` の `guard !isApplying` で履歴登録だけが黙って破棄され、モデルへの変更は残るのに Undo できない変更が生まれていた。本家 `UndoRedoManager` は `isUndoRedoing` を false へ戻してから `HistoryChanged` を発火させる（レビュアーが再照合済み）ため、本家とも異なる挙動だった。処分: 記録抑制の範囲をコマンドの適用中だけに限定する。適用部分を `applySuppressingRecording`（適用スコープ内でのみ `isApplying` を立て、`defer` で解除）へ切り出し、スタック更新を終え・抑制を解除してから `onHistoryChanged` を発火させる順序へ変更した（`undo` / `redo` とも）。適用中の記録抑制そのもの（R2-U04）は維持される。回帰テスト `testEditCommittedFromHistoryChangedNotificationIsRecorded`（Undo の通知の中から新しい編集を確定させ、その編集が履歴に登録され Undo 可能であること）を追加。
+
+R6 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinatorTests` 15件（従来13件＋R6 回帰2件、`testCancelReentryDoesNotRecurse` は新契約へ見直し）、`UndoHistoryTests` 10件。関連する既存テストも全合格（PropertyMetadataTests 系34件、TimelineEditingTests 20件、いずれも失敗0）。全スイートは回していない。ARCHITECTURE.md は処理経路・所有権に変更が無いため未更新。
