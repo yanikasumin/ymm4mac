@@ -16,20 +16,42 @@ public enum RenamedTypeResolver {
     private static let communityEffectAssembly = "YukkuriMovieMaker.Plugin.Community"
     private static let ymmVideoEffectNamespace = "YukkuriMovieMaker.Project.Effects"
     private static let ymmAssembly = "YukkuriMovieMaker"
+    /// 移行対象のクラス名（名前空間を除いた部分）の集合。
+    private static let communityClassNames: Set<String> = Set(
+        communityEffects.map { "\($0)Effect" }
+    )
 
     public static func resolveTypeName(_ assemblyQualifiedName: String) -> String {
-        let parts = assemblyQualifiedName.split(separator: ",", omittingEmptySubsequences: false)
-        guard parts.count >= 2 else { return assemblyQualifiedName }
-        let fullName = String(parts[0])
-        let assembly = parts[1].trimmingCharacters(in: .whitespaces)
-        guard assembly == ymmAssembly else { return assemblyQualifiedName }
-        for name in communityEffects
-        where fullName == "\(ymmVideoEffectNamespace).\(name)Effect" {
-            return "\(communityEffectNamespace).\(name).\(name)Effect, \(communityEffectAssembly)"
+        // 変更されるのは「完全名が YukkuriMovieMaker.Project.Effects.
+        // 配下の特定クラスで、アセンブリ部が YukkuriMovieMaker」の
+        // 場合だけ。それ以外は入力をそのまま返すため、完全名の接頭辞と
+        // クラス名の集合照合で早期に振り分ける（従来は全入力に対して
+        // split と文字列補間による総当たり照合をしていた。FE-R1-031
+        // の詳細計測で構築側の支配項の一つと特定。結果は従来と同一）。
+        guard let commaIndex = assemblyQualifiedName.firstIndex(of: ",") else {
+            return assemblyQualifiedName
         }
-        if fullName == "\(ymmVideoEffectNamespace).OutlineLiteEffect" {
+        let fullName = assemblyQualifiedName[..<commaIndex]
+        let namespacePrefix = "\(ymmVideoEffectNamespace)."
+        guard fullName.hasPrefix(namespacePrefix) else {
+            return assemblyQualifiedName
+        }
+        let className = fullName.dropFirst(namespacePrefix.count)
+        let isOutlineLite = className == "OutlineLiteEffect"
+        guard isOutlineLite || communityClassNames.contains(String(className)) else {
+            return assemblyQualifiedName
+        }
+        // アセンブリ部の照合。範囲（1つ目と2つ目の "," の間）と
+        // トリム規則は従来の parts[1] と同一。
+        let rest = assemblyQualifiedName[assemblyQualifiedName.index(after: commaIndex)...]
+        let assemblyPart = rest.prefix(while: { $0 != "," })
+        guard String(assemblyPart).trimmingCharacters(in: .whitespaces) == ymmAssembly else {
+            return assemblyQualifiedName
+        }
+        if isOutlineLite {
             return "\(ymmVideoEffectNamespace).OutlineEffect, \(ymmAssembly)"
         }
-        return assemblyQualifiedName
+        let name = className.dropLast("Effect".count)
+        return "\(communityEffectNamespace).\(name).\(name)Effect, \(communityEffectAssembly)"
     }
 }
