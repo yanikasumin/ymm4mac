@@ -335,6 +335,11 @@
           TimelineLayerLabels.swift レイヤーラベル列
           TimelineScale.swift  目盛り計算（純粋関数。SwiftUI／AppKit 共用）
           SerifInputView.swift セリフ入力行
+          CharacterEditorView.swift キャラクター編集シート（プロジェクトの
+                               キャラクター一覧管理と基本項目。FE-UNIT6）
+          CharacterPickerRowView.swift キャラクター参照アクセスの集約
+                               （CharacterItemAccess）とインスペクタの
+                               キャラクター選択行（FE-UNIT6）
           PropertyInspectorView.swift アイテムのプロパティ編集
           PropertyEditorRows.swift 編集行の部品
           EffectInspectorView.swift エフェクト編集
