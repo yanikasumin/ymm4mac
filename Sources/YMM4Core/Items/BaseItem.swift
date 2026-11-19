@@ -66,6 +66,20 @@ public class BaseItem {
     /// 素材本来の長さ（保存対象外）。
     public var originalContentLength: TimeSpanValue = .zero
 
+    /// コンテンツの区切り位置（アイテム時間軸上の時刻の列）。
+    /// 本家 `ContentSeparations`。
+    ///
+    /// ファイル解析でも保存データでもなく、アイテムの現在値から
+    /// 都度計算される値である。本体は
+    /// `Editing/ContentSeparations.swift`（基底形は
+    /// `baseContentSeparations`、動画・音声は上書き形）。
+    /// 列挙は遅延であり、ループ素材では無限に続く場合があるため、
+    /// 消費側は必要な範囲で打ち切る。タイムラインのスナップも
+    /// この供給を使う想定（UI 側の接続は別単位）。
+    public var contentSeparations: AnySequence<TimeSpanValue> {
+        baseContentSeparations()
+    }
+
     public init() {
         refreshAnimationContext()
     }
