@@ -579,6 +579,22 @@ struct AnimationRowView: View {
                 movementRow
             }
         }
+        // 種別が移動量指定へ変わった時点で第2値の入力欄を現在の
+        // モデル値へ同期する（FE-R25-128-02）。`movementText` は
+        // ビュー生成時に読み取り側の代用値（例: 定数 50 の先頭値）
+        // を取り込んで初期化されるため、種別切替で第2値の行が
+        // 出現しても、行側の .onChange(of: movementValue) は初回
+        // 表示では発火せず、古い代用値（50）がモデルの第2値（0）
+        // と食い違ったまま残り得た。基線（uneditedText）も一緒に
+        // 同期し、未編集のままの確定で古い値が書き戻されることも
+        // 防ぐ（FE バッチ1の数値欄の基線規則と同趣旨）。入力中は
+        // 未確定の文字列を破棄しない。
+        .onChange(of: descriptor.animationValue?.animationType) { _, newType in
+            if newType == .movementAmount, !isMovementFocused {
+                movementText = formatValue(movementValue)
+                movementUneditedText = movementText
+            }
+        }
     }
 
     private var mainRow: some View {
