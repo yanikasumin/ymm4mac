@@ -2173,3 +2173,42 @@ Mac で対象を絞って実行し全合格: ContentSeparationsTests 30件（新
 
 ## 実装記録
 docs/IMPLEMENTATION_LOG.md の FE-CONTENTSEP 節。docs/ARCHITECTURE.md の編集終了時調整・エコー再計算の記述を追随させた。
+
+#### FE-SNAP-SEPARATIONS — タイムライン吸着への素材内部の区切り（ContentSeparations）の供給（IMPLEMENTED、Mac 検証済み）
+
+FE-CONTENTSEP で Core に新設した区切りの供給（`BaseItem.contentSeparations`）を、タイムラインのドラッグ吸着へ接続した。FE-CONTENTSEP 節で「スナップ UI の実装自体は本単位の範囲外として分離する」とした残件の処分である。吸着計算本体（`Timeline.getSnappedDelta`）は既存のままで、`extraSnapPoints` 引数への供給だけを新設した。
+
+- **本家の吸着規則**（逆コンパイル済みソースで確認）: 追加の吸着先（`extraSnapPoints`）に素材内部の区切りを使うのは、後端トリム（`TimelineItemViewModel.cs:483-491` の `ResizeFootCommand`）とキーフレームのドラッグ（`TimelineItemKeyFrameViewModel.cs:63-71` の `DragDeltaCommand`）だけである。移動（`MoveCommand`）と前端トリム（`ResizeHeadCommand`）は `extraSnapPoints` を渡さない。吸着先になるのは他のアイテムの区切りではなく、**ドラッグ中アイテム自身の区切り**である（後端やキーフレームを、素材自身の区切り位置へ吸着させる）。組み立ては両コマンドで同一の列操作: `item.ContentSeparations` のうち `TimeSpan.Zero < time` のものだけを残し、`timeline.VideoInfo.GetFrameFrom` でフレームへ換算し、アイテム内フレームが `item.Length + delta + snapDistance` 未満の間だけ取り（`TakeWhile`）、`item.Frame` を加えてタイムライン絶対位置にする。Shift を押している間は吸着自体を行わない（両コマンドとも修飾キーの判定が外側にある）。
+- **供給の組み立て（Core）**: `Timeline.contentSeparationSnapPoints(for:frameDelta:snapDistance:)` を `Sources/YMM4Core/Editing/TimelineEditing.swift` に新設した。本家の列操作そのまま: 正の時刻のみ → タイムラインの FPS（`videoInfo.frame(from:)`）でフレーム換算 → アイテム内フレームが `length + frameDelta + snapDistance` 未満の間だけ → 開始フレームを加えて絶対位置化。区切りは遅延列挙でループ時は無限に続くため、この上限が列挙の打ち切りを兼ねる。候補の生成範囲はドラッグ中アイテム1件に限られ、全アイテムは走査しない（本家も対象アイテムの区切りだけを読む）。`BaseItem.contentSeparations` のドキュメントコメントも、スナップがこの供給を使う現行形へ追随させた。
+- **結線（アプリ層）**: `Apps/DebugApp/Sources/YMM4MacDebug/TimelineInteractionView.swift` の2か所を変更した。(1) トリム経路: `getSnappedDelta` へ `extraSnapPoints: head ? [] : timeline.contentSeparationSnapPoints(...)` を渡す（後端のみ供給し、前端は本家どおり空）。従来のコメントにあった「Core に供給が無いため extraSnapPoints は空」という前提は FE-CONTENTSEP で解消済みのため、コメントも現行形へ書き換えた。(2) キーフレームドラッグ経路: 同じ組み立て結果を `extraSnapPoints` として渡す。移動経路は従来どおり（本家 `MoveCommand` も区切りを使わない）。Shift で吸着を行わない既存の分岐は両経路ともそのまま（供給はその分岐の内側にある）。
+- **手動チェックリストへの追加**（実機の目視確認は次回のフロントエンド目視確認に委ねる）: (1) 素材の区切りを持つアイテムの後端をドラッグし、素材内部の区切り位置へ後端が吸着すること。(2) キーフレームをドラッグし、素材内部の区切り位置へ吸着すること。(3) Shift を押しながらドラッグすると、区切りを含め吸着が一切効かないこと。(4) 前端トリムと移動では区切りへ吸着しないこと（本家どおり）。
+
+検証: Mac（~/ymm4-work/fe-snap/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象を絞った `swift test` で全合格 — `ContentSeparationSnapPointsTests` 8件（新規。自身の区切りが絶対位置で入ること、上限ちょうどでは入らないこと、ループ素材で上限まで繰り返し入ること、時刻が 0 以下になる区切りが入らないこと、他アイテムの区切りは入らないこと、後端が自身の区切りへ吸着すること、frameDistance の範囲外では吸着しないこと、キーフレームが自身の区切りへ吸着すること）、`ContentSeparationsTests` 30件、`TimelineEditingTests` 26件、`TimelineEditingLengthTests` 34件、計98件・失敗0。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+##### PR 本文の下書き（FE-SNAP-SEPARATIONS）
+
+## 概要
+タイムラインのドラッグ吸着へ、素材内部の区切り（ContentSeparations）の供給を接続する。FE-CONTENTSEP で Core に新設した `BaseItem.contentSeparations` の消費側として、後端トリムとキーフレームドラッグの吸着先にドラッグ中アイテム自身の区切りを加える。吸着計算本体（`getSnappedDelta`）と、移動・前端トリムの挙動は変更していない。
+
+**積み方**: 本 PR の基点は FE-CONTENTSEP 単位のブランチ（feat/fe-content-separations）であり、PR は同単位の PR の後に積む前提である（区切りの供給自体が同単位で新設されたもののため）。
+
+## 本家根拠
+- `TimelineItemViewModel.cs:483-491`（ResizeFootCommand: 自身の ContentSeparations から extraSnapPoints を組み立て、後端の代表点で GetSnappedDelta へ渡す）
+- `TimelineItemKeyFrameViewModel.cs:63-71`（DragDeltaCommand: 同一の組み立てをキーフレームドラッグで使う）
+- 移動（MoveCommand）と前端トリム（ResizeHeadCommand）は extraSnapPoints を渡さない（同ファイル内の各コマンドで確認）
+
+## 変更シンボル
+- 新設 `Timeline.contentSeparationSnapPoints(for:frameDelta:snapDistance:)`（`Sources/YMM4Core/Editing/TimelineEditing.swift`）: 本家の列操作（正の時刻のみ → FPS 換算 → `Length + delta + snapDistance` 未満の TakeWhile → 開始フレームを加えて絶対位置化）で追加の吸着先を組み立てる
+- `TimelineInteractionView`（DebugApp）: トリム経路（後端のみ）とキーフレームドラッグ経路の `getSnappedDelta` へ `extraSnapPoints` を供給
+- `BaseItem.contentSeparations` のドキュメントコメントを現行形へ追随
+
+## 設計判断
+- 組み立ては Core に置き、アプリ層は結果を渡すだけにした（組み立て規則が本家の列操作そのものであり、Core の回帰テストで固定できるため）。
+- 候補の生成範囲はドラッグ中アイテム1件に限る（本家も対象アイテムの区切りだけを読む。全アイテム走査はしない）。
+- 移動と前端トリムへは供給しない（本家が使わないため。「他のアイテムの区切りへ吸着する」形にもしない — 本家の規則は自身の区切りへの吸着である）。
+
+## テスト
+Mac で対象を絞って実行し全合格: ContentSeparationSnapPointsTests 8件（新規）・ContentSeparationsTests 30件・TimelineEditingTests 26件・TimelineEditingLengthTests 34件、計98件・失敗0。DebugApp の swift build 成功。全スイートと AudioDriftTests は未実施（対象を絞る方針による）。実機でのドラッグ吸着の目視確認は手動チェックリスト（台帳 FE-SNAP-SEPARATIONS 節）へ追加し、フロントエンド目視確認に委ねる。
+
+## 実装記録
+docs/IMPLEMENTATION_LOG.md の FE-SNAP-SEPARATIONS 節。docs/ARCHITECTURE.md の区切りの記述（「UI 側の接続は未実装（別単位）」）を接続済みの現行形へ追随させた。
