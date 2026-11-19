@@ -50,11 +50,18 @@ extension BaseItem {
     /// `ContentLength` の取得時に都度計算されるものを、こちらは
     /// 記録時点のエコー設定で確定させる）。画像アイテムは本家でも
     /// 長さを持たないため何もしない。
+    ///
+    /// 素材そのものの長さが 0 の場合は、本家が `ContentLength` を
+    /// エコー設定にかかわらず 0 とする規則（VideoItem.cs /
+    /// AudioItem.cs の取得経路）に従い、エコー尾を加えない
+    /// （FE-R15-001）。
     public func recordMediaInfo(_ info: MediaFileInfo) {
         switch self {
         case is VideoItem, is AudioItem:
             originalContentLength = info.duration
-            contentLength = info.duration + echoTailLength
+            contentLength = info.duration == .zero
+                ? .zero
+                : info.duration + echoTailLength
         default:
             break
         }

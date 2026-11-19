@@ -145,6 +145,22 @@ final class MediaItemLengthTests: XCTestCase {
         XCTAssertEqual(item.length, 318)
     }
 
+    /// 素材長がゼロなら、エコーが有効でも尾を加えず ContentLength は
+    /// ゼロのまま（FE-R15-001。本家 VideoItem.cs / AudioItem.cs の
+    /// ContentLength は素材長ゼロで Zero を返す）。長さは既定の
+    /// 300 フレームへ倒れる。
+    func testRecordMediaInfoWithZeroDurationIgnoresEchoTail() {
+        let item = AudioItem()
+        item.echoIsEnabled = true
+        item.echoInterval = 0.1
+        item.echoAttenuation = 40
+        item.recordMediaInfo(MediaFileInfo(duration: .zero))
+        XCTAssertEqual(item.originalContentLength, .zero)
+        XCTAssertEqual(item.contentLength, .zero)
+        item.resetLength(fps: 30)
+        XCTAssertEqual(item.length, BaseItem.defaultItemLength)
+    }
+
     func testRecordMediaInfoWithoutEchoKeepsRawDuration() {
         let item = VideoItem()
         item.recordMediaInfo(MediaFileInfo(duration: seconds(10), width: 1920, height: 1080))

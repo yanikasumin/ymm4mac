@@ -1403,6 +1403,12 @@ struct ProjectView: View {
     /// だけを対象に、長さの決定（編集操作層）を行ってから、
     /// Timeline の確定操作（tryAddItems）へ渡す。取得に失敗した
     /// ファイルは追加しない（空アイテムを残さない）。
+    ///
+    /// 取得は非同期で、その間にタイムラインの切り替えや削除が
+    /// 起き得る。確定時は対象タイムラインがまだプロジェクトに
+    /// 属していることを確認し（FE-R15-002）、選択の写し戻しは
+    /// 追加先が現在表示中のタイムラインの場合だけ行う（別タイム
+    /// ラインへの追加で表示中の選択状態を書き換えない）。
     private func addMediaFiles(
         _ entries: [(url: URL, kind: AddItemKind, group: PropertyFileGroup)],
         frame: Int, layer: Int, timeline: Timeline, baseDirectory: URL
@@ -1419,9 +1425,12 @@ struct ProjectView: View {
             newItems.append(item)
         }
         guard !newItems.isEmpty,
+              project.timelines.contains(where: { $0 === timeline }),
               timeline.tryAddItems(newItems, frame: frame, layer: layer)
         else { return }
-        reflectCoreSelection(timeline)
+        if self.timeline === timeline {
+            reflectCoreSelection(timeline)
+        }
         requestPreviewRender(modelChanged: true)
     }
 
@@ -1470,7 +1479,8 @@ struct ProjectView: View {
     ///
     /// 通知は記述子が新しいパスを書き込むより前に届くため、ここで
     /// 変更前のパスと素材長を捕捉できる。情報取得（供給層）を
-    /// 非同期に行い、対象の同一性と要求世代を照合してから、素材
+    /// 非同期に行い、対象の同一性と要求世代、タイムラインが
+    /// まだプロジェクトに属していることを照合してから、素材
     /// 情報を記録して編集終了時相当の長さ調整（編集操作層）を
     /// 行う。ファイルが存在しない場合は長さに触らず、状態表示で
     /// 知らせる（利用者のトリムを守る。パス文字列自体は記述子が
@@ -1505,6 +1515,7 @@ struct ProjectView: View {
                 audioTrackIndex: audioTrackIndex, baseDirectory: baseDirectory
             )
             guard fileChangeGenerations[key] == generation,
+                  project.timelines.contains(where: { $0 === timeline }),
                   timeline.items.contains(where: { $0 === item })
             else { return }
             guard let info else {
