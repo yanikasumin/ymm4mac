@@ -301,6 +301,228 @@ final class MediaItemLengthTests: XCTestCase {
         XCTAssertEqual(timeline.length, 100)
     }
 
+    // MARK: - FE-R15-006: エコー設定変更時の素材長再計算
+
+    /// エコーを後から有効にすると、記録済みの素材長へ現在の設定の
+    /// 尾が付く。本家は ContentLength の取得時に計算するため即時に
+    /// 反映される。長さはここでは追随しない（追随は編集終了時調整
+    /// の分岐 (2) の役割で、区切りの供給が無いため未実装）。
+    func testEchoEnableAfterRecordRefreshesContentLengthOnly() {
+        let item = AudioItem()
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        item.resetLength(fps: 30)
+        XCTAssertEqual(item.contentLength, seconds(10))
+        XCTAssertEqual(item.length, 300)
+        item.echoIsEnabled = true
+        // 間隔 0.1 秒・減衰 40% → 繰り返し 6 回、尾 0.6 秒。
+        XCTAssertEqual(item.contentLength, seconds(10.6))
+        XCTAssertEqual(item.length, 300)
+    }
+
+    /// エコーの間隔・減衰を変えるたびに尾が再計算される。
+    /// 無効化すると素材そのものの長さへ戻る。
+    func testEchoParameterChangesRefreshContentLength() {
+        let item = AudioItem()
+        item.echoIsEnabled = true
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        XCTAssertEqual(item.contentLength, seconds(10.6))
+        item.echoInterval = 0.2
+        // 尾 = 0.2 秒 × 6 回 = 1.2 秒。
+        XCTAssertEqual(item.contentLength, seconds(11.2))
+        item.echoAttenuation = 20
+        // 繰り返し = ceil(log(0.01) / log(0.2)) = 3、尾 = 0.2 × 3。
+        XCTAssertEqual(item.contentLength, seconds(10.6))
+        item.echoIsEnabled = false
+        XCTAssertEqual(item.contentLength, seconds(10))
+    }
+
+    /// 素材長が未記録（ゼロ）の間は、エコーを有効にしても素材長は
+    /// ゼロのまま（FE-R15-001 の規則を再計算でも守る）。
+    func testEchoRefreshKeepsZeroContentLengthAtZero() {
+        let item = AudioItem()
+        item.echoIsEnabled = true
+        XCTAssertEqual(item.originalContentLength, .zero)
+        XCTAssertEqual(item.contentLength, .zero)
+    }
+
+    /// 尾は再生速度の先頭値で比例する（GetEchoLength）。速度変更後
+    /// のエコー変更でも、その時点の速度で計算し直される。
+    func testEchoRefreshScalesTailWithPlaybackRate() {
+        let item = AudioItem()
+        item.playbackRate = 200
+        item.echoIsEnabled = true
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        // 尾 = 0.6 秒 × (200 / 100) = 1.2 秒。
+        XCTAssertEqual(item.contentLength, seconds(11.2))
+        item.echoAttenuation = 20
+        // 繰り返し 3 回、尾 = 0.1 × 3 × (200 / 100) = 0.6 秒。
+        XCTAssertEqual(item.contentLength, seconds(10.6))
+    }
+
+    // MARK: - FE-R15-004 分岐 (3): 再生速度変更時の比率再計算
+
+    /// 定数速度を半分にすると、消費量を保つため長さは 2 倍になる。
+    func testPlaybackRateChangeRescalesLengthByRatio() {
+        let item = AudioItem()
+        item.length = 300
+        item.playbackRate = 50
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertEqual(item.length, 600)
+    }
+
+    /// 定数速度を 2 倍にすると長さは半分になる。
+    func testPlaybackRateChangeHalvesLengthWhenDoubled() {
+        let item = AudioItem()
+        item.length = 300
+        item.playbackRate = 200
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertEqual(item.length, 150)
+    }
+
+    /// 換算結果の小数部は切り捨てる（本家は double から int への
+    /// キャスト）。100 フレームを 3 倍速にすると 33 フレーム。
+    func testPlaybackRateChangeTruncatesFraction() {
+        let item = AudioItem()
+        item.length = 100
+        item.playbackRate = 300
+        XCTAssertTrue(item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        ))
+        XCTAssertEqual(item.length, 33)
+    }
+
+    /// 旧速度が 0 の場合は、消費量を長さそのものとして扱う
+    /// （本家の特殊分岐）。300 フレームを 50% にすると 600。
+    func testPlaybackRateChangeFromZeroRateUsesLengthAsConsumed() {
+        let item = AudioItem()
+        item.length = 300
+        item.playbackRate = 0
+        item.playbackRate = 50
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 0, previousIsConstant: true, fps: 30
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertEqual(item.length, 600)
+    }
+
+    /// 新速度が 0 の場合は長さを換算しない（符号反転も起きない
+    /// ため、何も変わらない）。
+    func testPlaybackRateChangeToZeroKeepsLength() {
+        let item = AudioItem()
+        item.length = 300
+        item.playbackRate = 0
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        )
+        XCTAssertFalse(adjusted)
+        XCTAssertEqual(item.length, 300)
+    }
+
+    /// 換算結果が 1 未満なら既定の長さ（300）へ倒す。
+    func testPlaybackRateChangeFallsBackToDefaultWhenResultBelowOne() {
+        let item = AudioItem()
+        item.length = 10
+        item.playbackRate = 2000
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertEqual(item.length, BaseItem.defaultItemLength)
+    }
+
+    /// 符号が反転しない速度変更ではオフセットに触らない。
+    func testPlaybackRateChangeWithoutSignFlipKeepsContentOffset() {
+        let item = AudioItem()
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        item.contentOffset = seconds(2)
+        item.length = 300
+        item.playbackRate = 50
+        XCTAssertTrue(item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        ))
+        XCTAssertEqual(item.length, 600)
+        XCTAssertEqual(item.contentOffset, seconds(2))
+    }
+
+    /// 符号反転時はオフセットを素材の終端側へ付け替える:
+    /// ContentLength − (ContentOffset + 長さの時間 × |旧速度| / 100)。
+    /// 同じ速さの反転では長さは不変で、オフセットだけが動く。
+    func testPlaybackRateChangeSignFlipReanchorsContentOffset() {
+        let item = AudioItem()
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        item.contentOffset = seconds(2)
+        item.length = 300
+        item.playbackRate = -100
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertEqual(item.length, 300)
+        // 10 − (2 + 10 秒 × 100 / 100) = −2 秒（本家はクランプしない）。
+        XCTAssertEqual(item.contentOffset, seconds(-2))
+    }
+
+    /// 符号反転と倍率変更が同時の場合、付け替えには新しい長さと
+    /// 旧速度を使う。100% → −50%: 長さ 300 → 600、オフセットは
+    /// 10 − (2 + 20 秒 × 100 / 100) = −12 秒。
+    func testPlaybackRateChangeSignFlipUsesNewLengthAndOldRate() {
+        let item = AudioItem()
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        item.contentOffset = seconds(2)
+        item.length = 300
+        item.playbackRate = -50
+        XCTAssertTrue(item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        ))
+        XCTAssertEqual(item.length, 600)
+        XCTAssertEqual(item.contentOffset, seconds(-12))
+    }
+
+    /// 編集開始時点で定数でなければ分岐に入らない。
+    func testPlaybackRateChangeRejectedWhenPreviousNotConstant() {
+        let item = AudioItem()
+        item.length = 300
+        item.playbackRate = 50
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: false, fps: 30
+        )
+        XCTAssertFalse(adjusted)
+        XCTAssertEqual(item.length, 300)
+    }
+
+    /// 編集後の種別が定数でなければ分岐に入らない。
+    func testPlaybackRateChangeRejectedWhenCurrentNotConstant() {
+        let item = AudioItem()
+        item.length = 300
+        item.playbackRate2 = Animation(
+            defaultValue: 50, minValue: -100_000, maxValue: 100_000,
+            animationType: .linear,
+            values: [AnimationValue(50), AnimationValue(50)]
+        )
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        )
+        XCTAssertFalse(adjusted)
+        XCTAssertEqual(item.length, 300)
+    }
+
+    /// 先頭値が変わっていなければ何もしない。
+    func testPlaybackRateChangeWithSameValueDoesNothing() {
+        let item = AudioItem()
+        item.length = 300
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        )
+        XCTAssertFalse(adjusted)
+        XCTAssertEqual(item.length, 300)
+    }
+
     // MARK: - PlaybackRateMap.findContentExhaustedTime
 
     /// テーブルの範囲内で尽きる場合の交点計算。

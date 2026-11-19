@@ -24,12 +24,19 @@ public final class VideoItem: VisualItem {
     public var playbackRateAudioProcessingMode: PlaybackRateAudioProcessingMode = .resampling
     /// ループするか。
     public var isLooped: Bool = false
-    /// エコーを有効にするか。
-    public var echoIsEnabled: Bool = false
+    /// エコーを有効にするか。書き込み時に素材長（エコー尾込み）を
+    /// 現在の設定で計算し直す（FE-R15-006。本家は取得時に計算）。
+    public var echoIsEnabled: Bool = false {
+        didSet { refreshContentLengthForEchoSettings() }
+    }
     /// エコーの間隔（秒）。
-    public var echoInterval: Double = 0.1
+    public var echoInterval: Double = 0.1 {
+        didSet { refreshContentLengthForEchoSettings() }
+    }
     /// エコーの減衰（%）。
-    public var echoAttenuation: Double = 40
+    public var echoAttenuation: Double = 40 {
+        didSet { refreshContentLengthForEchoSettings() }
+    }
     /// 音声エフェクト（生 JSON で保持）。
     public var audioEffects: [PreservedObject] = []
 

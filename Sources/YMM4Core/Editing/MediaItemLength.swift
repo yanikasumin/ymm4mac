@@ -45,23 +45,46 @@ extension BaseItem {
 
     /// 取得済みのメディア情報を記録する（配置の調整層の入口）。
     ///
-    /// `originalContentLength` へ素材そのものの長さを、
-    /// `contentLength` へエコー尾を含む長さを入れる（本家では
-    /// `ContentLength` の取得時に都度計算されるものを、こちらは
-    /// 記録時点のエコー設定で確定させる）。画像アイテムは本家でも
-    /// 長さを持たないため何もしない。
-    ///
-    /// 素材そのものの長さが 0 の場合は、本家が `ContentLength` を
-    /// エコー設定にかかわらず 0 とする規則（VideoItem.cs /
-    /// AudioItem.cs の取得経路）に従い、エコー尾を加えない
-    /// （FE-R15-001）。
+    /// `originalContentLength` へ素材そのものの長さを入れ、
+    /// `contentLength` は `refreshContentLengthForEchoSettings` で
+    /// 現在のエコー設定から計算する。本家では `ContentLength` が
+    /// 取得時に都度計算されるため、こちらも記録の一時点では
+    /// 終わらせず、エコー設定の書き込みに追随させる（FE-R15-006）。
+    /// 画像アイテムは本家でも長さを持たないため何もしない。
     public func recordMediaInfo(_ info: MediaFileInfo) {
         switch self {
         case is VideoItem, is AudioItem:
             originalContentLength = info.duration
-            contentLength = info.duration == .zero
+            refreshContentLengthForEchoSettings()
+        default:
+            break
+        }
+    }
+
+    /// 素材長（エコー尾込み）を現在のエコー設定で計算し直す
+    /// （FE-R15-006）。
+    ///
+    /// 本家は `ContentLength` の取得のたびに、ファイルの再生時間へ
+    /// 現在のエコー設定の尾を加える（VideoItem.cs / AudioItem.cs の
+    /// `ContentLength` 取得経路。エコープロパティの setter は
+    /// `ContentLength` の変更通知を出す）。こちらは保持値のため、
+    /// 動画・音声アイテムのエコープロパティの書き込み（didSet）から
+    /// この再計算を呼んで追随させる。規則は記録時と同一: 素材その
+    /// ものの長さが 0 の場合は、本家が `ContentLength` をエコー設定
+    /// にかかわらず 0 とする規則に従い、エコー尾を加えない
+    /// （FE-R15-001）。
+    ///
+    /// 長さ（`length`）自体はここでは変えない。本家で長さが素材長
+    /// の変化へ追随するのは編集終了時調整の分岐 (2)（長さの終端が
+    /// 区切り上にある場合の `ResetLength`）であり、区切り
+    /// （`ContentSeparations`）の供給が Mac 側 Core に無いため
+    /// 未実装（実装台帳 FE-R15-EDITEND の設計メモ参照）。
+    public func refreshContentLengthForEchoSettings() {
+        switch self {
+        case is VideoItem, is AudioItem:
+            contentLength = originalContentLength == .zero
                 ? .zero
-                : info.duration + echoTailLength
+                : originalContentLength + echoTailLength
         default:
             break
         }
@@ -143,5 +166,75 @@ extension BaseItem {
         }
         resetLength(fps: fps, resetContentOffset: true)
         return true
+    }
+
+    /// 編集終了時の再生速度変更に対する長さ調整（FE-R15-004 の
+    /// 分岐 (3)）。本家アイテムエディタの編集終了処理
+    /// （`ItemEditorViewModel.EditingValue.EndEdit`）のうち、再生
+    /// 速度に対応する分岐。
+    ///
+    /// 編集前後とも再生速度が定数（アニメーション種別「なし」）で
+    /// 先頭値が変わった場合に、素材の消費量を保つよう長さを比率で
+    /// 換算する。消費量は「長さ × |旧速度| / 100」（旧速度が 0 の
+    /// 場合は長さそのもの。本家の特殊分岐）で、新しい長さは
+    /// 「消費量 / |新速度| × 100」の小数部を切り捨てた値。新速度が
+    /// 0 の場合は長さを換算しない。換算結果が 1 未満なら既定の
+    /// 長さ（300 フレーム）へ倒す。速度の符号が反転した場合は、
+    /// 素材の終端側から見た再生位置を保つようオフセットを
+    /// 付け替える: `ContentLength − (ContentOffset + 新しい長さを
+    /// 時間換算した値 × |旧速度| / 100)`（時間換算は
+    /// `VideoInfo.GetTimeFrom` = `FrameTime` のフレーム→時間）。
+    ///
+    /// 本家の分岐は else-if 連鎖で、分岐 (1)（素材そのものの長さが
+    /// 変わった場合の決め直し）が優先する。ファイル変更の経路は
+    /// `adjustLengthAfterFileChange` が分岐 (1) を担うため、こちらは
+    /// 素材そのものの長さが変わっていない編集（速度だけの変更）で
+    /// 呼ぶこと。分岐 (2)（素材長が変わり、かつ長さの終端が区切り
+    /// 上にある場合の決め直し）は、区切り（`ContentSeparations`）
+    /// の供給が Mac 側 Core に無いため未実装（実装台帳
+    /// FE-R15-EDITEND の設計メモ参照）。
+    ///
+    /// - Parameter previousFirstValue: 編集開始時点の再生速度の
+    ///   先頭値（%）。
+    /// - Parameter previousIsConstant: 編集開始時点で再生速度が
+    ///   定数だったか。
+    /// - Parameter fps: オフセット付け替えの時間換算に使う FPS
+    ///   （所属タイムラインの値。本家は `timeline.VideoInfo`）。
+    /// - Returns: 長さまたはオフセットを変えたら true（呼び出し側
+    ///   はタイムライン長のキャッシュ再計算の判断に使う。
+    ///   FE-R16-001）。
+    @discardableResult
+    public func adjustLengthAfterPlaybackRateChange(
+        previousFirstValue: Double, previousIsConstant: Bool, fps: Int
+    ) -> Bool {
+        guard previousIsConstant,
+              playbackRate2.animationType == .none else { return false }
+        let newFirstValue = playbackRate2.firstValue
+        guard newFirstValue != previousFirstValue else { return false }
+        let oldLength = length
+        let oldContentOffset = contentOffset
+        if newFirstValue != 0 {
+            let consumed = previousFirstValue == 0
+                ? Double(length)
+                : Double(length) * abs(previousFirstValue) / 100
+            // 本家は double から int へのキャスト（0 方向への
+            // 切り捨て）。消費量・長さは負にならないため床と一致する。
+            length = Int(consumed / abs(newFirstValue) * 100)
+        }
+        if length < 1 {
+            length = Self.defaultItemLength
+        }
+        if (previousFirstValue < 0) != (newFirstValue < 0) {
+            let lengthTime = TimeSpanValue(
+                seconds: FrameTime.time(fromFrame: length, fps: fps)
+            )
+            let scaled = TimeSpanValue(
+                ticks: Int64(
+                    Double(lengthTime.ticks) * abs(previousFirstValue) / 100
+                )
+            )
+            contentOffset = contentLength - (contentOffset + scaled)
+        }
+        return length != oldLength || contentOffset != oldContentOffset
     }
 }
