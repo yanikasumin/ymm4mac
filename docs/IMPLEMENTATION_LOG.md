@@ -2124,3 +2124,90 @@ PR #126 の Round 21 新規指摘「失効したセッショントークンが�
 - **残る論点（本処分の範囲外として明記）**: プロジェクト切り替え後の遅延イベントのうち、トークンを提示する経路は本契約で断たれる。トークンを持たない離散編集の遅延イベントはビューの破棄（プロジェクト切り替えで画面が作り直される既存構造）に依存しており、本処分では扱っていない。
 
 検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+## FE-R1-031 最適化・第一段階: YmmpCodec の詳細計測と高速化
+
+監査判断（FE-R1-031 計測単位の設計判断）に基づく第一段階。スナップショット生成（`Project.makeExportSnapshot` = YmmpCodec のエンコード＋デコード＋参照再解決）の所有方式は現行維持し、変更範囲は YmmpCodec とその周辺の実装内部に限る。生成の背景化は第二段階（本単位ではしない）。100ms 間引きも現状維持。本家コードは無関係（Mac 側実装の最適化）。
+
+### 詳細計測の定義
+
+計測ハーネス `snapshot031-harness` に detail モードと spin モードを追加した（コミット `89d8a2f`）。定義の正本はハーネスのコメント。
+
+- エンコード = ツリー構築（`JSONValue` 構築）＋文字列化。公開 API ではツリー構築を直接測れないため、文字列化は「エンコード出力をパースして得た等価なツリーの `serialized()`」で代理計測し（セットアップ時に再直列化の出力がエンコード結果とバイト一致することを検証する）、ツリー構築は encodeMs − serializeMs の差分として扱う。
+- デコード = JSON 解析＋構築。JSON 解析は公開されている `JSONParser.parse()` を直接測り、構築（オブジェクト構築＋参照再解決）は decodeMs − parseMs の差分とする。参照再解決はデコードに内包され分離できない。本計測の規模条件ではキャラクター数が 0〜2 件で、再解決は早期リターンまたは小規模走査に限られ、構築差分への寄与は無視できる規模である。
+- spin モードは `sample` によるホットスポット特定用にエンコード＋デコードを繰り返す。
+- 条件は前回計測と同一: 規模3種（small = `Apps/DebugApp/Sample/sample.ymmp` 9アイテム、medium = 実プロジェクト158アイテム、large = 合成474アイテム）、温間 n=50、release ビルド、Mac 実測（Apple M2 8コア、macOS 26.3）。記録の正本は機械書き JSONL: `Harnesses/snapshot031-harness/results/codec-detail.jsonl`（1060行、全フェーズ分）と最終形の breakdown 形式 `results/snapshot031-final.jsonl`。実プロジェクトのファイル自体はコミットしていない（計測データはリポジトリ外の Mac 上のディレクトリから読む）。
+- 計測中の Mac の状態: 他の swift プロセスは無し。ただし Chrome ヘルパー等で load average は 4〜7 程度あり、phase=opt4-resolver の回は全フェーズが軒並み悪化する全体的な速度低下が見られた（当該回の解釈では割り引く）。
+
+### 詳細計測の結果（初期値、温間 p50、単位 ms）
+
+| 規模 | encode | ツリー構築 | 文字列化 | decode | JSON解析 | 構築 | 合計 |
+|---|---|---|---|---|---|---|---|
+| small（9件） | 1.10 | 0.28 | 0.82 | 0.77 | 0.58 | 0.19 | 1.87 |
+| medium（158件） | 17.12 | 3.56 | 13.56 | 12.79 | 9.13 | 3.66 | 29.82 |
+| large（474件） | 51.45 | 10.75 | 40.70 | 52.16 | 27.41 | 24.72 | 103.34 |
+
+- 文字列化がエンコードの約8割を占める。JSON 解析が中規模デコードの約7割。
+- 構築は規模に対して超線形に伸びる（158→474件で 3.66→24.72ms、約6.8倍）。
+- `sample` プロファイル（spin、大規模）: 最上位は `Timeline.items.didset`（793サンプル）。次いで文字列追加系（`_StringGuts.append` 510、`_allASCII` 251、`String._uncheckedFromUTF8` 238）、`JSONValue.writeEscaped` 163、`JSONParser.parseString` 120。`PreservedObject.applyingTypeMigration` 経由で `RenamedTypeResolver.resolveTypeName` の `split` と文字列補間も目立つ。
+
+根拠の特定（コード確認）:
+
+1. `Timeline.items` の didSet（`Sources/YMM4Core/Model/Timeline.swift`）は代入のたびに「旧配列から新配列に残っていないアイテム」を同一性で全走査して選択から除く。デコード時の唯一の追加経路である `decodeTimeline` が1件ずつ append していたため、代入回数×走査が二乗オーダになっていた（構築の超線形と一致）。
+2. 文字列化（`JSONValue.write(into:)` / `writeEscaped`）は `String` へスカラ・トークン単位で `+=` しており、追加ごとの検査と再確保が支配的だった。
+3. `RenamedTypeResolver.resolveTypeName` はアイテムと保持オブジェクトの型名ごとに呼ばれ、全入力に対して `split` と最大11件の文字列補間による総当たり照合をしていた。実際に変更されるのは「完全名が `YukkuriMovieMaker.Project.Effects.` 配下の特定クラス（コミュニティ移行11件＋OutlineLite）で、アセンブリ部（1つ目と2つ目の "," の間を空白トリム）が `YukkuriMovieMaker`」の場合だけである。
+
+### 入れた高速化（各変更の前後数値は温間 p50）
+
+1. **文字列化のバイトバッファ化**（`JSONValue.serialized()` / `write(into:)` / `writeEscaped`、コミット `453a163`）: 出力を `[UInt8]` バッファへ組み立て、通常バイト列は区間をまとめて写し、最後に `String(decoding:as:)` で文字列化する。エスケープ規則は従来と同一に保った（短縮形は `\"` `\\` `\n` `\r` `\t` のみ、その他の制御バイトは `\u00` ＋16進2桁）。文字列化は中規模 13.56→4.00ms、大規模 40.70→11.99ms。生成合計は中規模 29.82→20.21ms、大規模 103.34→74.63ms。
+2. **（不採用）パーサの文字列読み取りの区間コピー（配列アクセス版）**: JSON 解析は中規模 9.13→9.28ms、大規模 27.41→27.97ms と効果が測れず（誤差範囲で微増）、巻き戻した。効果の測れない変更は入れない。計測記録は `codec-detail.jsonl` の phase=opt2-parser に残る。
+3. **decodeTimeline のアイテム一括代入**（`YmmpCodec.decodeTimeline`、コミット `186654c`）: アイテムをローカル配列へ集め、フィールド走査の後に `timeline.items` へ一括代入する（didSet は1回だけ発火し、旧配列が空のため掃除は実質なし）。最終的な内容と診断の記録順は従来と同一。なお didSet 自体のアルゴリズム変更ではなくコーデック側の代入回数の削減を選んだのは、変更範囲を YmmpCodec 周辺に限るため。構築は大規模 24.67→8.85ms、中規模 3.66→3.00ms。生成合計は大規模 74.63→58.84ms。
+4. **RenamedTypeResolver の高速パス**（コミット `9185456`）: 最初の "," で完全名を切り、名前空間の接頭辞とクラス名の集合照合で早期に振り分ける。アセンブリ部の範囲とトリム規則は従来の `parts[1]` と同一で、一致した場合の出力文字列も従来どおり組み立てるため、結果は同一。構築は中規模 3.00→2.52ms、大規模 8.85→7.56ms（全体的な速度低下が見られた回での改善）。
+5. **JSONParser のポインタベース化**（コミット `34c3a45`）: 公開 API（`init(text:)` / `parse()`）と検査条件・エラー文言・オフセット・深さ上限は同一に保ち、解析本体を `UnsafeBufferPointer` 上で動く内部構造体へ移した（配列の添字アクセスに伴う境界検査と所有権検査を排除）。文字列読み取りはエスケープの無い区間をまとめて写す形も併せて採用した。JSON 解析は中規模 9.13→8.20ms、大規模 27.46→24.73ms（共に約1割の改善）。
+
+### 再計測（最終形、同条件・温間 p50、単位 ms）
+
+detail 形式の最終フェーズと、前回計測と同形式の breakdown の双方で実施し、合計はほぼ一致した（中規模 17.96 / 17.92、大規模 54.14 / 54.21）。
+
+| 規模 | encode（構築／文字列化） | decode（解析／構築） | 合計 | 詳細計測の初期値 |
+|---|---|---|---|---|
+| small（9件） | 0.53（0.29／0.25） | 0.71（0.53／0.18） | 1.24 | 1.87（−34%） |
+| medium（158件） | 7.50（3.55／3.94） | 10.53（8.22／2.32） | 17.96 | 29.82（−40%） |
+| large（474件） | 22.60（10.72／11.87） | 31.74（24.63／7.10） | 54.14 | 103.34（−48%） |
+
+- 前回単位（FE-R1-031 計測）の breakdown 値（中規模 29.84ms、大規模 103.52ms）とも整合する。
+- 残る内訳では JSON 解析が最大のフェーズになった（大規模 24.63ms）。これ以上の解析の高速化は `JSONValue` の表現自体の変更（遅延解析など）を要し、意味論へのリスクが高いため第一段階では入れない。文字列化とツリー構築も大規模で各11ms前後が残る。
+- 生成合計は中規模で約18ms と、1フレーム（16.7ms）を依然わずかに超える。背景化（第二段階）の要否は実機の表示遅延計測（監査の手順4）が前提であり、本単位の範囲外として残る。第一段階はここまでとし、無理な最適化は重ねない。
+
+### 互換性の確認
+
+- エンコード出力のバイト数は全規模で初期値と一致した（47,398 / 780,172 / 2,339,048 バイト）。ハーネスのセットアップ検証（再直列化の出力＝エンコード結果）も全フェーズで通過している。
+- `PreservedObject` 等の未知フィールド生保持の意味論は変更していない。型名解決の高速パスは、従来の照合範囲・トリム規則・出力文字列を等価に保つ形で実装した。
+- デコードの参照再解決の結果は従来と同一（`CharacterReferenceTests` で固定）。
+- テスト（Mac、~/ymm4-work/fe-r031opt/YMM4Mac で実施）: 対象を絞った実行で YmmpCodecTests 25件・CharacterReferenceTests 7件・InputValidationTests 12件の計44件・失敗0。さらに基盤変更のため Core 全体も実行した: `swift test --skip AudioDrift` で 832件・失敗0（所要約35分。実行中の Mac は load average 10前後の高負荷だった）。AudioDriftTests は本単位が音声クロック・リサンプリング中核の変更を含まないため、既定どおり除外した。
+
+### PR 本文の下書き
+
+> ## FE-R1-031 最適化・第一段階: YmmpCodec の詳細計測と高速化
+>
+> **要件ID**: FE-R1-031（スナップショット生成の第一段階最適化。監査判断: 所有方式は現行維持、(b) コーデックのエンコード／デコード費用削減を第一段階とし、背景化は第二段階）
+>
+> **本家根拠**: なし（Mac 側実装の性能最適化。本家の振る舞い・ファイル形式の意味は変更しない）
+>
+> **変更したシンボル**:
+> - `JSONValue.serialized()` / `write(into:)` / `writeEscaped`（文字列化を UTF-8 バイトバッファ化）
+> - `JSONParser`（解析本体をポインタベースの内部構造体へ移設。公開 API・エラー文言・オフセット・深さ上限は不変）
+> - `YmmpCodec.decodeTimeline`（アイテムの一括代入）
+> - `RenamedTypeResolver.resolveTypeName`（高速パス。結果は同一）
+> - `Harnesses/snapshot031-harness`（detail / spin モードと集計の拡張、結果 JSONL）
+>
+> **設計判断**:
+> - 互換性最優先: エンコード出力のバイト列は従来と同一（生成バイト数は全規模で不変）、`PreservedObject` の意味論と参照再解決の結果は不変。
+> - 効果の測れない変更は入れない（パーサの区間コピーのみの変更は実測で効果が無く巻き戻した。記録は台帳に残る）。
+> - スナップショットの所有方式・呼び出し側（ProjectView の間引き）は変更しない。背景化は第二段階。
+>
+> **計測結果**（温間 p50、Mac 実測、前回と同条件）: 生成合計は中規模（158件）29.82→17.96ms（−40%）、大規模（474件）103.34→54.14ms（−48%）。正本は `Harnesses/snapshot031-harness/results/codec-detail.jsonl`。
+>
+> **実行したテスト**: YmmpCodecTests 25件・CharacterReferenceTests 7件・InputValidationTests 12件（計44件・失敗0）、および Core 全体 832件・失敗0（AudioDriftTests を除外）
+>
+> **実装記録**: docs/IMPLEMENTATION_LOG.md の「FE-R1-031 最適化・第一段階」節。
