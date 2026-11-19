@@ -152,31 +152,11 @@ extension TimelineStripView {
         }
     }
 
-    // MARK: - 目盛りメニュー（本家 §2.2。追加は8種のみが本家）
+    // MARK: - 目盛りメニュー（本家 §2.2）
 
-    @ViewBuilder
-    func rulerContextMenu() -> some View {
-        Menu(UIStrings.Menu.addItem) {
-            ForEach(
-                [AddItemKind.voice, .text, .video, .audio, .image, .shape, .tachie, .face],
-                id: \.self
-            ) { kind in
-                Button(kind.displayName) { addItemAtPlayhead(kind: kind) }
-            }
-        }
-        Divider()
-        Button(UIStrings.Timeline.splitAtPlayhead) { splitAtPlayhead() }
-        Divider()
-        Button(UIStrings.Menu.selectLeftItems) {
-            selectItems { $0.frame + $0.length <= currentFrame }
-        }
-        Button(UIStrings.Menu.selectRightItems) {
-            selectItems { $0.frame >= currentFrame }
-        }
-        Button(UIStrings.Menu.selectAll) {
-            selectItems { _ in true }
-        }
-    }
+    // 目盛りは AppKit 化したため、メニューは TimelineScrollView.swift の
+    // TimelineRulerView が NSMenu で組み、操作は TimelineRulerActions
+    // 経由でこのファイルのメソッド（addItemAtPlayhead 等）を共有する。
 
     // MARK: - アイテム上メニュー（本家 §2.4）
 

@@ -1664,3 +1664,56 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 - **FE-R3-118-02（P2、Round 3 指摘。非有限値が保存時に 0.0 へ化ける）**: 数値欄は `Double("nan")` / `Double("inf")` の解釈成功だけでモデルへ書き込んでおり、`PropertyMetadata.setNumberValue` にも有限性検査が無かったため、非有限値がモデルへ入り、保存時に `JSONValue` の `newtonsoftDoubleLiteral` が 0.0 リテラルへ置換していた。処分は2層: (1) UI 層 — `NumberRowView` と `AnimationRowView` の確定処理で、解釈した値が有限でない場合はモデルへ書き込まず `onEdited` も発火させず、表示を現在値へ戻す（FE-R1-019 の未編集判定と共存する形）。(2) Core 層（防御）— `PropertyDescriptor.setNumberValue` で非有限値を弾いて false を返す。`setNumberValue` の呼び出し元は UI の2か所（スライダ binding・数値欄の確定）とテストのみで、有限値の通常動作は変わらない。テスト: `PropertyMetadataTests.testSetNumberValueRejectsNonFiniteValues` を追加（nan / +infinity / -infinity で false を返し値が保持されること、有限値の書き込みが従来どおりであること）。
 
 検証: アプリ層に実行可能ターゲットのテスト基盤は無い（テストターゲットは PreviewCore のみ）ため、003/004/005/019 の再現条件は本節を検証手順とする — 003: 3アイテムで末尾を選択し先頭を右クリック削除して選択が同じ個体を指すこと。004: 複数レイヤーにアイテムを置き、選択中アイテムより上のレイヤーを削除して選択が同じ個体を指すこと、選択中アイテムのレイヤー削除で選択が解除されること。005: ステータスバーの時刻欄へ "nan"、"inf"、"1:nan"、"99999999999999999999" を入力して異常終了せずシークも起きないこと。019: 小数第5位以下を持つ値（例: 0.123456789）を表示する数値欄へフォーカスして離れ、値が変わらないこと。Mac のビルド確認は当初統合 QA の全スイート実行中のため重ねず未実施と記録したが、実際には 2026-11-19 に親側で実施済みである（fe-batch1 ツリーを Mac の ~/ymm4-work/fe-batch1/YMM4Mac へ同期し、Apps/DebugApp の swift build 成功、全212ステップ）。Round 3 処分後の再検証（2026-11-19、Mac）: FE-R3-118-01 の機構を Swift スクリプトで確認した（2^63 の Double が旧ガードを通過すること、`Int(exactly:)` が nil を返すこと、fps=1・入力 "9223372036854775808" の経路再現で nil になること、正常値 90.0 / -30.0 の変換が不変であること。アプリ層にテストターゲットが無いため、回帰の固定はこの機構確認と「変換点が Int(exactly:) の1か所のみ」というコード形状による）。Apps/DebugApp の swift build 成功。`PropertyMetadataTests` の新規テスト `testSetNumberValueRejectsNonFiniteValues` と既存の setNumberValue 利用テスト（PropertyMetadataTests 3件・EffectPropertyMetadataTests 4件）を方式名フィルタで実行し全て合格（XCTest 側の Executed で判定）。
+
+#### FE-TIMELINE — タイムライン再構築（フロントエンド監査 単位1。FE-R1-032 ほか）
+
+監査台帳は frontend-audit/FE-R1-FINDINGS.md、設計判断は FE-R2-DESIGN.md（タイムライン節、受け入れ条件 R2-T01〜T03）。起点は PR #118 のブランチ（feat/fe-batch1 @ 99b3081）で、バッチ1のタイムライン修正（003/004/010）を含む。従来のタイムラインは「アイテムブロックにドラッグ移動・トリムが無く、背景の DragGesture がシークと ScrollView のパンを兼ねて競合し、選択は配列インデックス基準、目盛りは手動オフセットで追従してずれる」という状態だった。
+
+**採用した構造。**
+- スクロール: SwiftUI ScrollView を廃し、NSScrollView をスクロール位置の唯一の所有者にした（新設 `TimelineScrollView.swift`）。キャンバスは反転ドキュメントビューに SwiftUI コンテンツ（NSHostingView）と操作層を重ねる。目盛りは AppKit の `TimelineRulerView` がキャンバス側クリップビューの原点を描画時に直接読んで描く（独自オフセットを持たない）。レイヤーラベル列は専用 NSScrollView のクリップ原点をキャンバス側へ同期させる（双方向同期、再入ガードつき）。SwiftUI の @State（horizontalOffset / verticalOffset）へは報告用の写しとしてだけ流し、縦グリッドの間引き・仮想化の範囲・追加位置のレイヤー決定に使う。
+- 操作層: 新設 `TimelineInteractionView.swift`。キャンバスの上に重なる AppKit ビューが左ボタンを一手に引き受け（右ボタンはヒットテストを素通しして下の SwiftUI コンテキストメニューへ渡す）、本家の TimelineItemView / TimelineItemViewModel の規則でドラッグセッションを回す。SwiftUI 側（`TimelineStripView.swift`）はアイテム描画とコンテキストメニューに専念し、アイテムビューは可視範囲（前後1画面分の余白つき）だけを生成する仮想化にした（FE-R1-032）。ForEach の同一性は ObjectIdentifier に変更。
+- 選択: 正本を Core の `selectedItems`（同一性）に寄せた。ストリップの表示は Core 選択でハイライトし、`selectedItemIndex` は ProjectView のインスペクタ向けの写し（先頭アイテム）として従来どおり維持する。ProjectView 側の接続変更は `syncSelectionToTimeline` の1点のみ: Core の複数選択が UI 選択のアイテムを含む場合は複数選択を正として残し、含まない場合だけ従来どおり単一へ同期する（プレビュー側クリック等で UI 選択だけが動いた場合の従来動作は不変）。
+
+**ドラッグセッションの規則（本家 TimelineItemViewModel.cs / TimelineItemView.cs で裏取り）。**
+- MouseDown でモードを固定する。優先順位は本家 DecideMode どおり: 左つまみ（min(6px, 幅/3)）→右つまみ→キーフレーム近傍（6px以内）→ロックボタン→移動。移動モードのクリック選択は本家 SelectItemWithKeyboardStatus 相当（通常=未選択なら単独選択、Shift=範囲選択、トグル=後述の Command）。トリムは未選択なら単独選択にしてから始める。
+- DragStart（本家 DragStartCommand）: Alt（Option）単独なら `unsafeCloneWithoutCollision()` で複製し（選択は元の側に残り、ドラッグで元の側が動く）、開始値を押さえ、`resolveItemCollision(selectedAndGroupedItems)` を呼ぶ。
+- MouseMove ではモデルを逐次更新する。デルタは本家と同値になるよう「開始時からの累積 − モデルへ適用済みの分」の残り量で計算する（本家はアイテムビュー自体がモデルに追随して動くため Delta が残り量になる。こちらはビューが動かないので現在値と開始値の差で同じ量を作る）。レイヤー量は本家 GetDeltaFrameAndLayer の非対称な式（下向きは下端、上向きは上端を越えた分で切り替え）を残り量形式で再現。移動は `moveSelectedAndGroupedItems`（隣接吸着の extraDeltaFrame の振り分け条件も本家 MoveCommand どおり）、トリムは `changeSelectedAndGroupedItemsLength`、吸着は `getSnappedDelta`（対象=現在フレーム・アイテム端・キーフレーム、距離は SnapTargetPixelDistance 既定5px を換算、レイヤー距離は既定3）を使い、ビュー内に移動計算を複製していない。Shift で吸着オフ、トリムの隣接影響は Ctrl（ドラッグ途中の押下で判定。既定モード None との XOR で Stretch）。
+- MouseUp で確定する。確定接続点は `TimelineStripView.onDragCommitted`（変更があった場合にセッションにつき1回だけ。開始は `onDragBegan`、キャンセルは `onDragCancelled`）。現時点では未接続で、Undo アプリ層接続単位がここへ EditCoordinator のトランザクション（開始・確定・取消）を差す。コンテキストメニュー等の離散操作は従来どおり `onEdited` 経路のままで、本単位の接続点には含めていない。
+- キャンセル: Escape（ローカルキー監視）／ウィンドウの非アクティブ化（didResignKey）／対象アイテムのドラッグ中削除／対象タイムラインの差し替え、のいずれかで開始時状態へ復元する。復元は MouseDown 時点（複製より前）の全アイテムの frame / length / layer / contentOffset / キーフレームと、アイテム集合のメンバーシップ、選択をスナップショットから戻す。本家はキャプチャ喪失でも確定経路へ進むため、ここは Mac 側の安全性のための意図的な逸脱（FE-R2-DESIGN 記録済み）。
+- 範囲選択: 背景ドラッグ（4px超）で矩形を表示し、MouseUp で角をフレーム／レイヤーへ切り捨て換算・正規化して `selectBetweenItems(fromFrame:fromLayer:toFrame:toLayer:)` で1回確定する（本家 CompleteSelectRange）。ドラッグ中は選択を更新しない（本家どおり矩形だけが動く）。背景の単クリックは従来の Mac 版の挙動（シーク）を維持し、ドラッグ中のシーク（スクラブ）は範囲選択へ置き換えた。
+- 端の自動スクロール: 移動・トリム・キーフレーム・範囲選択の各セッションで、ポインタが可視端24px以内にある間、30msごとに12pxスクロールし、同じウィンドウ座標でドラッグ適用をやり直す。
+- ロックボタン: ロック中のアイテムの右上（描画アイコンの位置、20×20px）を押して離すとロックを反転し、確定として接続点を通す（本家 ToggleLockCommand 相当）。
+
+**Core への追加（本家 Timeline にあって移植に無かった正規 API）。**
+- `Timeline.selectItem(_:)` / `toggleSelectionStatus(_:)` / `selectBetweenItems(to:)` / `selectBetweenItems(fromFrame:fromLayer:toFrame:toLayer:)`（`Sources/YMM4Core/Model/Timeline.swift`）。範囲選択の並び（アンカー→中間→対象、本家の private 本体の意味論）まで再現した。
+- `Timeline.unsafeCloneWithoutCollision()`（`Sources/YMM4Core/Editing/TimelineEditing.swift`）。複製は `cloned()`（FPS 再注入込み）＋グループ ID 再発行＋ `addItems`。
+- テスト: `TimelineEditingTests` に6件追加（選択ヘルパ4件、複製2件）。Mac で方式名フィルタ実行し TimelineEditingTests 26件・TimelineEditingLengthTests 29件が全合格（Executed で判定）。
+
+**本家との差・未対応（意図的なものを含む）。**
+- 選択トグルの修飾キー: 本家は Ctrl だが、Ctrl+クリックは AppKit では右ボタン（コンテキストメニュー）になるため、Command に割り当てた（プラットフォーム適応）。トリムの隣接影響の Ctrl はドラッグ途中の押下で従来どおり効く。
+- トリム開始時の選択: 本家は最初の MouseMove で未選択なら単独選択にする。こちらは MouseDown で行うため、つまみを押して離すだけでも選択が変わる（実害のない範囲の差として許容）。
+- 素材内部の区切り（ContentSeparations）への吸着: 本家は右トリムとキーフレームドラッグで追加の吸着先にするが、Core に ContentSeparations の供給が無いため未対応（getSnappedDelta の extraSnapPoints は空）。波形の実データ化（FE-R1-029）と同じく供給層の新設はしない。
+- キーフレームの下限: 本家のキーフレームドラッグは先頭キーフレームを位置1未満へ動かせないが、Core の `moveKeyFrame` は0まで許す（PR #114 で確立した既存プリミティブをそのまま使用。1フレーム分の境界差として記録）。
+- 波形は疑似波形のまま（FE-R1-029 未処分）。レイヤー音量（layerVolumes）の形のみ状態も従来どおり未接続。
+- ダブルクリックでプロパティ編集へフォーカスする本家挙動（FocusToDefaultPropertyEditor）は未実装。
+
+**検証。**
+- Mac（同期先 ~/ymm4-work/fe-timeline/YMM4Mac）で Apps/DebugApp の `swift build` 成功（警告は既存の PreviewCore の Sendable 警告のみで、本単位のファイルには新規警告なし）。アプリの起動スモークテスト（8秒間生存、異常終了なし）を確認。ただし起動直後はタイムライン画面を開いていないため、ビュー構築の最終確認は下記の手動チェックに委ねる。
+- モデル側の裏付け範囲: 移動・トリム・吸着・衝突縮小は Core の既存テスト（TimelineEditingTests / TimelineEditingLengthTests）が覆う意味論をそのまま使う。本単位の新規 Core API は上記の新規テスト6件で固定した。セッション自体（マウスイベントの配線）はアプリ層にテストターゲットが無いため自動検証できず、手動チェックリストで担保する。
+
+**手動検証チェックリスト（オーナーの目視確認用）。** サンプルプロジェクト（Apps/DebugApp/Sample/sample.ymmp、9アイテム）または実プロジェクトで:
+1. 起動→プロジェクトを開き、タイムラインが従来どおり表示されること（レイヤーラベル列・目盛り・再生ヘッド・アイテムの色とラベル）。
+2. 横スクロールで目盛りとアイテムがずれないこと（目盛りのラベル位置とアイテム端が一致し続ける）。縦スクロールでラベル列とアイテム行がずれないこと。
+3. アイテムをドラッグして左右・上下へ移動できること。隣アイテムへぶつかると手前で止まること。ドラッグ中にアイテムがポインタへ追随すること。
+4. グループ化したアイテム／複数選択（Command+クリックで追加、背景ドラッグで範囲選択）がまとめて移動すること。
+5. アイテムの左端・右端をつまんでトリムできること（カーソルが左右リサイズ形になる）。ドラッグ中に Ctrl を押すと隣アイテムが伸縮して追随すること（隣接影響）。Shift を押しながらだと吸着しないこと。
+6. 吸着: 他アイテムの端・現在フレーム・キーフレーム付近で移動量が吸着すること。
+7. Option を押しながらドラッグすると、元の位置に複製が残って元の側が動くこと。
+8. キーフレームの三角形をドラッグして位置を動かせること（隣を越えない）。
+9. ドラッグ中に Escape を押すと開始位置へ完全に戻ること。ドラッグ中に別のアプリへ切り替えると（非アクティブ化）開始位置へ戻ること。
+10. 背景クリックでシークすること。目盛りのドラッグでシークできること。目盛り上のホイールでズームすること。
+11. アイテムの右クリックメニュー（分割・グループ化・削除・移動サブメニュー等）と背景の右クリックメニュー、目盛りの右クリックメニューが従来どおり出て動作すること。削除後に選択が同じアイテムを指し続けること（FE-R1-003 の回帰確認）。
+12. ロックしたアイテムの右上の鍵アイコンをクリックするとロックが外れること。
+13. ドラッグでアイテムをタイムラインの端まで持っていくと自動スクロールすること。
+14. ファイルをタイムラインへドロップして追加できること（従来動作の回帰確認）。
+15. ズーム変更・レイヤー高さ変更・ウィンドウリサイズで表示が崩れないこと。大量アイテム（実プロジェクト、158アイテム）でスクロールとドラッグが実用速度であること（仮想化の確認）。
