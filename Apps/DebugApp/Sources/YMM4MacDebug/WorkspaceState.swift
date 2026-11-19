@@ -13,13 +13,18 @@ final class WorkspaceState: ObservableObject {
     /// 読み込み元ファイル。未保存の新規プロジェクトでは nil。
     @Published var sourceURL: URL?
     /// 未保存の変更があるか（FE-R1-001。本家の IsProjectFileSaved の
-    /// 反転に相当）。本家は UndoRedoManager.HistoryChanged で未保存に
-    /// なる（MainModel.InitIsProjectFileSavedProperty）。Mac 側は編集の
-    /// 合流点（ProjectView の requestPreviewRender(modelChanged:) と
-    /// シーン操作等）から markEdited() を呼ぶ単純なフラグで追跡し、
-    /// 保存・読み込み・新規作成の成功時に false へ戻す。判定をこの
-    /// フラグ1つに寄せることで、編集記録の基盤（PR #126 の
-    /// EditRecorder 等）が統合されても破棄確認側は無変更で済む。
+    /// 反転に相当）。駆動は本家と同じく履歴の変更通知
+    /// （UndoHistory.onHistoryChanged。実際に履歴が変わった確定・
+    /// Undo・Redo の成功時にだけ発火する）へ寄せ、履歴に残らない
+    /// 編集（シーン操作、「動画の設定」、ファイル差し替え、分割・
+    /// グループ化・ロック切替、エフェクト編集）は各操作の成功後に
+    /// markEdited() を個別に呼ぶ（FE-R32-131-03）。以前はプレビュー
+    /// 更新の合流点（requestPreviewRender(modelChanged:)）で立てて
+    /// いたが、遅延プレビュー更新や無変更のドラッグ終了でも発火し、
+    /// 保存済みが再び未保存になる誤判定があったため移行した。
+    /// 保存・読み込み・新規作成の成功時に false へ戻す。プロジェ
+    /// クト切替時の履歴全消去でも通知は発火するが、切替処理が
+    /// その後に false を代入するため最終状態は正しくなる。
     @Published var hasUnsavedChanges = false
     /// 読み込みのたびに増える通し番号。ProjectView の識別子に使い、
     /// ファイルを開くたびに表示側の状態（プレビュー等）を破棄して
@@ -107,10 +112,13 @@ final class WorkspaceState: ObservableObject {
         Self.current = self
         // 履歴の変更を版数へ転送し、表示側の再評価を促す。Coordinator
         // への投入は全て UI（メインアクタ）からのため、通知もその
-        // 文脈で届く前提で取り込む。
+        // 文脈で届く前提で取り込む。併せて未保存フラグを立てる
+        // （FE-R32-131-03。本家の HistoryChanged 駆動と同じ）。
         editRecorder.coordinator.onHistoryChanged = { [weak self] in
             MainActor.assumeIsolated {
-                self?.editHistoryRevision += 1
+                guard let self else { return }
+                self.editHistoryRevision += 1
+                self.hasUnsavedChanges = true
             }
         }
     }

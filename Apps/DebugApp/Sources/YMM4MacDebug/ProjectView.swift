@@ -266,6 +266,7 @@ struct ProjectView: View {
                                     reportedCanvasWidth: $canvasViewportWidth,
                                     reportedTopLayer: $topVisibleLayer,
                                     onEdited: { requestPreviewRender(modelChanged: true) },
+                                    onUnrecordedEdit: { workspace.markEdited() },
                                     onDragBegan: {
                                         beginTimelineDragUndo(timeline: timeline)
                                     },
@@ -1538,20 +1539,31 @@ struct ProjectView: View {
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
             timeline.groupSelectedAndGroupedItems()
+            // グループ化は Undo 記録の対象外のため個別に立てる
+            // （FE-R32-131-03）。
+            workspace.markEdited()
             requestPreviewRender(modelChanged: true)
         case .ungroupSelection:
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
             timeline.ungroupSelectedAndGroupedItems()
+            workspace.markEdited()
             requestPreviewRender(modelChanged: true)
         case .toggleLock:
-            selectedItem?.isLocked.toggle()
+            // ロック切替は Undo 記録の対象外のため、実際に切り替えた
+            // 場合だけ個別に立てる（FE-R32-131-03）。
+            if let item = selectedItem {
+                item.isLocked.toggle()
+                workspace.markEdited()
+            }
             requestPreviewRender(modelChanged: true)
         case .toggleClipping:
             if let visual = selectedItem as? VisualItem {
                 visual.isClippingWithObjectAbove.toggle()
+                workspace.markEdited()
             } else if let voice = selectedItem as? VoiceItem {
                 voice.isClippingWithObjectAbove.toggle()
+                workspace.markEdited()
             }
             requestPreviewRender(modelChanged: true)
         case .toggleWaveform:
@@ -1612,6 +1624,9 @@ struct ProjectView: View {
         }
         guard !targets.isEmpty else { return }
         timeline.splitItems(targets, frame: frame, mode: .both)
+        // 分割は Undo 記録の対象外のため、成功後に未保存フラグを
+        // 個別に立てる（FE-R32-131-03）。
+        workspace.markEdited()
         reflectCoreSelection(timeline)
         requestPreviewRender(modelChanged: true)
     }
@@ -1883,6 +1898,10 @@ struct ProjectView: View {
                     "ファイルが見つからないため、長さを更新できませんでした: \(newPath)"
                 return
             }
+            // ファイルパスの変更自体は Undo 記録の対象外（長さ調整の
+            // 一部は記録される）のため、差し替えが成立した時点で
+            // 未保存フラグを個別に立てる（FE-R32-131-03）。
+            workspace.markEdited()
             item.recordMediaInfo(info)
             // 長さが決め直されたら、タイムライン長のキャッシュも
             // 追随させる（FE-R16-001）。キャッシュは自動追随せず、
@@ -2940,10 +2959,11 @@ struct ProjectView: View {
     ) {
         if modelChanged {
             previewModelDirty = true
-            // 編集の合流点。モデル変更を伴う全経路（各ビューの
-            // onEdited、ファイル差し替え、メニュー編集操作）がここを
-            // 通るため、未保存フラグはここで立てる（FE-R1-001）。
-            workspace.markEdited()
+            // 未保存フラグはここでは立てない（FE-R32-131-03）。
+            // この合流点は遅延プレビュー更新や無変更のドラッグ終了
+            // でも通るため、フラグの駆動は履歴変更通知（記録される
+            // 編集）と、各操作の成功後の個別の markEdited()（記録
+            // されない編集）へ分けた。WorkspaceState 側を参照。
         }
         if isPlayingForm {
             // 再生中はモデルに触らないため、識別子は現在設置済みの
@@ -3084,7 +3104,13 @@ struct ProjectView: View {
                 EffectInspectorView(
                     item: item,
                     animationContext: context,
-                    onEdited: { requestPreviewRender(modelChanged: true) }
+                    // エフェクト編集は Undo 記録の対象外のため、編集の
+                    // 確定通知で未保存フラグも個別に立てる
+                    // （FE-R32-131-03）。
+                    onEdited: {
+                        requestPreviewRender(modelChanged: true)
+                        workspace.markEdited()
+                    }
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)

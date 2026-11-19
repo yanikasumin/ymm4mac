@@ -116,6 +116,8 @@ extension TimelineStripView {
         }
         guard !targets.isEmpty else { return }
         timeline.splitItems(targets, frame: currentFrame, mode: .both)
+        // 分割は Undo 記録の対象外（FE-R32-131-03）。
+        onUnrecordedEdit()
         reflectSelection()
         onEdited()
     }
@@ -148,11 +150,16 @@ extension TimelineStripView {
         Button(UIStrings.Timeline.splitAtPlayhead) { splitAtPlayhead() }
         Divider()
         Button(UIStrings.Timeline.deleteTimelineSpace) {
-            _ = timeline.deleteTimelineSpace(frame: currentFrame)
+            // 空間の削除は Undo 記録の対象外。実際に削除した
+            // フレームがある場合だけ未保存にする（FE-R32-131-03）。
+            if timeline.deleteTimelineSpace(frame: currentFrame) != 0 {
+                onUnrecordedEdit()
+            }
             onEdited()
         }
         Button(UIStrings.Timeline.deleteAllTimelineSpaces) {
             timeline.deleteAllTimelineSpaces()
+            onUnrecordedEdit()
             onEdited()
         }
         Divider()
@@ -192,12 +199,15 @@ extension TimelineStripView {
         }
         Button(UIStrings.Timeline.removeAllKeyFrames) {
             item.removeAllKeyFrames()
+            // キーフレーム操作は Undo 記録の対象外（FE-R32-131-03）。
+            onUnrecordedEdit()
             onEdited()
         }
         Button(UIStrings.Timeline.distributeKeyFrames) {
             var keyFrames = item.keyFrames
             keyFrames.distribute(length: item.length)
             item.setKeyFrames(keyFrames)
+            onUnrecordedEdit()
             onEdited()
         }
         Divider()
@@ -205,12 +215,15 @@ extension TimelineStripView {
             Button(UIStrings.Menu.ungroup) {
                 timeline.selectItems([item])
                 timeline.ungroupSelectedAndGroupedItems()
+                // グループ化／解除は Undo 記録の対象外。
+                onUnrecordedEdit()
                 onEdited()
             }
         } else {
             Button(UIStrings.Menu.group) {
                 timeline.selectItems([item])
                 timeline.groupSelectedAndGroupedItems()
+                onUnrecordedEdit()
                 onEdited()
             }
         }
@@ -218,23 +231,29 @@ extension TimelineStripView {
             Button(visual.isClippingWithObjectAbove
                 ? UIStrings.Toolbar.clippingOff : UIStrings.Toolbar.clippingOn) {
                 visual.isClippingWithObjectAbove.toggle()
+                // クリッピング切替は Undo 記録の対象外。
+                onUnrecordedEdit()
                 onEdited()
             }
         } else if let voice = item as? VoiceItem {
             Button(voice.isClippingWithObjectAbove
                 ? UIStrings.Toolbar.clippingOff : UIStrings.Toolbar.clippingOn) {
                 voice.isClippingWithObjectAbove.toggle()
+                onUnrecordedEdit()
                 onEdited()
             }
         }
         Button(item.isLocked ? UIStrings.Toolbar.unlock : UIStrings.Toolbar.lock) {
             item.isLocked.toggle()
+            // ロック切替は Undo 記録の対象外。
+            onUnrecordedEdit()
             onEdited()
         }
         if let voice = item as? VoiceItem {
             Button(voice.isWaveformEnabled
                 ? UIStrings.Toolbar.waveformHidden : UIStrings.Toolbar.waveformAlways) {
                 voice.isWaveformEnabled.toggle()
+                onUnrecordedEdit()
                 onEdited()
             }
         }
@@ -303,11 +322,14 @@ extension TimelineStripView {
         // 値列の連動つきの追加を使う（位置だけ差し替えると値列が
         // ずれて曲線が変わる）。
         guard item.insertKeyFrame(at: relative) else { return }
+        // キーフレーム操作は Undo 記録の対象外（FE-R32-131-03）。
+        onUnrecordedEdit()
         onEdited()
     }
 
     func removeKeyFrame(item: BaseItem, atRelativeFrame relative: Int) {
         guard item.removeKeyFrame(at: relative) else { return }
+        onUnrecordedEdit()
         onEdited()
     }
 
@@ -321,6 +343,8 @@ extension TimelineStripView {
         shiftLayerSettings { layer in layer >= newLayer ? layer + 1 : layer }
         timeline.refreshTimelineLengthAndMaxLayer()
         layerRevision += 1
+        // レイヤー挿入は Undo 記録の対象外（FE-R32-131-03）。
+        onUnrecordedEdit()
         onEdited()
     }
 
@@ -368,6 +392,8 @@ extension TimelineStripView {
         }
         timeline.refreshTimelineLengthAndMaxLayer()
         layerRevision += 1
+        // レイヤーの入れ替えは Undo 記録の対象外（FE-R32-131-03）。
+        onUnrecordedEdit()
         onEdited()
     }
 
