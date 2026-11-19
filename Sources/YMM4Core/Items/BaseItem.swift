@@ -72,7 +72,10 @@ public class BaseItem {
     /// ファイル解析でも保存データでもなく、アイテムの現在値から
     /// 都度計算される値である。本体は
     /// `Editing/ContentSeparations.swift`（基底形は
-    /// `baseContentSeparations`、動画・音声は上書き形）。
+    /// `baseContentSeparations`、動画・音声・シーン・ボイスは
+    /// それぞれの上書き形。シーン形だけは参照先シーンの長さが
+    /// 要るため、供給継ぎ目 `SceneItem.sceneLengthProvider` 経由で
+    /// 解決する）。
     /// 列挙は遅延であり、ループ素材では無限に続く場合があるため、
     /// 消費側は必要な範囲で打ち切る。タイムラインのスナップも
     /// この供給を使う想定（UI 側の接続は別単位）。

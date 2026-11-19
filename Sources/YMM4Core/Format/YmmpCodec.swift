@@ -136,6 +136,10 @@ public enum YmmpCodec {
         }
         project.loadOldTimeline(legacyTimeline: legacyTimeline)
         resolveCharacterReferences(in: project)
+        // シーンアイテムの区切りが参照先シーンの長さを引けるよう、
+        // キャラクター参照の再解決と同じく組み立ての最後に供給を
+        // 注入する（実行時参照の再接続。保存には影響しない）。
+        project.injectSceneLengthProviders()
         return (project, diagnostics)
     }
 
