@@ -29,6 +29,34 @@ public final class Project {
 
     public init() {}
 
+    // MARK: - シーン削除（本家 MainViewModel.DeleteSceneAsync）
+
+    /// シーン（タイムライン）の削除に利用者の確認が要るか。
+    /// 本家 DeleteSceneAsync の条件そのまま: アイテムが1件でもある
+    /// シーンは確認を出し、空のシーンは確認なしで削除する。
+    /// インデックスが範囲外の場合は false（削除自体が成立しない）。
+    public func timelineDeletionRequiresConfirmation(at index: Int) -> Bool {
+        guard timelines.indices.contains(index) else { return false }
+        return !timelines[index].items.isEmpty
+    }
+
+    /// シーンを削除する。確認が要るシーン（アイテムあり）は
+    /// `confirmed` が true の場合だけ削除する。最後の1つは削除
+    /// できない（本家もドキュメントを閉じる経路で
+    /// `Timelines.Count != 1` の場合だけ削除へ進む）。
+    /// 実際に削除したら true、しなかったら false。
+    @discardableResult
+    public func removeTimeline(at index: Int, confirmed: Bool) -> Bool {
+        guard timelines.count > 1, timelines.indices.contains(index) else {
+            return false
+        }
+        if timelineDeletionRequiresConfirmation(at: index), !confirmed {
+            return false
+        }
+        timelines.remove(at: index)
+        return true
+    }
+
     /// 旧形式（単一 Timeline）の移行。本家 `LoadOldTimeline`。
     ///
     /// Timelines が空で旧 Timeline があれば取り込み、それでも空なら
