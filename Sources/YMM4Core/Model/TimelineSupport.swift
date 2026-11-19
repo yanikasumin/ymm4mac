@@ -458,6 +458,15 @@ extension TimelineVerticalLine {
     /// 実間隔は、複数の通し番号が同一フレームへ丸められる条件
     /// （高 BPM・極短い時間間隔）で理論間隔より大きく出るため、
     /// 係数が過小になり、間引き後も線が過密になっていた。
+    ///
+    /// 生成手順（FE-R37-132-01）: 表示線は、理論間隔で選んだ
+    /// 通し番号から直接生成する。以前は生成前に「先頭2本の異なる
+    /// 線」を探索し、2本未満なら探索結果をそのまま返す短絡判定が
+    /// あったが、この探索は通し番号を最大100,000個まで1つずつ
+    /// 進めるため、理論間隔が極端に小さい条件（時間間隔100nsでは
+    /// 100,000個進めても約0.3フレーム）では2本目に到達できず、
+    /// 実際には線が存在するのに空を返していた。範囲内に線が
+    /// 無いかどうかは、選択後の列挙結果が空かで判断する。
     public func displayLines(
         videoInfo: VideoInfo, enumerateFrom: Int, throughFrame: Int,
         pxPerFrame: Double
@@ -469,26 +478,6 @@ extension TimelineVerticalLine {
         func isSub(_ index: Int) -> Bool {
             group != 0 && index % group != 0
         }
-        // 先頭2本の探索は、可視範囲内の異なる線が2本未満の場合に
-        // そのまま返すための短絡判定にのみ使う（間引き係数の算出
-        // には使わない。FE-R36-132-01）。フレーム 0 と連続重複を
-        // 除いた先頭2本を求める。丸めで同じフレームが長く続く
-        // 異常値に備え、探索は従来の列挙上限と同じ回数で打ち切る
-        // （その場合は従来どおり1本以下を返す）。
-        var head: [(index: Int, frame: Int)] = []
-        var index = sequence.startIndex
-        for _ in 0..<100_000 {
-            if head.count >= 2 { break }
-            let frame = sequence.frameAt(index)
-            if frame > throughFrame { break }
-            if frame != 0, head.last?.frame != frame {
-                head.append((index: index, frame: frame))
-            }
-            index += 1
-        }
-        guard head.count >= 2 else {
-            return head.map { (frame: $0.frame, isSubLine: isSub($0.index)) }
-        }
         // 間引き係数は理論間隔から決める（FE-R36-132-01）。
         let spacing = sequence.framesPerIndex * pxPerFrame
         guard spacing > 0 else { return [] }
@@ -497,7 +486,16 @@ extension TimelineVerticalLine {
             guard group > 1 else { return [] }
             let n = Int((log(10 / spacing) / log(Double(group))).rounded(.up))
             if n > 0 {
-                for _ in 0..<n { divisor *= group }
+                for _ in 0..<n {
+                    // 理論間隔が極端に小さいと必要な冪が大きくなる。
+                    // 1ステップで可視範囲をはるかに超える大きさに
+                    // なれば、それ以上掛けても結果は変わらないため、
+                    // オーバーフローする手前で打ち切る。
+                    let (next, overflow) = divisor
+                        .multipliedReportingOverflow(by: group)
+                    if overflow { break }
+                    divisor = next
+                }
             }
         }
         // 選ばれる通し番号（divisor で割り切れるもの）だけを、

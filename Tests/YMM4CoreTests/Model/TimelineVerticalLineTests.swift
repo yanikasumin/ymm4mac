@@ -342,4 +342,33 @@ final class TimelineVerticalLineTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(Double(b - a) * 0.0001, 10)
         }
     }
+
+    /// FE-R37-132-01: 時間間隔が極端に短い（100ns = 1 tick）と、
+    /// 通し番号を100,000個進めても約0.3フレームしか進まず、全候補が
+    /// フレーム0へ丸められる。生成前の「先頭2本の異なる線」の探索が
+    /// 必須前提だった従来方式では、この探索が上限に達して線が存在
+    /// するのに空を返していた。理論間隔（1e-7秒 × 30fps = 3e-6
+    /// フレーム）× 0.0001px = 3e-10px なので、間引きは 4^18 =
+    /// 68,719,476,736 本ごと（実効間隔 ≒ 20.6px）になり、選択した
+    /// 通し番号から直接生成すれば約48本が右端付近まで届く。
+    func testDisplayLinesAtExtremelyShortTimeSpan() {
+        var line = TimelineVerticalLine()
+        line.isEnabled = true
+        line.lineType = .time
+        line.spanTicks = 1  // 100ns
+        line.group = 4
+        let display = line.displayLines(
+            videoInfo: videoInfo, enumerateFrom: 0, throughFrame: 10_000_000,
+            pxPerFrame: 0.0001
+        )
+        XCTAssertEqual(display.count, 48)
+        XCTAssertEqual(display.first?.frame, 206_158)
+        XCTAssertEqual(display.last?.frame, 9_895_605)
+        // 間引き後の線はすべて主線で、隣接間隔は 10px 以上。
+        XCTAssertTrue(display.allSatisfy { !$0.isSubLine })
+        let frames = display.map(\.frame)
+        for (a, b) in zip(frames, frames.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(Double(b - a) * 0.0001, 10)
+        }
+    }
 }
