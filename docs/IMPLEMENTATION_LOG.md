@@ -1714,3 +1714,40 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 **手動検証チェックリストへの追加（未実施）。** (7) FE-R13-001: 移動量指定の項目（例: X、開始値 0・移動量 1）で再生ヘッドを進めた位置でも、入力欄とスライダが開始値 0 を示し、スライダ操作で開始値を変えると入力欄の値がそのまま一致すること。(8) FE-R13-002: 拡大率を定数 50 にしてから移動量指定へ切り替え、開始値側のスライダ範囲が不必要に広がっていない（基準範囲のまま）こと。
 
 **次の担当へ。** 単位リソースキー 38 件の実文字列は未解決のまま（FE-SLIDER-CORE から継続）。`ConditionalUnitAnimationSlider` 8 件も仕様なしのまま。ファイル参照（FE-R1-043、`PropertyKind.filePath`）は次単位。
+
+#### FE-FILEPATH — ファイル参照（FE-R1-043。監査 Round 2 設計の「ファイル参照」節の実装）
+
+**本家規則の照合（着工前に逆コンパイル成果物で確認。根拠はファイル:行）。**
+
+- 素材の再生時間（ContentLength）: 動画は `VideoFileSourceFactory.Create(devices, FilePath)?.Duration ?? Zero` の遅延取得で FilePath ごとにキャッシュし、エコー有効時はエコーの尾を加える（VideoItem.cs:242-262）。音声は `AudioFileSourceFactory.Create(FilePath, AudioTrackIndex)?.Duration ?? Zero` ＋エコーの尾（AudioItem.cs:243-262）。画像は常に Zero（ImageItem.cs:47-49）。エコーの尾は `EchoEffect(interval, attenuation/100).AdditionalDuration × (PlaybackRate2 先頭値 / 100)`（AudioItem.cs:375-378、VideoItem も同文）。AdditionalDuration は interval × 繰り返し回数で、繰り返し回数は `min(50, ceil(log(0.01)/log(attenuation)))`（EchoEffect.cs:55, 62）。
+- 新規追加時の長さ決定（ResetLength、ItemEx.cs:106-117）: resetContentOffset のとき ContentOffset = 0（VoiceItem はキャラクター側のオフセット）。Length は、ContentLength ≠ Zero かつ（再生速度の先頭値 ≠ 0 または速度が定数でない）なら `max(1, VideoInfo.GetFrameFrom(GetContentLengthAppliedPlaybackRate()))`、それ以外は **300**。GetContentLengthAppliedPlaybackRate（ItemEx.cs:119-139）: ContentLength が Zero なら Zero。速度が定数でなければ `PlaybackRateMap.FindContentExhaustedTime(item.Length, item.VideoFPS, ContentOffset, ContentLength) ?? Zero`。定数なら先頭値 0 で Zero、それ以外は `FromSeconds(max(0, (ContentLength − ContentOffset).TotalSeconds) / |先頭値| × 100)`、OverflowException 時は 5 秒。FindContentExhaustedTime（PlaybackRateMap.cs:381-424）は開始位置の範囲外で Zero、符号変化の零点交差を二次方程式で解き（SolveCrossingTau、同 426-462）、表の外は終端速度で外挿し、終端速度 0 では nil。丸めは `FrameTime.TimeToFrame` = `Round(秒 × FPS, MidpointRounding.AwayFromZero)`（FrameTime.cs:7-10、VideoInfo.GetFrameFrom は VideoInfo.cs:85-88）。Mac 側 Core の `FrameTime.frame(from:fps:)` は同一規則で既存だった。
+- 追加フロー: メニュー追加はファイルダイアログ（複数選択可、ファイルグループ別）を先に開き（MainViewModel.cs:3125-3222）、AddVideoItem/AddAudioItem/AddImageItem（MainModel.cs:1526-1560）が既定アイテムの複製へ FilePath を設定し、動画・音声は ResetLength(VideoInfo, resetContentOffset: true) してから AddItems する。画像は FilePath のみで Length は既定アイテムのまま。既定アイテムの Length は全種別 300（DefaultItems.cs の初期化で 14 箇所 `Length = 300`。BaseItem のフィールド初期値は 1、BaseItem.cs:27）。ダイアログをキャンセルした場合の扱いは設定 GetAddFileItemMode() で、Default は **Cancel**（何も追加しない。YMMSettings.cs:1375-1382）。追加方向 GetAddItemsOrientation() の Default は **Vertical**（YMMSettings.cs:1366-1373）。ドロップは MainViewModel.AddFileItemAsync（同 4501-4547）→ MainModel.AddItemFromFileAsync（同 1743-1778、拡張子で分類）→ 同じ Add*Item。
+- 既存アイテムのファイル変更: FilePath の setter 自体は通知（"FilePath","Label","Description","ContentLength","ContentSeparations"）だけを出し、長さは変えない（VideoItem.cs:82-88、AudioItem.cs:79-88）。属性は動画 `[FileSelector(VideoItem, ShowThumbnail = true)]`（Order 200、グループ VideoGroupName）、音声 `[FileSelector(AudioItem)]`（サムネイルなし）、画像 `[FileSelector(ImageItem, ShowThumbnail = true, PropertyEditorSize.FullWidth)]`（Order 200、ImageGroupName）。長さの調整はアイテム編集の終了時（ItemEditorViewModel.cs:36-76 の EditingValue）: 素材長（OriginalContentLength）が変わっていれば ResetLength(resetContentOffset: true)。変わらず ContentLength が変わり、かつ長さの終端が素材の区切り（ContentSeparator、±1 フレーム）に乗っていれば ResetLength(false)。それ以外で再生速度が定数→定数で変わっていれば Length を比率で再計算（切り捨て、1 未満は 300、符号反転時は ContentOffset も調整）。
+- 相対パス: FilePath は選択・入力された文字列のまま保持され、プロジェクトの移動時に相対パスを再基準化する（IFileItemEx.UpdateFilePath、IFileItemEx.cs:10-35）。選択時点で絶対パスへ置換する処理は無い。
+- **推定（未確認）**: 編集終了時の比較に使う ContentLength の遅延キャッシュが、FilePath 変更の通知でいつ再取得されるかは全経路を追い切れていない。setter が "ContentLength" の変更通知を出すため編集側が再読込する前提で実装した。
+- **未検証**: FileSelector の表示名・グループ名の実文字列は逆コンパイル成果物に資源キー名しか無く（例: VideoItemFilePathName、VideoGroupName）、実文字列は取得できない。表示名は従来の house rule（根拠が取れないものはプロパティ名そのまま）で "FilePath" とした。
+
+**受け入れ条件 R2-B01〜B04 への対応。** 監査 Round 2 回答の条件文そのものは FE-R2-DESIGN.md に転記が無く（設計節の要点のみ）、条件文は復元できないため、設計節の要点から次の対応で試験を構成した。B01 = filePath 記述子の存在・種別・付随情報（ファイル種別／サムネイル可否）と、パスの読み書きがモデルへ届くこと、setter が長さ・素材情報へ触れないこと。B02 = 新規追加時の長さ決定規則（ResetLength 相当）。B03 = 既存アイテムのファイル変更時の調整（素材長が同じならトリム保持、変われば再決定＋オフセット 0）。B04 = 相対パスをそのまま保持し、解決は供給層でのみ行うこと。
+
+**何を実装したか。**
+
+- Core: `PropertyKind.filePath(group:showsThumbnail:)` と `PropertyFileGroup`（video/audio/image）を新設（Editing/PropertyMetadata.swift）。値の読み書きは `PropertyAccess.filePath`（String）で既存の仕組みを再利用し、`.text` の変種にはしていない。`stringValue` / `setStringValue` は filePath でも文字列として往復する。
+- Core: `ItemPropertyMetadata` が VideoItem / AudioItem / ImageItem の先頭へ FilePath 記述子を出す（グループは動画／音声／画像、表示名 "FilePath"、サムネイル可否は本家の属性どおり動画 true・音声 false・画像 true）。
+- Core: 編集操作層として `Editing/MediaItemLength.swift` を新設。`MediaFileInfo`（再生時間と寸法）、`BaseItem.recordMediaInfo`（素材長とエコーの尾を反映。素材長そのものは ContentLength と分離して originalContentLength へ保持）、`contentLengthAppliedPlaybackRate()`、`resetLength(fps:resetContentOffset:)`（本家 ResetLength 相当。フレーム変換の FPS は引数、速度が定数でない場合の消耗時刻探索はアイテム自身の Length と VideoFPS を使う本家の分担を再現）、`adjustLengthAfterFileChange(previousOriginalContentLength:fps:)`（編集終了時のファイル変更分岐）。`PlaybackRateMap.findContentExhaustedTime` を Core へ追加し、本家の零点交差・外挿の意味論を再実装した。エコーの繰り返し回数は既存の `EchoAudioStream` へ静的関数として切り出し、初期化処理と尾の計算で共有する（挙動は不変）。
+- アプリ層: `MediaFileInfoFetcher`（新規）を I/O 供給層として追加。拡張子分類表（本家 FileExtensions の既定。判定順 動画→音声→画像）をここへ一元化し、ドロップ分類・追加ダイアログ・参照ダイアログで共有する。情報取得は非同期で、ファイルが存在しなければ nil。音声は既存の PCM 供給工場（`AVFoundationPCMProviderFactory`）の provider の duration、動画は AVAsset の映像トラックの提示区間（`presentationRange`。GPU 層に既存の実装を公開化して再利用）と変換適用後の寸法、画像は ImageIO のピクセル寸法（長さはゼロ）。
+- アプリ層: メニュー追加は動画・音声・画像でファイルダイアログ（複数選択可、種別で絞り込み）を先に開き、情報取得が成功したファイルだけを長さ決定してから `tryAddItems` で一括確定する。キャンセル時は何も追加しない。ドロップも同じ取得・適用経路を通す（従来のプレースホルダ長 1 秒は廃止）。既存アイテムのファイル差し替えはインスペクタの filePath 行（パス欄＋「参照…」ボタン）が担い、確定前にアプリ層へ通知して変更前のパスと素材長を捕捉し、取得後に世代と対象の同一性を照合してから素材情報を記録し、長さ調整を行う。
+- ARCHITECTURE.md のデータフローへメディアアイテムの追加・差し替え経路を追記した。
+
+**本家との差分（意図的なもの）。**
+
+- ファイルが存在しない場合の差し替え: 本家は編集終了時に ContentLength が Zero へ落ちて ResetLength が 300 を入れ得るが、Mac 側は取得失敗時に長さへ触らず状態表示で知らせる（パスの打ち間違いで利用者のトリムを消さないため）。パス文字列自体は記述子が保持する。
+- 編集終了時の調整のうち、素材の区切り（ContentSeparations）へ長さ終端が乗っている場合の分岐と、再生速度の変更に伴う比率再計算の分岐は本単位では未実装（ファイル変更の分岐のみ）。ContentSeparations の供給自体が Mac 側に無い。
+- エコーの尾は素材情報の記録時点で確定する（本家は ContentLength の取得時に都度計算）。エコー設定を後から変えた場合の追随はしない。
+- インスペクタ行でのサムネイル表示は未実装（`showsThumbnail` は種別の契約として保持のみ）。
+- 動画・画像のグループ表示文字列（「動画」「画像」）は実文字列が未検証で、アイテム種別名の UI 文字列を流用した（「音声」は既存の音声グループ表示と一致）。
+
+**検証。** Mac（~/ymm4-work/fe-filepath/YMM4Mac）で Apps/DebugApp の `swift build` 成功（217 ステップ）。Core テストは方式名フィルタで実行し全合格（XCTest の Executed 件数で判定）: MediaItemLengthTests 19 件（長さ決定の規則を固定。定数速度・速度 0・オフセット減算とリセット・300 フォールバック・AwayFromZero 丸め・最小 1 フレーム・FPS 引数・非定数速度の消耗時刻・エコーの尾・ファイル変更時のトリム保持と再決定・消耗時刻探索の表内／外挿／終端速度 0）、PropertyMetadataTests 20 件（filePath 記述子の種別・グループ・サムネイル可否、相対パスの verbatim 往復と長さ不干渉を含む）、EffectPropertyMetadataTests 17 件、AnimationSliderSpecTests 14 件、AnimationSliderScaleTests 17 件、TimelineEditingTests 20 件、TimelineEditingLengthTests 29 件。合計 136 件、失敗 0。AudioDrift は対象外。
+
+**手動検証チェックリスト（未実施）。** (1) メニューの「動画アイテムを追加」でファイルダイアログが開き、動画を選ぶと素材の長さでアイテムが置かれること。複数選択で複数置かれること。キャンセルでは何も追加されないこと。(2) 音声・画像でも同様で、画像は長さ 300 フレームで置かれること。(3) 存在しない・開けないファイルをドロップしても空アイテムが残らないこと。(4) 既存の動画アイテムのインスペクタに FilePath 欄と「参照…」ボタンが出て、別ファイルへ差し替えると長さが新しい素材に合わせて変わること。同じ長さの別ファイルへ差し替えるとトリムした長さとオフセットが保持されること。(5) プロジェクトフォルダ基準の相対パスを FilePath 欄へ入力すると、そのままの文字列で保存され、プレビューで解決されること。(6) 存在しないパスを入力すると状態表示に失敗が出て、長さが変わらないこと。
+
+**次の担当へ。** AVFoundation で開けない形式（MKV 等）は音声・動画とも再生時間ゼロとして扱われ、長さ 300 へ倒れる。素材を開けないこと自体の可視化は Issue #70（FFmpeg 供給）の設計と合わせて判断すること。本単位の情報取得層は「長さ決定のための最小情報」に限っており、波形データ（FE-R1-029）の供給は含まない。FE-R8-001 ブランチ（Volume/Pan 記述子）とは ItemPropertyMetadata.swift の変更箇所が近いため、マージ順序に注意すること。

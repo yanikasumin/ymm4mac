@@ -482,6 +482,85 @@ func formatNumber(_ value: Double) -> String {
     return String(format: "%.4g", value)
 }
 
+// MARK: - ファイル参照
+
+/// ファイル参照の行（FE-R1-043）。パスの表示・直接入力と、
+/// ファイル選択ダイアログを開く参照ボタンを持つ。
+///
+/// 確定した変更は、まず `onFilePathChanged` で呼び出し側へ通知し、
+/// それから記述子へ書き込む（呼び出し側が変更前のパスや素材長を
+/// 捕捉できるようにするため）。メディア情報の取得と長さの調整は
+/// 呼び出し側が非同期に行う（この行はファイルを開かない）。
+/// 未編集のまま確定した場合は通知しない（FE-R1-019 と同じ趣旨）。
+struct FilePathRowView: View {
+    let descriptor: PropertyDescriptor
+    var onEdited: () -> Void
+    var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    @State private var text: String
+    @State private var uneditedPath: String
+    @FocusState private var isFocused: Bool
+
+    init(
+        descriptor: PropertyDescriptor,
+        onEdited: @escaping () -> Void,
+        onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    ) {
+        self.descriptor = descriptor
+        self.onEdited = onEdited
+        self.onFilePathChanged = onFilePathChanged
+        let initial = descriptor.stringValue ?? ""
+        _text = State(initialValue: initial)
+        _uneditedPath = State(initialValue: initial)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            TextField("", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+                .onSubmit { commit() }
+                .onChange(of: isFocused) { _, focused in
+                    if !focused { commit() }
+                }
+            Button("参照…") { browse() }
+        }
+    }
+
+    private func commit() {
+        applyChange(text)
+    }
+
+    private func applyChange(_ newPath: String) {
+        guard newPath != uneditedPath else { return }
+        text = newPath
+        onFilePathChanged?(descriptor, newPath)
+        descriptor.setStringValue(newPath)
+        uneditedPath = newPath
+        onEdited()
+    }
+
+    /// 参照ダイアログ。対象種別で絞り込み、現在のパスが絶対パスなら
+    /// そのフォルダを初期位置にする。選択したパスはダイアログが
+    /// 返した文字列のまま保持する（相対化はしない）。
+    private func browse() {
+        guard let spec = descriptor.filePathSpec else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        let types = MediaFileInfoFetcher.contentTypes(for: spec.group)
+        if !types.isEmpty {
+            panel.allowedContentTypes = types
+        }
+        if text.hasPrefix("/") {
+            panel.directoryURL = URL(fileURLWithPath: text)
+                .deletingLastPathComponent()
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        applyChange(url.path)
+    }
+}
+
 /// アニメーション行の表示書式。スライダ表示仕様がある場合はその
 /// stringFormat（"F<n>" = 小数第 n 位まで）で整形する（本家の
 /// TextBoxSlider のテキスト表示と同じ規則）。仕様が無い、または

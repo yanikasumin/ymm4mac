@@ -170,6 +170,25 @@ enum AddItemKind: String, CaseIterable {
         }
     }
 
+    /// メディアアイテム種別に対応するファイル種別（それ以外は nil）。
+    /// 動画・音声・画像の追加はファイル選択から始まる（FE-R1-043）。
+    var fileGroup: PropertyFileGroup? {
+        switch self {
+        case .video: return .video
+        case .audio: return .audio
+        case .image: return .image
+        default: return nil
+        }
+    }
+
+    init?(fileGroup: PropertyFileGroup) {
+        switch fileGroup {
+        case .video: self = .video
+        case .audio: self = .audio
+        case .image: self = .image
+        }
+    }
+
     /// ツールバー用の SF Symbol（本家は MaterialDesign アイコン。
     /// 対応する近似シンボルを使う）。
     var systemImage: String {

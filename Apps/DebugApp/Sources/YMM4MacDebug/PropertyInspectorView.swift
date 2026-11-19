@@ -20,6 +20,9 @@ struct PropertyInspectorView: View {
     let descriptors: [PropertyDescriptor]
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
+    /// ファイル参照の値が確定したときの通知（記述子と新しいパス）。
+    /// 情報取得と長さ調整は呼び出し側（編集操作層への橋渡し）が行う。
+    var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -33,7 +36,8 @@ struct PropertyInspectorView: View {
                         PropertyRowView(
                             descriptor: descriptor,
                             animationContext: animationContext,
-                            onEdited: onEdited
+                            onEdited: onEdited,
+                            onFilePathChanged: onFilePathChanged
                         )
                     }
                 }
@@ -49,6 +53,7 @@ private struct PropertyRowView: View {
     let descriptor: PropertyDescriptor
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
+    var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
 
     @ViewBuilder
     var body: some View {
@@ -57,13 +62,15 @@ private struct PropertyRowView: View {
             ObjectRowView(
                 descriptor: descriptor,
                 animationContext: animationContext,
-                onEdited: onEdited
+                onEdited: onEdited,
+                onFilePathChanged: onFilePathChanged
             )
         case .collection:
             CollectionRowView(
                 descriptor: descriptor,
                 animationContext: animationContext,
-                onEdited: onEdited
+                onEdited: onEdited,
+                onFilePathChanged: onFilePathChanged
             )
         default:
             HStack(alignment: .center, spacing: 8) {
@@ -95,6 +102,12 @@ private struct PropertyRowView: View {
             } else {
                 TextRowView(descriptor: descriptor, onEdited: onEdited)
             }
+        case .filePath:
+            FilePathRowView(
+                descriptor: descriptor,
+                onEdited: onEdited,
+                onFilePathChanged: onFilePathChanged
+            )
         case .enumeration:
             EnumRowView(descriptor: descriptor, onEdited: onEdited)
         case .color:
@@ -119,6 +132,7 @@ private struct ObjectRowView: View {
     let descriptor: PropertyDescriptor
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
+    var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -130,7 +144,8 @@ private struct ObjectRowView: View {
                     PropertyRowView(
                         descriptor: child,
                         animationContext: animationContext,
-                        onEdited: onEdited
+                        onEdited: onEdited,
+                        onFilePathChanged: onFilePathChanged
                     )
                 }
             }
@@ -148,6 +163,7 @@ private struct CollectionRowView: View {
     let descriptor: PropertyDescriptor
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
+    var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
     @State private var revision = 0
 
     var body: some View {
@@ -183,7 +199,8 @@ private struct CollectionRowView: View {
                             PropertyRowView(
                                 descriptor: child,
                                 animationContext: animationContext,
-                                onEdited: onEdited
+                                onEdited: onEdited,
+                                onFilePathChanged: onFilePathChanged
                             )
                         }
                     }

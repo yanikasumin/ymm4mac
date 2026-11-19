@@ -111,7 +111,7 @@ public final class AVFoundationPCMProviderFactory: PCMProviderFactory {
     /// 差し引く。非空セグメントが無い、または時刻が無効な場合は
     /// トラックの時間範囲をそのまま使う。映像側
     /// （`MetalVideoSource`）も同じ規則で提示区間を求める。
-    static func presentationRange(
+    public static func presentationRange(
         segments: [AVAssetTrackSegment], fallback: CMTimeRange
     ) -> CMTimeRange {
         let nonEmpty = segments.filter { !$0.isEmpty }

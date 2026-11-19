@@ -397,6 +397,61 @@ final class PropertyMetadataTests: XCTestCase {
         XCTAssertNil(EffectPropertyEditing.effectList(for: AudioItem()))
     }
 
+    // MARK: - ファイル参照（FE-R1-043）
+
+    /// R2-B01 対応: 動画・音声・画像の各アイテムに filePath 種別の
+    /// FilePath 記述子があり、パスの読み書きがモデルへ届く。
+    /// 種別は .text ではなく .filePath で、対象種別とサムネイル
+    /// 表示の有無は本家の FileSelector 属性どおり。
+    func testFilePathDescriptorsForMediaItems() throws {
+        let video = VideoItem()
+        let videoDescriptor = try descriptor(
+            ItemPropertyMetadata.descriptors(for: video), "FilePath"
+        )
+        XCTAssertEqual(
+            videoDescriptor.kind, .filePath(group: .video, showsThumbnail: true)
+        )
+        XCTAssertEqual(videoDescriptor.filePathSpec?.group, .video)
+        XCTAssertEqual(videoDescriptor.filePathSpec?.showsThumbnail, true)
+
+        let audio = AudioItem()
+        let audioDescriptor = try descriptor(
+            ItemPropertyMetadata.descriptors(for: audio), "FilePath"
+        )
+        XCTAssertEqual(
+            audioDescriptor.kind, .filePath(group: .audio, showsThumbnail: false)
+        )
+
+        let image = ImageItem()
+        let imageDescriptor = try descriptor(
+            ItemPropertyMetadata.descriptors(for: image), "FilePath"
+        )
+        XCTAssertEqual(
+            imageDescriptor.kind, .filePath(group: .image, showsThumbnail: true)
+        )
+
+        // テキストアイテムにはファイル参照は付かない。
+        let textDescriptors = ItemPropertyMetadata.descriptors(for: TextItem())
+        XCTAssertNil(textDescriptors.first { $0.id == "FilePath" })
+    }
+
+    /// R2-B04 対応: 相対パスは絶対化されず、そのまま読み書きされる
+    /// （解決は供給層がプロジェクト位置を基準に行う）。
+    /// setter はパスの保持だけで、長さや素材情報には触らない。
+    func testFilePathRoundTripsVerbatimWithoutTouchingLength() throws {
+        let item = AudioItem()
+        item.length = 123
+        let path = try descriptor(
+            ItemPropertyMetadata.descriptors(for: item), "FilePath"
+        )
+        XCTAssertTrue(path.setStringValue("素材/音声.wav"))
+        XCTAssertEqual(item.filePath, "素材/音声.wav")
+        XCTAssertEqual(path.stringValue, "素材/音声.wav")
+        XCTAssertEqual(item.length, 123)
+        XCTAssertEqual(item.contentLength, .zero)
+        XCTAssertEqual(item.originalContentLength, .zero)
+    }
+
     private func makeProject(with item: BaseItem) -> Project {
         let timeline = Timeline()
         timeline.items = [item]

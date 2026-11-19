@@ -23,6 +23,9 @@ struct ProjectView: View {
 
     @State private var timelineIndex: Int
     @State private var selectedItemIndex: Int?
+    /// ファイル差し替えの非同期適用の世代（アイテムごと）。
+    /// 古い取得結果が新しい変更を上書きしないための照合用（FE-R1-043）。
+    @State private var fileChangeGenerations: [ObjectIdentifier: Int] = [:]
     @State private var roundTripResult: String?
     @State private var saveResult: String?
     @State private var previewFrame: Double = 0
@@ -1347,6 +1350,12 @@ struct ProjectView: View {
     /// 書き込まない（tryAddItems が差分で配置する）。選択の確定も
     /// tryAddItems 側が行うため、UI 側はインデックスを引き直す。
     private func addItem(kind: AddItemKind, timeline: Timeline) {
+        // 動画・音声・画像は本家どおりファイル選択から始める
+        // （FE-R1-043。それ以外の種別は従来どおり即時に追加する）。
+        if let group = kind.fileGroup {
+            addMediaItemsFromDialog(kind: kind, group: group, timeline: timeline)
+            return
+        }
         let item = makeItem(kind: kind)
         item.length = placeholderItemLength(timeline: timeline)
         guard timeline.tryAddItems(
@@ -1356,6 +1365,160 @@ struct ProjectView: View {
             selectedItemIndex = index
         }
         requestPreviewRender(modelChanged: true)
+    }
+
+    /// メディアアイテム追加の入口（本家 MainViewModel の Add*Item
+    /// コマンド）。複数選択可のファイルダイアログを開き、選択された
+    /// ファイルを現在フレーム・表示最上段レイヤーへ追加する。
+    /// キャンセルした場合は何も追加しない（本家の既定設定
+    /// AddFileItemMode の Default は Cancel に解決される）。
+    private func addMediaItemsFromDialog(
+        kind: AddItemKind, group: PropertyFileGroup, timeline: Timeline
+    ) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        let types = MediaFileInfoFetcher.contentTypes(for: group)
+        if !types.isEmpty {
+            panel.allowedContentTypes = types
+        }
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        let frame = Int(previewFrame)
+        let layer = topVisibleLayer
+        let baseDirectory = baseDirectory
+        let entries = panel.urls.map { (url: $0, kind: kind, group: group) }
+        Task {
+            await addMediaFiles(
+                entries,
+                frame: frame, layer: layer, timeline: timeline,
+                baseDirectory: baseDirectory
+            )
+        }
+    }
+
+    /// ファイル群からメディアアイテムを組み立て、一括で確定する。
+    ///
+    /// 層の分担（FE-R1-043）: 情報取得（供給層）が成功したファイル
+    /// だけを対象に、長さの決定（編集操作層）を行ってから、
+    /// Timeline の確定操作（tryAddItems）へ渡す。取得に失敗した
+    /// ファイルは追加しない（空アイテムを残さない）。
+    private func addMediaFiles(
+        _ entries: [(url: URL, kind: AddItemKind, group: PropertyFileGroup)],
+        frame: Int, layer: Int, timeline: Timeline, baseDirectory: URL
+    ) async {
+        var newItems: [BaseItem] = []
+        for entry in entries {
+            guard let info = await MediaFileInfoFetcher.fetch(
+                path: entry.url.path, group: entry.group,
+                audioTrackIndex: 0, baseDirectory: baseDirectory
+            ) else { continue }
+            let item = makeItem(kind: entry.kind)
+            setFilePath(entry.url.path, on: item)
+            prepareMediaItem(item, info: info, fps: timeline.videoInfo.fps)
+            newItems.append(item)
+        }
+        guard !newItems.isEmpty,
+              timeline.tryAddItems(newItems, frame: frame, layer: layer)
+        else { return }
+        reflectCoreSelection(timeline)
+        requestPreviewRender(modelChanged: true)
+    }
+
+    /// 取得済み情報からアイテムの長さを決める（編集操作層）。
+    /// 動画・音声は素材の長さから決め直し（オフセットは 0 から）、
+    /// 画像は素材から長さを決めないため既定の長さを使う
+    /// （本家 AddImageItem は Length を既定アイテムのままにする）。
+    private func prepareMediaItem(_ item: BaseItem, info: MediaFileInfo, fps: Int) {
+        switch item {
+        case is VideoItem, is AudioItem:
+            item.recordMediaInfo(info)
+            item.resetLength(fps: fps, resetContentOffset: true)
+        default:
+            item.length = BaseItem.defaultItemLength
+        }
+    }
+
+    private func setFilePath(_ path: String, on item: BaseItem) {
+        switch item {
+        case let video as VideoItem: video.filePath = path
+        case let audio as AudioItem: audio.filePath = path
+        case let image as ImageItem: image.filePath = path
+        default: break
+        }
+    }
+
+    private func filePath(of item: BaseItem) -> String {
+        switch item {
+        case let video as VideoItem: return video.filePath ?? ""
+        case let audio as AudioItem: return audio.filePath ?? ""
+        case let image as ImageItem: return image.filePath ?? ""
+        default: return ""
+        }
+    }
+
+    private func fileGroup(of item: BaseItem) -> PropertyFileGroup? {
+        switch item {
+        case is VideoItem: return .video
+        case is AudioItem: return .audio
+        case is ImageItem: return .image
+        default: return nil
+        }
+    }
+
+    /// インスペクタでのファイル差し替え（FE-R1-043）。
+    ///
+    /// 通知は記述子が新しいパスを書き込むより前に届くため、ここで
+    /// 変更前のパスと素材長を捕捉できる。情報取得（供給層）を
+    /// 非同期に行い、対象の同一性と要求世代を照合してから、素材
+    /// 情報を記録して編集終了時相当の長さ調整（編集操作層）を
+    /// 行う。ファイルが存在しない場合は長さに触らず、状態表示で
+    /// 知らせる（利用者のトリムを守る。パス文字列自体は記述子が
+    /// 保持する）。
+    private func applyFileChange(item: BaseItem, newPath: String, timeline: Timeline) {
+        guard let group = fileGroup(of: item) else { return }
+        let oldPath = filePath(of: item)
+        let recordedOriginal = item.originalContentLength
+        let key = ObjectIdentifier(item)
+        let generation = (fileChangeGenerations[key] ?? 0) + 1
+        fileChangeGenerations[key] = generation
+        let baseDirectory = baseDirectory
+        let audioTrackIndex: Int
+        switch item {
+        case let video as VideoItem: audioTrackIndex = video.audioTrackIndex
+        case let audio as AudioItem: audioTrackIndex = audio.audioTrackIndex
+        default: audioTrackIndex = 0
+        }
+        Task {
+            // 変更前の素材長が未記録（プロジェクト読み込み直後など）
+            // なら、旧ファイルの情報から基準を立てる。同じファイルの
+            // 選び直しでトリムが消えないようにするため。
+            var previousOriginal = recordedOriginal
+            if previousOriginal == .zero, !oldPath.isEmpty {
+                previousOriginal = await MediaFileInfoFetcher.fetch(
+                    path: oldPath, group: group,
+                    audioTrackIndex: audioTrackIndex, baseDirectory: baseDirectory
+                )?.duration ?? .zero
+            }
+            let info = await MediaFileInfoFetcher.fetch(
+                path: newPath, group: group,
+                audioTrackIndex: audioTrackIndex, baseDirectory: baseDirectory
+            )
+            guard fileChangeGenerations[key] == generation,
+                  timeline.items.contains(where: { $0 === item })
+            else { return }
+            guard let info else {
+                workspace.statusMessage =
+                    "ファイルが見つからないため、長さを更新できませんでした: \(newPath)"
+                return
+            }
+            item.recordMediaInfo(info)
+            item.adjustLengthAfterFileChange(
+                previousOriginalContentLength: previousOriginal,
+                fps: timeline.videoInfo.fps
+            )
+            requestPreviewRender(modelChanged: true)
+        }
     }
 
     /// セリフ行からの VoiceItem 生成（本家 AddVoiceItem）。
@@ -1451,54 +1614,29 @@ struct ProjectView: View {
             workspace.load(url: urls[0])
             return
         }
-        // 素材アイテムを全て組み立ててから、衝突解決つきの
-        // tryAddItems で一括確定する（FE-R1-009。個別の addItems は
-        // 衝突解決を迂回し、途中まで追加された状態も残し得る）。
-        var newItems: [BaseItem] = []
-        for url in urls {
-            guard let kind = Self.itemKind(forFileExtension: url.pathExtension) else {
-                continue
+        // 情報取得（供給層）と長さの決定（編集操作層）を済ませて
+        // から、衝突解決つきの tryAddItems で一括確定する
+        // （FE-R1-009 / FE-R1-043）。分類は MediaFileInfoFetcher の
+        // 共有表（判定順は 動画→音声→画像。字幕ファイルの分離処理は
+        // 未実装）。
+        let frame = Int(previewFrame)
+        let layer = topVisibleLayer
+        let baseDirectory = baseDirectory
+        let entries: [(url: URL, kind: AddItemKind, group: PropertyFileGroup)] =
+            urls.compactMap { url in
+                guard let group = MediaFileInfoFetcher.fileGroup(
+                    forFileExtension: url.pathExtension
+                ), let kind = AddItemKind(fileGroup: group) else { return nil }
+                return (url: url, kind: kind, group: group)
             }
-            let item = makeItem(kind: kind)
-            item.length = placeholderItemLength(timeline: timeline)
-            switch item {
-            case let video as VideoItem: video.filePath = url.path
-            case let audio as AudioItem: audio.filePath = url.path
-            case let image as ImageItem: image.filePath = url.path
-            default: break
-            }
-            newItems.append(item)
+        guard !entries.isEmpty else { return }
+        Task {
+            await addMediaFiles(
+                entries,
+                frame: frame, layer: layer, timeline: timeline,
+                baseDirectory: baseDirectory
+            )
         }
-        guard !newItems.isEmpty,
-              timeline.tryAddItems(
-                  newItems, frame: Int(previewFrame), layer: topVisibleLayer)
-        else { return }
-        reflectCoreSelection(timeline)
-        requestPreviewRender(modelChanged: true)
-    }
-
-    /// 拡張子からアイテム種別を決める（本家 FileExtensions の既定分類。
-    /// 判定順は 動画→音声→画像。字幕ファイルの分離処理は未実装）。
-    private static func itemKind(forFileExtension ext: String) -> AddItemKind? {
-        let ext = ext.lowercased()
-        let videoExtensions: Set<String> = [
-            "mp4", "avi", "wmv", "3g2", "3gp", "3gp2", "3gpp", "m4v", "mov",
-            "qt", "m2ts", "m2t", "mts", "ts", "mkv", "mpg", "mpeg", "webm",
-            "gif", "webp",
-        ]
-        if videoExtensions.contains(ext) { return .video }
-        let audioOnlyExtensions: Set<String> = [
-            "mp3", "wav", "wma", "m4a", "mka", "aac", "adts", "flac", "ogg",
-            "mid", "midi",
-        ]
-        if audioOnlyExtensions.contains(ext) { return .audio }
-        let imageExtensions: Set<String> = [
-            "png", "jpg", "jpeg", "jpe", "jfif", "bmp", "dib", "ico", "tiff",
-            "tif", "hdp", "dds", "dng", "heic", "heif", "hif", "avif", "jxr",
-            "wdp", "psd", "psb", "svg",
-        ]
-        if imageExtensions.contains(ext) { return .image }
-        return nil
     }
 
     // MARK: - タイムラインのツールバーとレベルメーター
@@ -2517,7 +2655,10 @@ struct ProjectView: View {
                 PropertyInspectorView(
                     descriptors: ItemPropertyMetadata.descriptors(for: item),
                     animationContext: context,
-                    onEdited: { requestPreviewRender(modelChanged: true) }
+                    onEdited: { requestPreviewRender(modelChanged: true) },
+                    onFilePathChanged: { _, newPath in
+                        applyFileChange(item: item, newPath: newPath, timeline: timeline)
+                    }
                 )
                 EffectInspectorView(
                     item: item,
