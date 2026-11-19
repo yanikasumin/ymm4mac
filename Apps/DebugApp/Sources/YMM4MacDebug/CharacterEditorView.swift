@@ -269,6 +269,18 @@ struct CharacterEditorView: View {
         onEdited()
     }
 
+    /// 未確定の名前下書きを、その持ち主について確定する。一覧を
+    /// 変更する操作（追加・複製）は、下書きを確定しないまま実行
+    /// すると自動付与される名前が下書きと衝突して検証に失敗し、
+    /// 有効だった改名が黙って失われるため、先にこれを通す
+    /// （FE-R40-133-01）。無効な下書きは従来どおり適用されず、
+    /// 一覧操作自体は妨げない（破棄は選択切替時の syncNameDraft
+    /// が行う）。
+    private func commitPendingNameDraft() {
+        guard let owner = nameDraftCharacter else { return }
+        commitNameDraft(for: owner)
+    }
+
     /// 未確定の下書きが無効な場合の理由（有効・未編集なら nil）。
     private func nameDraftError(for character: Character) -> String? {
         guard nameDraftCharacter === character, nameDraft != character.name
@@ -294,6 +306,10 @@ struct CharacterEditorView: View {
     }
 
     private func addCharacter() {
+        // 未確定の改名を先に確定する。確定しないまま追加すると、
+        // 新規個体への自動付与名が下書きと衝突し、選択切替時の
+        // 確定が検証に失敗して改名が失われる（FE-R40-133-01）。
+        commitPendingNameDraft()
         let character = Character()
         character.name = uniqueName(base: "キャラクター")
         project.characters.append(character)
@@ -306,6 +322,10 @@ struct CharacterEditorView: View {
 
     private func duplicateSelected() {
         guard let source = selectedCharacter else { return }
+        // 未確定の改名を先に確定し、改名後の状態を複製元にする
+        // （確定前に cloned() を呼ぶと古い名前を基準に複製される。
+        // FE-R40-133-01）。
+        commitPendingNameDraft()
         let copy = source.cloned()
         copy.name = uniqueName(base: source.name + " のコピー")
         let index = project.characters.firstIndex { $0 === source } ?? project.characters.count - 1
@@ -347,6 +367,11 @@ struct CharacterEditorView: View {
     /// 状態を保存・再読込後と一致させる（同名の残存キャラクターが
     /// あれば切り離された参照はそちらへ再接続される。
     /// FE-R39-133-01）。ここでは選択と下書きの後始末だけを行う。
+    /// なお削除では未確定の下書きを先に確定しない。対象は下書きの
+    /// 持ち主自身であり、削除される個体の改名に意味はないうえ、
+    /// 先に改名すると参照件数の照合に使う名前（未解決アイテムが
+    /// 保持する旧名）とずれて件数と確認文面が実態と食い違うため
+    /// （FE-R40-133-01 の洗い出し結果）。
     private func deleteCharacter(_ target: Character) {
         project.removeCharacter(target)
         if nameDraftCharacter === target {
