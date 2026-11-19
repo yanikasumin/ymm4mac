@@ -49,6 +49,20 @@ extension TimelineStripView {
 
     // MARK: - 共用操作
 
+    /// タイムラインの構造変更を Undo 記録つきで実行する
+    /// （FE-UNDO-WIRING。記録は変更前後の差分で行う）。
+    /// 記録先が無い場合はそのまま実行する。記録を開始できない場合は
+    /// 変更を実行せず false を返し、呼び出し側は後続処理（選択の
+    /// 復元・再描画）を行わない（FE-R20-126-02）。
+    @discardableResult
+    func recordTimelineEdit(_ body: () -> Void) -> Bool {
+        if let editRecorder {
+            return editRecorder.recordTimelineChange(timeline: timeline, body)
+        }
+        body()
+        return true
+    }
+
     /// 選択中アイテムを同一性で捕捉する。削除を挟む操作では、削除前に
     /// これで選択対象の個体を押さえ、削除後に restoreSelection で
     /// インデックスを引き直す（FE-R1-003 / 004。インデックスの単純な
@@ -83,8 +97,11 @@ extension TimelineStripView {
         let item = ItemFactory.makeItem(kind: kind)
         item.length = ItemFactory.placeholderLength(fps: timeline.videoInfo.fps)
         let layer = rowHeight > 0 ? Int(verticalOffset / rowHeight) : 0
-        guard timeline.tryAddItems([item], frame: currentFrame, layer: layer)
-        else { return }
+        var added = false
+        recordTimelineEdit {
+            added = timeline.tryAddItems([item], frame: currentFrame, layer: layer)
+        }
+        guard added else { return }
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
         }
@@ -251,7 +268,9 @@ extension TimelineStripView {
             // 選択中アイテムと削除対象が別でも選択がずれないよう、
             // 削除前に同一性を捕捉して削除後に復元する（FE-R1-003）。
             let captured = captureSelectedItem()
-            timeline.deleteItems([item])
+            guard recordTimelineEdit({
+                timeline.deleteItems([item])
+            }) else { return }
             restoreSelection(of: captured)
             onEdited()
         }
@@ -272,8 +291,10 @@ extension TimelineStripView {
             timeline.selectItems([item])
             selectedItemIndex = index
         }
-        timeline.moveSelectedAndGroupedItems(
-            deltaFrame: deltaFrame, deltaLayer: deltaLayer)
+        guard recordTimelineEdit({
+            timeline.moveSelectedAndGroupedItems(
+                deltaFrame: deltaFrame, deltaLayer: deltaLayer)
+        }) else { return }
         onEdited()
     }
 
@@ -309,16 +330,22 @@ extension TimelineStripView {
     /// 従来の補正では、残った選択が別アイテムを指す）。
     func deleteLayer(at target: Int) {
         let captured = captureSelectedItem()
-        let doomed = timeline.items.filter { $0.layer == target }
-        if !doomed.isEmpty {
-            timeline.deleteItems(doomed)
-        }
-        for item in timeline.items where item.layer > target {
-            item.layer -= 1
-        }
-        timeline.layerSettings.items.removeAll { $0.layer == target }
-        shiftLayerSettings { layer in layer > target ? layer - 1 : layer }
-        timeline.refreshTimelineLengthAndMaxLayer()
+        // アイテムの削除とレイヤーの詰めは Undo 記録の対象とする。
+        // レイヤー設定（layerSettings）の付け替えも差分捕捉に含まれる
+        // ため、Undo で設定側（表示名・色・表示状態）も含めて操作全体
+        // が復元される（FE-R20-126-04）。
+        guard recordTimelineEdit({
+            let doomed = timeline.items.filter { $0.layer == target }
+            if !doomed.isEmpty {
+                timeline.deleteItems(doomed)
+            }
+            for item in timeline.items where item.layer > target {
+                item.layer -= 1
+            }
+            timeline.layerSettings.items.removeAll { $0.layer == target }
+            shiftLayerSettings { layer in layer > target ? layer - 1 : layer }
+            timeline.refreshTimelineLengthAndMaxLayer()
+        }) else { return }
         restoreSelection(of: captured)
         layerRevision += 1
         onEdited()
