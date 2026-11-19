@@ -1928,3 +1928,32 @@ R5 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinato
 - **FE-R6-119-02（P1）履歴変更通知の発火時点で記録抑制が残っている**: `UndoHistory.undo()` / `redo()` は `isApplying = true` の後 `defer` で関数終了時に復帰させていたため、`onHistoryChanged` の発火時点でも抑制が有効なままだった。通知クロージャから新しい編集を確定させると、`record` の `guard !isApplying` で履歴登録だけが黙って破棄され、モデルへの変更は残るのに Undo できない変更が生まれていた。本家 `UndoRedoManager` は `isUndoRedoing` を false へ戻してから `HistoryChanged` を発火させる（レビュアーが再照合済み）ため、本家とも異なる挙動だった。処分: 記録抑制の範囲をコマンドの適用中だけに限定する。適用部分を `applySuppressingRecording`（適用スコープ内でのみ `isApplying` を立て、`defer` で解除）へ切り出し、スタック更新を終え・抑制を解除してから `onHistoryChanged` を発火させる順序へ変更した（`undo` / `redo` とも）。適用中の記録抑制そのもの（R2-U04）は維持される。回帰テスト `testEditCommittedFromHistoryChangedNotificationIsRecorded`（Undo の通知の中から新しい編集を確定させ、その編集が履歴に登録され Undo 可能であること）を追加。
 
 R6 検証: Mac で方式名フィルタで実行し全合格 — `EditCoordinatorTests` 15件（従来13件＋R6 回帰2件、`testCancelReentryDoesNotRecurse` は新契約へ見直し）、`UndoHistoryTests` 10件。関連する既存テストも全合格（PropertyMetadataTests 系34件、TimelineEditingTests 20件、いずれも失敗0）。全スイートは回していない。ARCHITECTURE.md は処理経路・所有権に変更が無いため未更新。
+
+#### FE-R16-002 — プロジェクト切り替え後の旧プロジェクト非同期処理の継続を止める（フロントエンド監査 Round 16 で切り分け）
+
+**欠陥（監査 Round 16 で確定）。** ファイル参照単位（FE-FILEPATH）の非同期処理は、完了条件として「捕捉した Project オブジェクトの timelines に目標が同一性で含まれるか」を確認していた。しかし ProjectView はプロジェクト切り替え時に `.id(workspace.loadSequence)` で作り直される一方、旧ビューが起動した非構造化 Task はビューの破棄後も生き続け、捕捉した旧 Project オブジェクトとその timelines も存在し続けるため、この確認は切り替え後も通過してしまう。結果として (1) 旧プロジェクトで始めた編集操作（ファイル追加 `addMediaFiles`、ファイル変更 `applyFileChange`）が切り替え後も旧プロジェクトに対して確定処理を走らせ、(2) `applyFileChange` の取得失敗時の書き込みなど、共有の `WorkspaceState.statusMessage` への書き込みが新しいプロジェクトの画面へ表示されていた。監査の指定する修正方針は「確定時点で、現在の workspace.project と同一性が一致するかを確認する。タスクのキャンセルだけでは不十分（キャンセルと確定の競合を断ち切れない）ため同一性確認を正とする」。
+
+**洗い出した非同期経路の一覧と各経路の扱い。** アプリ層（Apps/DebugApp/Sources/YMM4MacDebug/）の Task・遅延実行・コールバックを全数確認した。
+
+修正した経路（確定・共有書き込みの入口に同一性確認を追加）:
+
+- **ファイル追加 `ProjectView.addMediaFiles`**（入口は追加ダイアログとドロップの Task）: 確定条件へ `isCapturedProjectCurrent(project)` を追加。既存の timelines 所属確認（FE-R15-002）と選択の写し戻し条件は維持。
+- **ファイル変更 `ProjectView.applyFileChange` の Task**: 照合条件へ同じ確認を追加。既存の要求世代・タイムライン所属・アイテム同一性の照合は維持し、プロジェクト確認はそれに追加する層として置いた。取得失敗時の statusMessage 書き込みはこの照合の内側にあるため、同時に遮断される。
+- **プレビュー完成通知 `PreviewRenderWorker` のコールバック3種**（`onImage` / `onRenderFailed` / `onModelFailed`）: 既存の識別子照合（セッションキー・世代・モデル版数）はビュー自身の状態同士の比較であり、ビューが表示を終えた後も自己整合して通過し得るため、各 guard へ同じ確認を追加した。特に `onImage` は保留中のサムネイル保存（保存パネルの表示と共有 statusMessage への書き込み）へ進み得る経路であり、切り替え後の旧ワーカーの完成通知をここで落とすことが実害の遮断になる。他2種の書き込み先はビュー自身の表示状態のみだが、完了経路の形を統一するため同じ確認を通す（表示中のビューでは常に真であり、挙動は変わらない）。
+- **プレビューモデルの再生成 `ProjectView.refreshPreviewModel`**: 遅延確定（`scheduleTrailingModelRefresh` の DispatchWorkItem。セッション切替時は resetPreview で取り消されるが、プロジェクト切り替えによるビュー破棄では取り消されない）と、再生エンジンの停止遷移通知から到達し、生成失敗時に共有 statusMessage へ書く。入口へ同じ確認を置き、切り替え後であれば旧プロジェクトのスナップショット生成も失敗表示も行わない。表示中のビューからの同期呼び出しでは常に真であり、挙動は変わらない。
+
+対象外とした経路（根拠つき）:
+
+- **書き出し `ExportJob`（Task.detached）**: 開始時点の専有スナップショットだけを対象とし、進捗・結果の書き込み先は開始したビューが所有する `ExportUIState` と、利用者が選んだ出力ファイルのみ。どのプロジェクトへの編集確定も、共有状態への書き込みも行わない。切り替え後にジョブが継続すること自体は、スナップショットを対象とする設計（AUD-07）どおりの意図された挙動であり、進捗表示が開始したビューに属する点は表示上の制約であって誤った状態の表示ではない。
+- **全自動テスト `AutoTestJob`（Task.detached）**: 検証ハーネスであり、利用者の編集操作ではない。対象は開始時に解決したプロジェクトの専有スナップショットで、書き込み先は ContentView が所有する `AutoTestState` とレポートファイルのみ。workspace.project の差し替えも行わない。
+- **`MediaFileInfoFetcher.fetch` 内部の Task.detached（音声の再生時間取得）**: 供給層の値計算のみで、状態へは一切書かない。確定側の確認は呼び出し側（ファイル追加・ファイル変更）に置いた。
+- **タイムラインの自動スクロール Timer と NotificationCenter 監視**（TimelineInteractionView / TimelineScrollView）: AppKit ビュー内のドラッグセッション・スクロール同期に閉じた同期的な相互作用で、`[weak self]` とセッション終了時の無効化でビューと運命を共にする。プロジェクトを捕捉した遅延確定ではない。
+- **ユーザー辞書エディタの保存結果通知**（`UserDictionaryStore.onSaveResult` ＋ DispatchQueue.main.async）: ユーザー辞書はプロジェクトに属さないアプリ全体の状態であり、書き込み先もエディタウィンドウ自身の `saveError` のみ。プロジェクト切り替えで陳腐化しない。
+- **再生エンジンの通知**（onPlayingStateChanged / onStartFailed / onPositionChanged）: 書き込み先はビュー自身の表示状態（再生状態・メーター・再生位置・開始失敗理由）のみ。共有状態へ到達する唯一の経路は停止遷移時の `refreshPreviewModel` 呼び出しであり、上記のとおりその入口で確認済みのため、個別の追加処分はしていない。
+- **同期的な statusMessage 書き込み**（サムネイル保存の直接実行、フィードバックボタン、`WorkspaceState.saveCopy`）: 利用者の操作時点で現在のビュー／ワークスペースに対して同期実行されるため、捕捉の陳腐化が生じない。サムネイル保存の非同期な入口は `onImage` 経由の保留分であり、そちらは上記で確認済み。
+
+**同一性確認の設計。** 確認は `ProjectView.isCapturedProjectCurrent(_:)` の1か所へ寄せた（`workspace.project === captured`）。各確定経路はこのヘルパーを guard の一条件として同じ形で使う。対象アイテム・タイムラインの同一性確認と要求世代の照合（既存）は置き換えず、プロジェクト確認を追加の層として重ねた。Core 側の変更は無い（確認はアプリ層の所有物である WorkspaceState との同一性であり、Core に持ち込む理由が無い）。表示中の ProjectView は `workspace.project` そのものを渡されて生成され、プロジェクト差し替えは loadSequence の増加と同時に起きてビューが作り直されるため、表示中のビューでこの確認が偽になることはない。
+
+**検証。** Mac（~/ymm4-work/fe-r16-002/YMM4Mac）で Apps/DebugApp の `swift build` 成功（225 ステップ）。アプリ層にテストターゲットが無いため、回帰の固定はコード形状（上記の全確定経路の入口に確認があること）で担保する。Core ソースは無変更のため全スイートは回さず、関連の参考実行として MediaItemLengthTests 24 件を実行し全合格（XCTest の Executed 件数で判定）。AudioDrift は対象外。
+
+**手動検証チェックリスト（未実施。アプリ層のため目視確認が要る）。** (1) 大きな動画ファイルの追加（ダイアログ／ドロップ）を開始し、情報取得の完了前に別プロジェクトへ切り替えたとき、追加が新旧どちらの画面にも誤って現れないこと（旧プロジェクトへ戻る手段は再読み込みのみであり、追加が確定していないこと）。(2) 既存アイテムのファイル変更で情報取得中に別プロジェクトへ切り替えたとき、長さ調整が新プロジェクトへ漏れず、取得失敗時のステータス表示も新しいプロジェクトの画面に出ないこと。(3) 切り替えずに通常のファイル追加・ファイル変更を行った場合は従来どおり確定し、取得失敗時はステータス表示が出ること（確認の追加で通常経路が塞がれていないこと）。(4) サムネイル保存を要求して画像の完成を待っている間に別プロジェクトへ切り替え、保存パネルが新しいプロジェクトの画面に現れないこと。(5) 編集中に別プロジェクトへ切り替え、旧プロジェクト側のプレビューモデル生成失敗などのステータス表示が新しいプロジェクトの画面に出ないこと。
