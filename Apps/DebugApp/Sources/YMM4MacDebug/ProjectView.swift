@@ -157,7 +157,12 @@ struct ProjectView: View {
         self.project = project
         self.diagnostics = diagnostics
         self.sourceURL = sourceURL
-        _timelineIndex = State(initialValue: project.selectedTimelineIndex)
+        // 本家 OpenProjectAsync と同じく、保存済みインデックスは
+        // 範囲内へ丸めてから初期値にする。
+        _timelineIndex = State(initialValue: min(
+            max(project.selectedTimelineIndex, 0),
+            max(project.timelines.count - 1, 0)
+        ))
     }
 
     /// ステータスバー等に出すプロジェクト名。
@@ -332,6 +337,16 @@ struct ProjectView: View {
             }
         }
         .onAppear { resetPreview() }
+        .onChange(of: timelineIndex) { _, newIndex in
+            // 保存対象の選択シーンを表示へ追随させる（FE-R1-012）。
+            // 本家は保存時点の表示シーンから SelectedTimelineIndex を
+            // 作る（MainModel.SaveProject）。Mac 側はモデル側の値を
+            // 切替のたびに同期しておくことで同じ結果にする。
+            // シーン切替そのものは本家でも未保存扱いにならない
+            // （SelectScene は履歴へ記録されない）ため、編集フラグは
+            // ここでは立てない。
+            project.selectedTimelineIndex = newIndex
+        }
     }
 
     // MARK: - 上部ストリップ
@@ -421,15 +436,26 @@ struct ProjectView: View {
     }
 
     /// シーンを削除する（最低1つは残す）。
+    /// 表示対象の同一性は保つ（FE-R1-013）。本家は表示中シーンを
+    /// 参照で保持するため、別シーンの削除では表示は移らない。Mac 側は
+    /// インデックス保持のため、表示中より前を消したらインデックスを
+    /// 詰め、表示中自体を消したときだけ後継（同位置の次、末尾なら
+    /// 最後）へ移す。プレビューの作り直しと選択の解除は、表示対象が
+    /// 実際に変わった場合だけ行う。
     private func deleteTimeline(at index: Int) {
         guard project.timelines.count > 1,
               project.timelines.indices.contains(index) else { return }
+        let wasDisplayed = index == timelineIndex
         project.timelines.remove(at: index)
-        if timelineIndex >= project.timelines.count {
+        if index < timelineIndex {
+            timelineIndex -= 1
+        } else if timelineIndex >= project.timelines.count {
             timelineIndex = project.timelines.count - 1
         }
-        selectedItemIndex = nil
-        resetPreview()
+        if wasDisplayed {
+            selectedItemIndex = nil
+            resetPreview()
+        }
     }
 
     /// シーン名変更シートの対象（.sheet(item:) 用）。
