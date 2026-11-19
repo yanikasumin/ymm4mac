@@ -493,6 +493,10 @@ public final class FFmpegVideoDecodeSession: @unchecked Sendable {
         lastFinalizedFrame = nil
         streamEnded = false
         endOfStreamFrame = nil
+        // 前のプロセスの証拠は、そのプロセスの異常終了として
+        // 例外経由で既に渡っている。新しいプロセスの供給結果へ
+        // 混入させないため、開始時に消す。
+        pendingEvidence = nil
         stateLock.unlock()
     }
 

@@ -187,12 +187,12 @@ final class FFmpegVideoProcessRunner: FFmpegVideoProcess, @unchecked Sendable {
         let thread = Thread { [weak self] in
             var lineBuffer = Data()
             while true {
-                let chunk: Data
-                do {
-                    chunk = try handle.read(upToCount: 32 * 1024) ?? Data()
-                } catch {
-                    break
-                }
+                // `availableData` を使うこと。`read(upToCount:)` は
+                // 指定バイト数か EOF まで待つ意味論であり（実測で
+                // 確認）、ffmpeg のログは少量ずつ届くため、大きな
+                // 塊で待つと「項目が来ない→画素を読まない→ffmpeg が
+                // 標準出力で詰まる」の循環で止まる。
+                let chunk = handle.availableData
                 if chunk.isEmpty { break }
                 lineBuffer.append(chunk)
                 while let newline = lineBuffer.firstIndex(of: UInt8(ascii: "\n")) {
@@ -264,6 +264,9 @@ final class FFmpegVideoProcessRunner: FFmpegVideoProcess, @unchecked Sendable {
         var data = Data()
         data.reserveCapacity(request.frameByteCount)
         while data.count < request.frameByteCount {
+            // 画素側は「必要バイト数を満たすまで読む」が契約であり、
+            // read(upToCount:) の「指定バイト数か EOF まで待つ」
+            // 意味論がそのまま合う（標準エラー側とは逆の選択）。
             let chunk: Data
             do {
                 chunk = try outputHandle.read(
