@@ -118,6 +118,42 @@ final class CharacterReferenceTests: XCTestCase {
         XCTAssertFalse(encoded.contains("埋込名"))
     }
 
+    /// 複製（cloned）は全フィールドを保持した独立インスタンスを返す
+    /// （FE-UNIT6: キャラクター編集画面の「複製」の土台）。
+    func testClonedCharacterIsIndependentCopy() {
+        let original = Character()
+        original.name = "元キャラ"
+        original.groupName = "グループ"
+        original.layer = 3
+        original.remark = "備考"
+        original.voice = VoiceDescription(api: "エンジン", arg: "話者1")
+        original.volume.setFirstValue(75)
+        original.additionalFields = [(key: "UnknownKey", value: .string("保持値"))]
+
+        let copy = original.cloned()
+        XCTAssertFalse(copy === original)
+        XCTAssertEqual(copy.name, "元キャラ")
+        XCTAssertEqual(copy.groupName, "グループ")
+        XCTAssertEqual(copy.layer, 3)
+        XCTAssertEqual(copy.remark, "備考")
+        XCTAssertEqual(copy.voice, VoiceDescription(api: "エンジン", arg: "話者1"))
+        XCTAssertEqual(copy.volume.firstValue, 75)
+        XCTAssertEqual(copy.additionalFields.count, 1)
+        XCTAssertEqual(copy.additionalFields.first?.key, "UnknownKey")
+
+        // 書き出し結果が元と同一になる（往復で欠落しない）。
+        XCTAssertEqual(
+            copy.encodeToJSONValue().serialized(),
+            original.encodeToJSONValue().serialized()
+        )
+
+        // 複製側の変更が元へ漏れない（アニメーションも独立）。
+        copy.name = "複製側"
+        copy.volume.setFirstValue(10)
+        XCTAssertEqual(original.name, "元キャラ")
+        XCTAssertEqual(original.volume.firstValue, 75)
+    }
+
     func testLegacyEmbeddedCharacterSurvivesWhenNameUnresolved() throws {
         // CharacterName がプロジェクトのキャラクターに一致しない場合、
         // 埋込 Character（分離インスタンス）が残り、保存時の

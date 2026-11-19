@@ -291,6 +291,13 @@ public enum ItemPropertyMetadata {
                 id: "Serif", displayName: "セリフ", group: "音声", multiline: true,
                 get: { voice.serif }, set: { voice.serif = $0 }
             ),
+            // 発音（本家 VoiceItem.Hatsuon、Order 130 の HatsuonTextBox）。
+            // 本家では音声生成時にセリフから自動生成されるが、Mac 版には
+            // 読み変換経路が無いため、保持値の表示・手動編集のみが対象。
+            .text(
+                id: "Hatsuon", displayName: "発音", group: "音声", multiline: false,
+                get: { voice.hatsuon }, set: { voice.hatsuon = $0 }
+            ),
             .animation(
                 id: "Volume", displayName: "音量", group: "音声",
                 get: { voice.volume }, set: { voice.volume = $0 }

@@ -250,6 +250,28 @@ final class PropertyMetadataTests: XCTestCase {
         XCTAssertEqual(item.jimakuVisibility, .custom)
     }
 
+    /// 発音（Hatsuon）の記述子が本家の並び（セリフの次）で音声グループに
+    /// あり、モデルの保持値と往復すること（FE-UNIT6）。
+    func testVoiceItemHatsuonDescriptor() throws {
+        let item = VoiceItem()
+        item.hatsuon = "ハツオン"
+        let descriptors = ItemPropertyMetadata.descriptors(for: item)
+
+        let hatsuon = try descriptor(descriptors, "Hatsuon")
+        XCTAssertEqual(hatsuon.displayName, "発音")
+        XCTAssertEqual(hatsuon.group, "音声")
+        XCTAssertEqual(hatsuon.stringValue, "ハツオン")
+        XCTAssertTrue(hatsuon.setStringValue("ヨミカエ"))
+        XCTAssertEqual(item.hatsuon, "ヨミカエ")
+
+        // 本家の Order（Serif 120 → Hatsuon 130）どおり、音声グループ内
+        // ではセリフの直後に並ぶ。
+        let audioIDs = descriptors.filter { $0.group == "音声" }.map(\.id)
+        let serifIndex = try XCTUnwrap(audioIDs.firstIndex(of: "Serif"))
+        let hatsuonIndex = try XCTUnwrap(audioIDs.firstIndex(of: "Hatsuon"))
+        XCTAssertEqual(hatsuonIndex, serifIndex + 1)
+    }
+
     // MARK: - VideoItem / AudioItem の音声プロパティ（FE-R8-001）
 
     /// VideoItem に音量・パンの記述子があり、モデルの保持値と往復し、

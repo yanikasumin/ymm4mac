@@ -136,6 +136,59 @@ final class UserDictionaryStoreTests: XCTestCase {
         XCTAssertEqual(store.current, UserDictionary())
     }
 
+    /// 編集画面の使い方に沿った CRUD 往復（FE-UNIT6）: 3リストへ追加 →
+    /// 保存 → 再読込 → 1件を編集し1件を削除 → 保存 → 再読込 → 全件削除
+    /// して空リストがそのまま残ることまでを通しで固定する。
+    func testCRUDRoundTripAcrossAllLists() {
+        let store = UserDictionaryStore(fileURL: fileURL)
+
+        // 追加: 既定内容へ各リスト1件ずつ足す（編集画面の「追加」相当）。
+        var edited = store.current
+        edited.asteriskWordSets.append(
+            WordSet(from: "秘密", to: "＊＊", description: "伏せ字", isEnabled: true)
+        )
+        edited.wordSets.append(
+            WordSet(from: "今日", to: "キョウ", description: "", isEnabled: true)
+        )
+        edited.pronouncingSets.append(
+            WordSet(from: "キョウ", to: "キョー", description: "", isEnabled: false)
+        )
+        store.update(edited)
+        store.flushPendingSave()
+
+        let afterAdd = UserDictionaryStore(fileURL: fileURL)
+        afterAdd.load()
+        XCTAssertEqual(afterAdd.current, edited)
+
+        // 編集＋削除: 単語リストの追加分を書き換え、発音リストの追加分を消す。
+        var revised = afterAdd.current
+        let wordIndex = revised.wordSets.count - 1
+        revised.wordSets[wordIndex].to = "コンニチ"
+        revised.wordSets[wordIndex].isEnabled = false
+        revised.pronouncingSets.removeLast()
+        store.update(revised)
+        store.flushPendingSave()
+
+        let afterRevise = UserDictionaryStore(fileURL: fileURL)
+        afterRevise.load()
+        XCTAssertEqual(afterRevise.current, revised)
+        XCTAssertEqual(afterRevise.current.wordSets.last?.to, "コンニチ")
+        XCTAssertEqual(afterRevise.current.pronouncingSets.count, edited.pronouncingSets.count - 1)
+
+        // 全件削除: 空の配列は既定値で補われず、空のまま保存・復元される。
+        var emptied = afterRevise.current
+        emptied.asteriskWordSets = []
+        emptied.wordSets = []
+        emptied.pronouncingSets = []
+        store.update(emptied)
+        store.flushPendingSave()
+
+        let afterEmpty = UserDictionaryStore(fileURL: fileURL)
+        afterEmpty.load()
+        XCTAssertEqual(afterEmpty.current, emptied)
+        XCTAssertTrue(afterEmpty.current.wordSets.isEmpty)
+    }
+
     /// 保存 JSON のキー名は本家の保存形式（プロパティ名そのまま）。
     func testSavedJSONUsesHonkeKeys() throws {
         let store = UserDictionaryStore(fileURL: fileURL)
