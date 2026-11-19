@@ -144,64 +144,85 @@ public extension JSONValue {
     /// 文字列のエスケープは Newtonsoft の既定（StringEscapeHandling.Default）
     /// に合わせ、制御文字・引用符・バックスラッシュのみをエスケープし、
     /// 非 ASCII は UTF-8 のまま出す。
+    ///
+    /// 出力は UTF-8 バイト列として組み立てる。エスケープが要るのは
+    /// ASCII の制御文字・引用符・バックスラッシュだけで、それ以外の
+    /// バイト（多バイト文字の各バイトを含む）は原文のまま写せるため、
+    /// スカラ単位で String へ追加するより大幅に安い（FE-R1-031 の
+    /// 詳細計測で文字列化がエンコードの約8割を占めたための最適化。
+    /// 出力バイト列は従来実装と同一）。
     func serialized() -> String {
-        var output = ""
+        var output: [UInt8] = []
         write(into: &output)
-        return output
+        return String(decoding: output, as: UTF8.self)
     }
 
-    private func write(into output: inout String) {
+    private func write(into output: inout [UInt8]) {
         switch self {
         case .null:
-            output += "null"
+            output.append(contentsOf: "null".utf8)
         case .bool(let value):
-            output += value ? "true" : "false"
+            output.append(contentsOf: value ? "true".utf8 : "false".utf8)
         case .numberLiteral(let literal):
-            output += literal
+            output.append(contentsOf: literal.utf8)
         case .string(let value):
             Self.writeEscaped(value, into: &output)
         case .array(let elements):
-            output += "["
+            output.append(0x5B) // [
             for (index, element) in elements.enumerated() {
-                if index > 0 { output += "," }
+                if index > 0 { output.append(0x2C) } // ,
                 element.write(into: &output)
             }
-            output += "]"
+            output.append(0x5D) // ]
         case .object(let fields):
-            output += "{"
+            output.append(0x7B) // {
             for (index, field) in fields.enumerated() {
-                if index > 0 { output += "," }
+                if index > 0 { output.append(0x2C) } // ,
                 Self.writeEscaped(field.key, into: &output)
-                output += ":"
+                output.append(0x3A) // :
                 field.value.write(into: &output)
             }
-            output += "}"
+            output.append(0x7D) // }
         }
     }
 
-    private static func writeEscaped(_ value: String, into output: inout String) {
-        output += "\""
-        for scalar in value.unicodeScalars {
-            switch scalar {
-            case "\"":
-                output += "\\\""
-            case "\\":
-                output += "\\\\"
-            case "\n":
-                output += "\\n"
-            case "\r":
-                output += "\\r"
-            case "\t":
-                output += "\\t"
-            default:
-                if scalar.value < 0x20 {
-                    output += String(format: "\\u%04x", scalar.value)
-                } else {
-                    output.unicodeScalars.append(scalar)
+    private static func writeEscaped(_ value: String, into output: inout [UInt8]) {
+        output.append(0x22) // "
+        let bytes = value.utf8
+        var runStart = bytes.startIndex
+        var index = bytes.startIndex
+        while index < bytes.endIndex {
+            let byte = bytes[index]
+            switch byte {
+            case 0x22, 0x5C, 0x0A, 0x0D, 0x09, 0x00..<0x20:
+                // エスケープ対象までの通常バイト列をまとめて写す。
+                output.append(contentsOf: bytes[runStart..<index])
+                switch byte {
+                case 0x22: output.append(contentsOf: "\\\"".utf8)
+                case 0x5C: output.append(contentsOf: "\\\\".utf8)
+                case 0x0A: output.append(contentsOf: "\\n".utf8)
+                case 0x0D: output.append(contentsOf: "\\r".utf8)
+                case 0x09: output.append(contentsOf: "\\t".utf8)
+                default:
+                    // 残りの制御文字は \u00xx（16進小文字）。対象は
+                    // 0x20 未満なので上位2桁は常に "00"。
+                    output.append(contentsOf: "\\u00".utf8)
+                    output.append(Self.hexDigit(byte >> 4))
+                    output.append(Self.hexDigit(byte & 0x0F))
                 }
+                index = bytes.index(after: index)
+                runStart = index
+            default:
+                index = bytes.index(after: index)
             }
         }
-        output += "\""
+        output.append(contentsOf: bytes[runStart..<bytes.endIndex])
+        output.append(0x22) // "
+    }
+
+    /// 16進1桁（小文字）の ASCII バイト。
+    private static func hexDigit(_ nibble: UInt8) -> UInt8 {
+        nibble < 10 ? 0x30 + nibble : 0x61 + (nibble - 10)
     }
 }
 
