@@ -366,11 +366,19 @@ extension TimelineVerticalLine {
 
     // MARK: - 線の位置計算（本家 GetLineFrames / UpdateLines）
 
-    /// 線の列挙パラメータ（列挙開始位置から導いた通し番号の起点と、
-    /// 通し番号→フレームの変換）。種別が無効・間隔不正なら nil。
+    /// 線の列挙パラメータ（列挙開始位置から導いた通し番号の起点、
+    /// 通し番号→フレームの変換、通し番号1つ当たりの理論上の
+    /// フレーム間隔）。種別が無効・間隔不正なら nil。
+    ///
+    /// `framesPerIndex` は種別パラメータから直接導く丸め前の間隔で、
+    /// `frameAt` の丸め結果から逆算した値ではない。高 BPM のように
+    /// 複数の通し番号が同一フレームへ丸められる条件では、丸め後の
+    /// 最初の異なるフレーム間隔（1フレーム）は理論間隔（1フレーム
+    /// 未満）より大きく見え、間引き係数の根拠に使うと係数が過小に
+    /// なる（FE-R36-132-01）。
     private func lineSequence(
         videoInfo: VideoInfo, enumerateFrom: Int
-    ) -> (startIndex: Int, frameAt: (Int) -> Int)? {
+    ) -> (startIndex: Int, frameAt: (Int) -> Int, framesPerIndex: Double)? {
         let fps = videoInfo.fps
         switch lineType {
         case .frame:
@@ -378,7 +386,8 @@ extension TimelineVerticalLine {
             guard interval > 0 else { return nil }
             return (
                 startIndex: (enumerateFrom - startFrame) / interval,
-                frameAt: { $0 * interval + startFrame }
+                frameAt: { $0 * interval + startFrame },
+                framesPerIndex: Double(interval)
             )
         case .bpm:
             let value = bpm
@@ -387,7 +396,8 @@ extension TimelineVerticalLine {
                 * value / 60
             return (
                 startIndex: Int(beats.rounded(.down)),
-                frameAt: { FrameTime.frame(from: Double($0) * 60 / value, fps: fps) + startFrame }
+                frameAt: { FrameTime.frame(from: Double($0) * 60 / value, fps: fps) + startFrame },
+                framesPerIndex: 60 * Double(fps) / value
             )
         case .time:
             let ticks = spanTicks
@@ -397,7 +407,8 @@ extension TimelineVerticalLine {
                 / spanSeconds
             return (
                 startIndex: Int(spans.rounded(.down)),
-                frameAt: { FrameTime.frame(from: spanSeconds * Double($0), fps: fps) + startFrame }
+                frameAt: { FrameTime.frame(from: spanSeconds * Double($0), fps: fps) + startFrame },
+                framesPerIndex: spanSeconds * Double(fps)
             )
         case .unknown:
             return nil
@@ -440,6 +451,13 @@ extension TimelineVerticalLine {
     /// 列挙してから間引いていたため、広域表示（低倍率）では候補の
     /// 列挙が可視範囲の途中で打ち切られ、右側に線が生成されなかった。
     /// この方式では列挙量が実際の表示線数に見合う量になる。
+    ///
+    /// 間引き係数の根拠（FE-R36-132-01）: 係数は、丸め後の先頭2本の
+    /// 実間隔ではなく、通し番号1つ当たりの理論上のフレーム間隔
+    /// （`lineSequence` の `framesPerIndex`）から決める。丸め後の
+    /// 実間隔は、複数の通し番号が同一フレームへ丸められる条件
+    /// （高 BPM・極短い時間間隔）で理論間隔より大きく出るため、
+    /// 係数が過小になり、間引き後も線が過密になっていた。
     public func displayLines(
         videoInfo: VideoInfo, enumerateFrom: Int, throughFrame: Int,
         pxPerFrame: Double
@@ -451,10 +469,12 @@ extension TimelineVerticalLine {
         func isSub(_ index: Int) -> Bool {
             group != 0 && index % group != 0
         }
-        // 間引き判定は先頭2本の実間隔で行う（従来どおり）。まず
-        // フレーム 0 と連続重複を除いた先頭2本を求める。丸めで同じ
-        // フレームが長く続く異常値に備え、探索は従来の列挙上限と
-        // 同じ回数で打ち切る（その場合は従来どおり1本以下を返す）。
+        // 先頭2本の探索は、可視範囲内の異なる線が2本未満の場合に
+        // そのまま返すための短絡判定にのみ使う（間引き係数の算出
+        // には使わない。FE-R36-132-01）。フレーム 0 と連続重複を
+        // 除いた先頭2本を求める。丸めで同じフレームが長く続く
+        // 異常値に備え、探索は従来の列挙上限と同じ回数で打ち切る
+        // （その場合は従来どおり1本以下を返す）。
         var head: [(index: Int, frame: Int)] = []
         var index = sequence.startIndex
         for _ in 0..<100_000 {
@@ -469,7 +489,8 @@ extension TimelineVerticalLine {
         guard head.count >= 2 else {
             return head.map { (frame: $0.frame, isSubLine: isSub($0.index)) }
         }
-        let spacing = Double(head[1].frame - head[0].frame) * pxPerFrame
+        // 間引き係数は理論間隔から決める（FE-R36-132-01）。
+        let spacing = sequence.framesPerIndex * pxPerFrame
         guard spacing > 0 else { return [] }
         var divisor = 1
         if spacing < 10 {

@@ -288,4 +288,58 @@ final class TimelineVerticalLineTests: XCTestCase {
         // 間引き後の線はすべて主線。
         XCTAssertTrue(display.allSatisfy { !$0.isSubLine })
     }
+
+    /// FE-R36-132-01: 高 BPM では複数の拍が同一フレームへ丸められ、
+    /// 丸め後の先頭2本の間隔（1フレーム）から間引き係数を決めると
+    /// 係数が過小になり、間引き後も線が過密になる。係数は通し番号
+    /// 1つ当たりの理論間隔（60 × 30 / 99999 ≒ 0.018 フレーム）から
+    /// 決める。理論間隔 × 0.0001px ≒ 1.8e-6px なので、間引きは
+    /// 4^12 = 16,777,216 本ごと（実効間隔 ≒ 30.2px）になる。
+    /// 従来方式では 4^9 本ごとで約2,119本・約0.47px間隔だった。
+    func testDisplayLinesThinningUsesTrueIntervalAtHighBPM() {
+        var line = TimelineVerticalLine()
+        line.isEnabled = true
+        line.bpm = 99_999
+        line.group = 4
+        let display = line.displayLines(
+            videoInfo: videoInfo, enumerateFrom: 0, throughFrame: 10_000_000,
+            pxPerFrame: 0.0001
+        )
+        XCTAssertEqual(display.count, 33)
+        XCTAssertEqual(display.first?.frame, 301_993)
+        XCTAssertEqual(display.last?.frame, 9_965_766)
+        // 間引き後の線はすべて主線で、隣接間隔は 10px 以上。
+        XCTAssertTrue(display.allSatisfy { !$0.isSubLine })
+        let frames = display.map(\.frame)
+        for (a, b) in zip(frames, frames.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(Double(b - a) * 0.0001, 10)
+        }
+    }
+
+    /// FE-R36-132-01（時間種別）: 時間間隔が1フレーム未満（1ms =
+    /// 0.03 フレーム）でも、複数の候補が同一フレームへ丸められる
+    /// ため、BPM 種別と同じ過密化が起きる。理論間隔 0.03 フレーム
+    /// × 0.0001px = 3e-6px なので、間引きは 4^11 = 4,194,304 本
+    /// ごと（実効間隔 ≒ 12.6px）になる。
+    /// なおフレーム種別は間隔が1以上の整数で frameAt が厳密な整数
+    /// 演算のため、同一フレームへの重なり自体が起きない。
+    func testDisplayLinesThinningUsesTrueIntervalAtShortTimeSpan() {
+        var line = TimelineVerticalLine()
+        line.isEnabled = true
+        line.lineType = .time
+        line.spanTicks = 10_000  // 1ms
+        line.group = 4
+        let display = line.displayLines(
+            videoInfo: videoInfo, enumerateFrom: 0, throughFrame: 10_000_000,
+            pxPerFrame: 0.0001
+        )
+        XCTAssertEqual(display.count, 79)
+        XCTAssertEqual(display.first?.frame, 125_829)
+        XCTAssertEqual(display.last?.frame, 9_940_500)
+        XCTAssertTrue(display.allSatisfy { !$0.isSubLine })
+        let frames = display.map(\.frame)
+        for (a, b) in zip(frames, frames.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(Double(b - a) * 0.0001, 10)
+        }
+    }
 }
