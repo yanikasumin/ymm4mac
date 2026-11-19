@@ -59,6 +59,7 @@
 - NOISEFIX — Noise 既存3種（Fractal / Random / Curl）の本家シェーダとの差分是正
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 - INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
+- ISSUE106 — 実時間再生の音声が編集中の生タイムラインを読む共有の解消（Issue #106）
 
 ## 実装記録（変更IDごとに自然言語で追記）
 
@@ -1486,6 +1487,22 @@ throws へ変え、失敗の種別と下位エラーを保持する型
 **何を実装したか。** `ItemPropertyMetadata.descriptors(for:)` は音量・パンの記述子を `VoiceItem` にのみ追加しており、`volume` / `pan` をモデルとして保持する `VideoItem` と `AudioItem` ではインスペクタから編集できなかった（監査 Round 8 で FE-R8-001 として採番）。両型に対して、グループ「音声」・表示名「音量」「パン」（`VoiceItem` の音声系と同一）のアニメーション記述子を追加した。追加は共通ヘルパ `audioDescriptors(volume:pan:)` に寄せ、本家で両プロパティが各具象型に宣言され `AnimationSliderAttribute` も具象型ごとに付く実態に合わせ、スライダ仕様は FE-SLIDER-CORE の解決経路で具象型の宣言から引かれる。
 
 **検証。** Mac（同期先 ~/ymm4-work/fe-r8-001/YMM4Mac）で方式名フィルタ実行し全合格: `PropertyMetadataTests` 19 件（新規に両型の記述子の存在・get/set の結線・スライダ仕様の解決を固定）、`AnimationSliderSpecTests` 14 件、`EffectPropertyMetadataTests` 17 件。合計 50 件・失敗 0。AudioDrift は既定どおり除外。期待値（範囲・形式・単位）は抽出データ `slider-attributes.json` の両型 Volume / Pan で裏取り済み。
+
+#### ISSUE106 — 実時間再生の音声が編集中の生タイムラインを読む共有の解消（Issue #106）
+
+**現状確認の結果（着手前に実コードで確定）。** (1) 再生経路: `ProjectView.resetPlaybackEngine` が表示中の生タイムラインで `TimelineAudioMixer` を組み、`RealtimePlaybackEngine` のチャンク生成キューが `PlaybackAudioSource.read` 経由で読み取りのたびに生タイムラインの `items` / `layerSettings` / `videoInfo` を読んでいた。工場の `sceneTimelineResolver` も生の `project.timelines` を引くため、SceneItem の音声も生モデルを読んでいた。エンジン自身も生成キュー上の `renderChunk` で `timeline.videoInfo.hz` を読んでいた。(2) 映像側: `refreshPreviewModel` が `Project.makeExportSnapshot`（コーデック往復の専有複製）を作って `PreviewRenderWorker` へ渡す。間引きは 100ms ＋遅延確定で、**再生中はモデルを確定しない**（`requestPreviewRender` が再生中は早期リターンし、編集は dirty として保留され、停止への遷移時に force 確定される）。(3) 書き出し: `runExport` が開始時スナップショットを作りジョブ専有インスタンスだけを読む（AUD-07 / MAC-0034）ため既に安全であり、本単位の対象外。(4) `AutoTestRunner` のミキサーは自前プロジェクトのオフライン計測で同時編集が存在せず、対象外。
+
+**設計の確定（Issue の方針1）。** 音声ミキサーも映像と同じスナップショットを読む。供給源を映像と共有する理由は、音と映像でモデル版数が常に一致し、編集の反映時点がずれないこと。差し替えの継ぎ目はチャンク境界ではなくモデル確定点に置いた — チャンク生成は逐次読みで、途中の差し替えは位置の不整合を招く一方、モデル確定点は映像側の差し替えと同一の瞬間であり、再生中はどちらのモデルも確定しない既存規則とそのまま一致する。
+
+**反映タイミングの仕様（映像と同一）。** 停止中: 編集が入ると dirty になり、`refreshPreviewModel`（100ms スロットル＋遅延確定）の成功時に、映像ワーカーへの設置と同じ処理の中で音声へも新しいスナップショットが届く。再生中: スナップショットは生成されず、音声・映像とも再生開始時点の版を読み続ける。編集は dirty として保留され、停止（一時停止・終端到達・リピート再開の遷移を含む）時に force 確定して双方へ同時に反映される。シークとメーター先読みもスナップショット側を読む。
+
+**実装。** (1) Core `TimelineAudioMixer`: `timeline` を差し替え可能にし、`retarget(to:sceneTimelines:)` を追加した。開いている資源とグループ解決を破棄し、工場のシーン解決をスナップショット内のタイムライン群へ向け直す（解決が生モデルへ戻ると SceneItem の音声だけ競合が残るため）。読み取り位置は保持する。(2) GPU `PlaybackAudioSource.replaceModel`: ミキサーを差し替え、旧モデルの先読み蓄積（リング）を破棄する。ミキサーの読み取り位置は破棄する蓄積分だけ進んでいるため、その分を巻き戻して「次に返る音声の位置は差し替え前後で変わらない」契約にした。メーターの状態は変えない（測定済みの窓は再生済みの音）。(3) GPU `RealtimePlaybackEngine.updateAudioModel`: メインスレッドから受け、停止中は即時適用、再生中は保留して `endPlayback` で適用する。適用は供給ロック（`sourceAccessLock`）の保持中に行い、チャンク生成・シークと直列化する。保留の適用は状態変化通知より先に行う — 通知は同期発火し、その処理（モデル確定）がさらに新しいモデルを届けるため、後から適用すると新しい方を上書きする。あわせて生成キューの Hz を供給側（`source.hz`）から取るよう変更し、生成キューが編集モデルへ触れる読み取りを無くした。エンジンの `timeline` はメインスレッド専用の表示同期用（現在フレーム・長さ・位置換算）として残し、その境界をドキュメントに明記した。(4) アプリ `ProjectView`: `refreshPreviewModel` が成功時にスナップショットを保持し（`previewSnapshot`）、ワーカーへの `setModel` と同じ箇所で `playbackEngine?.updateAudioModel` を呼ぶ単一の確定経路にした。`resetPlaybackEngine` は確定済みスナップショットがあればそれでミキサーとシーン解決を組む。無い場合（セッション初期化直後、およびスナップショット生成に失敗している間）は、動画設定だけを写した空のタイムラインで仮組みして無音とし、音声生成側が編集モデルを持つ状態を作らない（書き出しがスナップショットを作れない場合に共有へフォールバックしない AUD-07 の方針と同じ）。最初の確定で正しいスナップショットへ差し替わる。
+
+**検証。** Mac（同期先 ~/ymm4-work/issue106/YMM4Mac）で実施。ルートパッケージと DebugApp の `swift build` 成功。対象テスト全合格・失敗0: Core は新規 `TimelineAudioMixerRetargetTests` 5件（差し替えで内容が切り替わる／位置が保持される／差し替え後の旧タイムライン変更が出力へ届かない／シーン解決が新しいモデル集合へ向く／生成側がスナップショットを読む間に編集モデル側を並行変更しても出力が壊れない）、既存 `AudioPipelineTests` 20件・`ExportAudioProviderTests` 8件。GPU は新規 `PlaybackModelSwapTests` 3件（replaceModel が位置を保って内容を切り替え蓄積を漏らさない／停止中の updateAudioModel は即時適用／再生中は保留され一時停止で適用される — 実再生で確認）、既存の再生系 `PlaybackAudioSourceTests` 4件・`RealtimePlaybackEngineTests` 5件・`RealtimePlaybackRepeatTests` 2件・`StreamingPCMProviderTests` 10件・`VoiceAudioProviderTests` 9件。音声系の回帰として `AudioSampleAccuracyTests` 11件・`SoundLevelMeterTests` 13件・`LipSyncTests` 9件・`SolaPitchCorrectionTests` 10件も全合格。全スイートは回していない。AudioDriftTests は対象外（音声クロック・リサンプリング中核の変更を含まない）。テスト作成時に判明した注意: ミキサーの読み取りは「呼び出し側が 0 初期化したバッファへの加算」が契約であり、バッファを使い回すテストは旧値へ加算されて見かけの失敗になる（本番経路の PlaybackAudioSource は窓ごとに 0 埋めするため影響なし）。
+
+**手動検証チェックリスト（未実施。実機の再生確認が要る範囲）。** (1) 実プロジェクト（kiminihare.ymmp）を開き、再生しながらアイテムの追加・削除・音量変更を行い、異常終了しないこと、再生中の音が再生開始時点の内容のままであること。(2) 再生を停止すると、保留されていた編集が音と映像の双方へ同時に反映されること。(3) リピート再生を有効にして終端を跨いだとき、2 周目が新しいモデルで鳴ること。(4) 再生中のシーク・速度変更・一時停止の操作感が従来と変わらないこと。(5) シーンアイテムを含むプロジェクトで、再生中にシーン先タイムラインを編集しても異常終了しないこと。
+
+**PR 本文の下書き。** タイトル: 「Issue #106: 実時間再生の音声をスナップショット供給へ切り替え、生タイムライン共有を解消」。要件ID: Issue #106（第9ラウンド設計相談で第2段階の処分対象とされた音声側の競合）。本家根拠: 本家はプレイヤーが専有する読み取り経路で供給する構造であり、編集モデルとの共有自体が Mac 側の内部事情のため、本家との見た目の差分は無い（内部所有権の変更）。変更したシンボル: `TimelineAudioMixer.retarget(to:sceneTimelines:)`（新規）・同 `timeline`（let → private(set) var）、`PlaybackAudioSource.replaceModel(timeline:sceneTimelines:)`（新規）、`RealtimePlaybackEngine.updateAudioModel(timeline:timelines:)`（新規）・`endPlayback`（保留モデルの適用）・`chunkFrames` / `renderChunk`（Hz の取得先を供給側へ）、`ProjectView.refreshPreviewModel`（スナップショット保持と音声への配送）・`resetPlaybackEngine`（スナップショットでの組み立て、無い場合は空タイムラインで仮組み）。主要な設計判断: 映像と同じスナップショット供給・同じモデル確定経路に寄せ、反映タイミングを映像と一致させた。再生中の差し替えは保留し停止時に適用する。スナップショットが無い間は編集モデルへフォールバックせず無音の仮組みとする。実行したテスト: 上記「検証」のとおり（新規8件＋既存の音声・再生系101件、全合格）。実装記録: 本節（ISSUE106）。承認状況: レビュー待ち。
 
 ## 以降の記載テンプレート
 
