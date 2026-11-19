@@ -2512,6 +2512,12 @@ struct ProjectView: View {
                   identity.version == previewModelVersion
             else { return }
             // 初期化失敗の理由をそのまま表示する（Issue #50）。
+            // 旧モデルの画像が残ると理由文より画像が優先表示され、
+            // 失敗が見えなくなるため、描画失敗時と同じく画像を消す
+            // （FE-R1-024）。
+            previewImage = nil
+            displayedPreviewIdentity = nil
+            displayedPreviewFrame = nil
             previewError = message
         }
     }
