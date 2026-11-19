@@ -26,6 +26,19 @@ struct ProjectView: View {
     /// ファイル差し替えの非同期適用の世代（アイテムごと）。
     /// 古い取得結果が新しい変更を上書きしないための照合用（FE-R1-043）。
     @State private var fileChangeGenerations: [ObjectIdentifier: Int] = [:]
+    /// Undo/Redo を適用するたびに増える版数。インスペクタの行は
+    /// 入力途中の状態を持つため、履歴の適用後は作り直してモデルへ
+    /// 追随させる（FE-UNDO-WIRING）。
+    @State private var historyApplyRevision = 0
+    /// タイムライン帯の再評価の契機（Undo/Redo 適用時）。帯はモデルを
+    /// 直接読むため、版数を渡して body の再評価を促す。
+    @State private var timelineDisplayRevision = 0
+    /// タイムラインドラッグについて、この接続側がトランザクションを
+    /// 開始したか（監査 Round 10 の接続条件）。開始していない
+    /// セッション（背景・範囲選択）の終了通知では Undo 処理をしない。
+    @State private var dragUndoOwned = false
+    /// ドラッグ開始時点のタイムライン写し（Undo 記録用）。
+    @State private var dragUndoSnapshot: TimelineEditSnapshot?
     @State private var roundTripResult: String?
     @State private var saveResult: String?
     @State private var previewFrame: Double = 0
@@ -237,7 +250,18 @@ struct ProjectView: View {
                                     showVerticalLines: $showVerticalLines,
                                     reportedCanvasWidth: $canvasViewportWidth,
                                     reportedTopLayer: $topVisibleLayer,
-                                    onEdited: { requestPreviewRender(modelChanged: true) }
+                                    onEdited: { requestPreviewRender(modelChanged: true) },
+                                    onDragBegan: {
+                                        beginTimelineDragUndo(timeline: timeline)
+                                    },
+                                    onDragCommitted: {
+                                        commitTimelineDragUndo(timeline: timeline)
+                                    },
+                                    onDragCancelled: {
+                                        cancelTimelineDragUndo()
+                                    },
+                                    editRecorder: workspace.editRecorder,
+                                    displayRevision: timelineDisplayRevision
                                 )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .clipped()
@@ -667,6 +691,10 @@ struct ProjectView: View {
     }
 
     @State private var handleDrag: HandleDragState?
+    /// プレビュー上の移動ドラッグ／ハンドルドラッグについて、この
+    /// 接続側が Undo セッションを開始したか（所有の追跡）。
+    @State private var previewDragUndoOwned = false
+    @State private var handleDragUndoOwned = false
 
     /// 選択アイテムの操作ハンドル群（表示は 9px、当たり判定は 18px）。
     private func selectionHandles(
@@ -744,6 +772,9 @@ struct ProjectView: View {
                 if handleDrag == nil {
                     guard let index = timeline.items.firstIndex(where: { $0 === item }),
                           let props = item as? VideoItemProperties else { return }
+                    // ドラッグの書き込みを1履歴エントリへまとめる
+                    // セッションを開く（FE-UNDO-WIRING）。
+                    handleDragUndoOwned = workspace.editRecorder.beginSession()
                     let context = animationContext(for: item, timeline: timeline)
                     let center = CGPoint(
                         x: bounds.midX * scale, y: bounds.midY * scale
@@ -791,6 +822,10 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 handleDrag = nil
+                if handleDragUndoOwned {
+                    workspace.editRecorder.commitSession()
+                    handleDragUndoOwned = false
+                }
                 // ドラッグ中の間引きで残った未反映分を確定させる
                 // （再生中なら単一入口の規則で dirty に保留される）。
                 requestPreviewRender(modelChanged: true, forceModelRefresh: true)
@@ -815,20 +850,48 @@ struct ProjectView: View {
     /// 定数は定数化、キーフレームがある場合は再生ヘッドが属する
     /// 区間の開始値、それ以外は先頭値（FE-R1-006。先頭値への固定
     /// 書き換えでは、表示中の区間と無関係な値が変わる）。
+    /// 書き込みは Undo 記録の対象とし、ドラッグ中は呼び出し側が
+    /// 開いたセッションへ蓄積される（FE-UNDO-WIRING）。
     private func writeAnimationValue(
         descriptor: PropertyDescriptor, item: BaseItem, timeline: Timeline,
         value: Double
     ) {
         guard let animation = descriptor.animationValue else { return }
+        let recorder = workspace.editRecorder
         if animation.animationType == .none {
+            let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationConstantValue(value)
+            let new = descriptor.animationValue.map {
+                AnimationSliderScale.editValue(of: $0, valueIndex: 0)
+            } ?? value
+            recorder.recordValueChange(
+                target: EditTargetKey(item, key: "\(descriptor.id)#const"),
+                oldValue: old, newValue: new,
+                apply: { descriptor.setAnimationConstantValue($0) })
         } else if animation.animationType.isKeyFrameSupported,
                   !animation.keyFrames.frames.isEmpty {
             let context = animationContext(for: item, timeline: timeline)
-            descriptor.setAnimationValue(
-                value, atSegment: animation.segmentIndex(atFrame: context.frame))
+            let segment = animation.segmentIndex(atFrame: context.frame)
+            let old = AnimationSliderScale.editValue(
+                of: animation, valueIndex: segment)
+            descriptor.setAnimationValue(value, atSegment: segment)
+            let new = descriptor.animationValue.map {
+                AnimationSliderScale.editValue(of: $0, valueIndex: segment)
+            } ?? value
+            recorder.recordValueChange(
+                target: EditTargetKey(item, key: "\(descriptor.id)#seg\(segment)"),
+                oldValue: old, newValue: new,
+                apply: { descriptor.setAnimationValue($0, atSegment: segment) })
         } else {
+            let old = AnimationSliderScale.editValue(of: animation, valueIndex: 0)
             descriptor.setAnimationFirstValue(value)
+            let new = descriptor.animationValue.map {
+                AnimationSliderScale.editValue(of: $0, valueIndex: 0)
+            } ?? value
+            recorder.recordValueChange(
+                target: EditTargetKey(item, key: "\(descriptor.id)#first"),
+                oldValue: old, newValue: new,
+                apply: { descriptor.setAnimationFirstValue($0) })
         }
     }
 
@@ -864,6 +927,9 @@ struct ProjectView: View {
                 if let index = hitTestPreviewItem(
                     timeline: timeline, videoPoint: startVideoPoint
                 ), let props = timeline.items[index] as? VideoItemProperties {
+                    // 移動ドラッグの書き込みを1履歴エントリへまとめる
+                    // セッションを開く（FE-UNDO-WIRING）。
+                    previewDragUndoOwned = workspace.editRecorder.beginSession()
                     selectedItemIndex = index
                     let item = timeline.items[index]
                     let context = animationContext(for: item, timeline: timeline)
@@ -887,6 +953,10 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 previewDrag = nil
+                if previewDragUndoOwned {
+                    workspace.editRecorder.commitSession()
+                    previewDragUndoOwned = false
+                }
                 // ドラッグ中の間引きで残った未反映分を確定させる
                 // （再生中なら単一入口の規則で dirty に保留される）。
                 requestPreviewRender(modelChanged: true, forceModelRefresh: true)
@@ -1237,11 +1307,73 @@ struct ProjectView: View {
         }
     }
 
+    // MARK: - Undo/Redo の接続（FE-UNDO-WIRING）
+
+    /// タイムラインドラッグの開始通知。トランザクションを開始し、
+    /// 開始時点の写しを取る。開始が拒否された場合はこのセッション
+    /// を無記録として扱い、終了通知でも何もしない（所有の追跡は
+    /// 監査 Round 10 の接続条件）。フックの形状上、開始の拒否を
+    /// 操作層へ veto として返すことはできないため、ドラッグ自体は
+    /// 通常どおり進む（制約として実装ログに明記）。
+    private func beginTimelineDragUndo(timeline: Timeline) {
+        dragUndoOwned = workspace.editRecorder.beginSession()
+        dragUndoSnapshot = dragUndoOwned
+            ? TimelineEditSnapshot(timeline: timeline) : nil
+    }
+
+    /// タイムラインドラッグの確定通知。自分が開始したセッションに
+    /// ついてだけ、開始時点との差分を記録して確定する。
+    private func commitTimelineDragUndo(timeline: Timeline) {
+        if dragUndoOwned, let snapshot = dragUndoSnapshot,
+           let transaction = workspace.editRecorder.activeSessionTransaction {
+            snapshot.recordDiff(into: transaction, timeline: timeline)
+            workspace.editRecorder.commitSession()
+        }
+        dragUndoOwned = false
+        dragUndoSnapshot = nil
+    }
+
+    /// タイムラインドラッグのキャンセル通知。モデルは操作層が
+    /// 開始時点へ復元済みであり、こちらは自分が開始したセッション
+    /// のトランザクションを破棄するだけである。開始していない
+    /// セッション（背景・範囲選択の Escape 等）の通知は対象外。
+    private func cancelTimelineDragUndo() {
+        if dragUndoOwned {
+            workspace.editRecorder.cancelSession()
+        }
+        dragUndoOwned = false
+        dragUndoSnapshot = nil
+    }
+
+    /// Undo を実行し、表示（選択・インスペクタ・タイムライン・
+    /// プレビュー）をモデルへ追随させる。
+    private func performUndo(timeline: Timeline) {
+        guard workspace.editCoordinator.undo() else { return }
+        afterHistoryApplied(timeline: timeline)
+    }
+
+    /// Redo を実行し、表示をモデルへ追随させる。
+    private func performRedo(timeline: Timeline) {
+        guard workspace.editCoordinator.redo() else { return }
+        afterHistoryApplied(timeline: timeline)
+    }
+
+    private func afterHistoryApplied(timeline: Timeline) {
+        historyApplyRevision += 1
+        timelineDisplayRevision += 1
+        reflectCoreSelection(timeline)
+        requestPreviewRender(modelChanged: true)
+    }
+
     /// メニュー／ツールバーからの編集アクションを実行する。
     /// いずれも Core の既存編集操作への接続であり、構造を変える操作の
     /// 後はプレビューを再合成する。
     private func executeWorkspaceAction(_ action: WorkspaceAction, timeline: Timeline) {
         switch action {
+        case .undo:
+            performUndo(timeline: timeline)
+        case .redo:
+            performRedo(timeline: timeline)
         case .addItem(let kind):
             addItem(kind: kind, timeline: timeline)
         case .splitAtCurrentPosition:
@@ -1249,13 +1381,17 @@ struct ProjectView: View {
         case .deleteSelection:
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
-            timeline.deleteSelectedAndGroupedItems()
+            workspace.editRecorder.recordTimelineChange(timeline: timeline) {
+                timeline.deleteSelectedAndGroupedItems()
+            }
             selectedItemIndex = nil
             requestPreviewRender(modelChanged: true)
         case .deleteAndMoveAll:
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
-            _ = timeline.deleteAndMoveAll()
+            workspace.editRecorder.recordTimelineChange(timeline: timeline) {
+                _ = timeline.deleteAndMoveAll()
+            }
             reflectCoreSelection(timeline)
             requestPreviewRender(modelChanged: true)
         case .groupSelection:
@@ -1367,9 +1503,12 @@ struct ProjectView: View {
         }
         let item = makeItem(kind: kind)
         item.length = placeholderItemLength(timeline: timeline)
-        guard timeline.tryAddItems(
-            [item], frame: Int(previewFrame), layer: topVisibleLayer)
-        else { return }
+        var added = false
+        workspace.editRecorder.recordTimelineChange(timeline: timeline) {
+            added = timeline.tryAddItems(
+                [item], frame: Int(previewFrame), layer: topVisibleLayer)
+        }
+        guard added else { return }
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
         }
@@ -1434,9 +1573,15 @@ struct ProjectView: View {
             newItems.append(item)
         }
         guard !newItems.isEmpty,
-              project.timelines.contains(where: { $0 === timeline }),
-              timeline.tryAddItems(newItems, frame: frame, layer: layer)
+              project.timelines.contains(where: { $0 === timeline })
         else { return }
+        // 記録のスナップショットは確定の直前に取る（取得の非同期の
+        // 間に起きた他の変更を差分へ含めないため）。
+        var added = false
+        workspace.editRecorder.recordTimelineChange(timeline: timeline) {
+            added = timeline.tryAddItems(newItems, frame: frame, layer: layer)
+        }
+        guard added else { return }
         if self.timeline === timeline {
             reflectCoreSelection(timeline)
         }
@@ -1563,9 +1708,12 @@ struct ProjectView: View {
         item.length = placeholderItemLength(timeline: timeline)
         // 追加は衝突解決つきの tryAddItems を経由する（FE-R1-009）。
         // 配置後の item.frame がシーク先になる。
-        guard timeline.tryAddItems(
-            [item], frame: Int(previewFrame), layer: topVisibleLayer)
-        else { return }
+        var added = false
+        workspace.editRecorder.recordTimelineChange(timeline: timeline) {
+            added = timeline.tryAddItems(
+                [item], frame: Int(previewFrame), layer: topVisibleLayer)
+        }
+        guard added else { return }
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
         }
@@ -1780,11 +1928,17 @@ struct ProjectView: View {
 
     private func editToolbar(timeline: Timeline) -> some View {
         HStack(spacing: 2) {
-            // Undo/Redo は Core に履歴基盤が無いため未接続（無効表示）。
-            toolbarButton("arrow.uturn.backward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.undo, shortcut: UIStrings.Toolbar.shortcutUndo)) {}
-                .disabled(true)
-            toolbarButton("arrow.uturn.forward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.redo, shortcut: UIStrings.Toolbar.shortcutRedo)) {}
-                .disabled(true)
+            // Undo/Redo は Core の EditCoordinator へ接続済み
+            // （FE-UNDO-WIRING）。有効条件は履歴の有無に加えて
+            // 操作状態（編集中は不可）も見る（WorkspaceState 側）。
+            toolbarButton("arrow.uturn.backward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.undo, shortcut: UIStrings.Toolbar.shortcutUndo)) {
+                performUndo(timeline: timeline)
+            }
+            .disabled(!workspace.canPerformUndo)
+            toolbarButton("arrow.uturn.forward", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.redo, shortcut: UIStrings.Toolbar.shortcutRedo)) {
+                performRedo(timeline: timeline)
+            }
+            .disabled(!workspace.canPerformRedo)
             toolbarDivider
             // 切り取り／コピー／貼り付けはアイテム用クリップボードが
             // 無いため未接続（無効表示）。
@@ -2685,7 +2839,9 @@ struct ProjectView: View {
                     onEdited: { requestPreviewRender(modelChanged: true) },
                     onFilePathChanged: { _, newPath in
                         applyFileChange(item: item, newPath: newPath, timeline: timeline)
-                    }
+                    },
+                    editRecorder: workspace.editRecorder,
+                    editTargetOwner: item
                 )
                 EffectInspectorView(
                     item: item,
@@ -2695,7 +2851,9 @@ struct ProjectView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             // 選択が変わったら各行の入力途中の状態を破棄する。
-            .id(selectedItemIndex)
+            // Undo/Redo の適用後も同様に作り直し、表示値をモデルへ
+            // 追随させる（FE-UNDO-WIRING）。
+            .id("\(selectedItemIndex ?? -1)-\(historyApplyRevision)")
         } else {
             Text(UIStrings.Inspector.noSelection)
                 .foregroundStyle(.secondary)
