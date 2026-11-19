@@ -173,8 +173,12 @@ public final class TimelineComposer {
     private var currentTarget: (any RenderTarget)?
     private var frameBufferInputs: [any RenderTarget] = []
     /// クリッピング時に「直前の画像」が無い場合の代替（本家は白の Flood
-    /// エフェクト出力を用いる。この層ではトークンで代用する）。
-    private let floodOutput = ImageReference(label: "flood")
+    /// エフェクト出力を用いる。この層ではトークンで代用する）。素性は
+    /// ラベルではなく役割（`.floodSubstitute`）で識別する。合成器は
+    /// プレビュー・書き出し・シーン・合成グループで複数生成され、それぞれ
+    /// が自分のトークンを持つため、インスタンス同一性ではなく役割で
+    /// 判定できることが要る。
+    private let floodOutput = ImageReference(label: "flood", role: .floodSubstitute)
 
     public init(
         scene: TimelineScene,

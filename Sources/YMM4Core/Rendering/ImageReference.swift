@@ -12,11 +12,31 @@ import Foundation
 ///   内容が変わりうる）。
 /// - 入力として設定すること（SetInput 相当）は所有権を移さない。入力の
 ///   解除は、設定されていた入力を破棄しない。
+/// - 役割（`role`）は生成時に決まり不変である。実体を持たない代替
+///   トークンの素性は役割で識別し、ラベルでは識別しない。ラベルは
+///   デバッグ専用であり、描画の意味論の判定に使ってはならない。
 public final class ImageReference {
-    /// デバッグ用の識別ラベル。描画内容には影響しない。
+    /// 参照の役割。実体を持たない代替トークンを、生成元によらず
+    /// 型付きで識別するためのもの（ラベル文字列による識別はしない）。
+    public enum Role {
+        /// 通常の参照（実体は GPU 実行層の登録表で結び付けられる）。
+        case normal
+        /// 白 Flood の代替トークン。クリッピング（本家 SetAlphaMask）で
+        /// 「直前の画像」が無い場合に合成器が渡すもので、本家
+        /// TimelineSource が作る不透明な白の Flood 出力に対応する。
+        /// 実体は登録されず、全面不透明なマスクとして扱われる。
+        case floodSubstitute
+    }
+
+    /// デバッグ用の識別ラベル。描画内容には影響せず、意味論の判定にも
+    /// 使わない。
     public let label: String
 
-    public init(label: String = "") {
+    /// 参照の役割。生成時に決まり、以後は変わらない。
+    public let role: Role
+
+    public init(label: String = "", role: Role = .normal) {
         self.label = label
+        self.role = role
     }
 }
