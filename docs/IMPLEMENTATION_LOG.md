@@ -2173,3 +2173,47 @@ Mac で対象を絞って実行し全合格: ContentSeparationsTests 30件（新
 
 ## 実装記録
 docs/IMPLEMENTATION_LOG.md の FE-CONTENTSEP 節。docs/ARCHITECTURE.md の編集終了時調整・エコー再計算の記述を追随させた。
+
+#### FE-SEP-OVERRIDES — SceneItem / VoiceItem の ContentSeparations 上書き形の実装（IMPLEMENTED、Mac 検証済み）
+
+FE-CONTENTSEP で「意図的な差異・範囲外 (1)」として記録した残件の処分。基点は FE-CONTENTSEP 単位のブランチ `feat/fe-content-separations`（先端 `a62af85`）であり、PR は同単位の PR の後に積む前提とする（本単位単独では main へ出さない）。
+
+- **本家根拠**（逆コンパイル済みソースで確認）: `SceneItem.cs:67-126` の `ContentSeparations`（本体は参照先シーンの長さ `GlobalSceneInfo.Default.GetValue(SceneId, x => x.VideoInfo.GetTimeFrom(x.Length))` で構成される。非定数時はループなら境界の横切列挙、非ループなら尽きる時刻、その後にエコーの追加時間。定数時は速度が正でなければ（符号つきで割り戻すため）エコー分も含めて一切生まれず、正なら `(シーン長 × (i+1) − オフセット) / 速度 × 100` の繰り返し＋ `GetEchoLength / 速度 × 100`。入口の素材長ガードは無い＝シーン長 0 でもエコーの区切りだけは生まれ得る）。`VoiceItem.cs:365-419` の `ContentSeparations`（入口ガードは `ContentLength == TimeSpan.Zero` のときだけ打ち切り。素材長は尾なしの `voiceLength`、ループは無く本体は常に1つ。非定数時は尽きる時刻が有る場合の分岐内にエコー分・追加時間の両方を含む。定数時は `(voiceLength − オフセット) / |速度| × 100` ＋ `GetEchoLength / |速度| × 100` ＋ 追加時間（正の場合のみ、速度で割り戻さない））。`ContentLength` プロパティは `VoiceItem.cs:350-362`（`voiceLength` が 0 なら 5 秒、そうでなければ `voiceLength + 追加時間 × |先頭値| / 100 + エコー尾`）。`GetEchoLength` は両型とも `AdditionalDuration × 先頭値 / 100` の符号つき（`SceneItem.cs:278` / `VoiceItem.cs:1354`）。尽きる時刻の外挿は `PlaybackRateMap.cs:381-419`（範囲内で尽きない場合は末尾レートで外挿し、nil は外挿できない場合のみ）。
+- **供給の調査結果**: ボイス形は供給の継ぎ目が不要だった（`voiceLength`・追加時間・エコーはすべてアイテム内の保持値）。ただし Mac 側の保持値 `contentLength` はボイスアイテムでは維持されないため、入口ガードは本家の `ContentLength` の計算をその場で再現して判定する。シーン形は継ぎ目が不足していた: 本家は `GlobalSceneInfo` のライブ参照で引くが、Mac のアイテムはプロジェクトへの参照を持たず、既存のシーン解決（合成層の `sceneTimelineResolver` 注入）は描画経路専用で Core のモデル層からは引けない。
+- **供給継ぎ目の設計**: `SceneItem.sceneLengthProvider: ((UUID) -> TimeSpanValue?)?`（保存対象外のクロージャ）を新設し、`Project.injectSceneLengthProviders()` が全タイムラインのシーンアイテムへ注入する。合成層の注入と同じクロージャ注入の形で、プロジェクトへの参照は弱参照（`[weak self]`）に留め、アイテムがプロジェクト全体への強参照を持つ構造にはしていない。供給は引くたびにプロジェクトのタイムライン群を評価するライブ参照であり、参照先シーンの長さの変化は再注入なしで反映される（本家の購読と同じ意味論）。シーン長は本家どおり参照先タイムラインの長さ（キャッシュ値）をそのタイムラインの FPS で時間へ換算した値。注入の契機は読み込み（`YmmpCodec.decode` がキャラクター参照の再解決と同じく組み立ての最後に呼ぶ）。未注入・未解決の場合はシーン長 0 として振る舞う（本家 `GlobalSceneInfo.GetValue` が未登録 ID に対して default を返す規則と一致）。
+- **実装**: `SceneItem.contentSeparations` / `VoiceItem.contentSeparations` の override を追加し、本体は `Editing/ContentSeparations.swift` の `sceneContentSeparations(sceneLength:isLooped:echoIsEnabled:echoInterval:echoAttenuation:)` / `voiceContentSeparations(voiceLength:additionalTime:echoIsEnabled:echoInterval:echoAttenuation:)` へ委譲する。本体・エコーの列挙は動画・音声形のイテレータ（`MediaConstantSeparationsIterator` / `MediaNonConstantSeparationsIterator`）を再利用した（シーン形は速度が正の場合に割り戻しが絶対値と一致するため、そのまま使える）。シーン形の本家との差2点（定数形の符号つき割り戻し、入口ガードの不存在）は構造として再現した。
+- **仕上げ時の是正（先行実装の不整合2件）**: (1) ボイス形の入口ガードが「実効素材長 > 0」で判定しており、実効素材長が負になる場合（短い音声に追加時間の負値が乗る等。本家の追加時間の範囲は −100000〜100000、スライダは −5〜5 秒）にも打ち切っていた。本家は `== TimeSpan.Zero` のときだけ打ち切るため、`!= .zero` へ是正し、負の場合と ちょうど 0 の場合の回帰テストを追加した。(2) テスト側の前提違い2件: 非定数レートのヘルパが実在しない `Animation` のメンバを変更していたため、既存 `ContentSeparationsTests` と同じ構築形（`.linear` ＋値2つ）へ是正した。「アイテム長の中で素材が尽きない場合は空」というテストは前提が誤りだった — 本家 `FindContentExhaustedTime` は末尾レートで外挿するため、区切りはアイテム長の外側に生まれるのが本家どおりである（消費側が範囲で打ち切る前提）。テストを「外挿で外側に生まれる」ケースと「末尾レート 0 で外挿できず真に空になる」ケースへ書き直した。実装側の不具合ではなかった。
+- **残した差分・制約**: (1) 注入の契機は読み込み（decode）のみ。編集時に追加・複製されたシーンアイテムは、次の注入（再読み込み、または書き出しスナップショットの decode 経由）まで供給を持たず、その間の区切りはシーン長 0 の形になる（終端判定と吸着がその分だけ本家とずれる）。アプリ層の操作時点で注入を呼ぶ接続はアプリ層の変更を伴うため本単位の範囲外として残す。(2) 本家の `SceneItem.OriginalContentLength`（＝シーン長）に相当する値は、Mac では `BaseItem` の保持プロパティ `originalContentLength` を上書きせず（保持プロパティは計算プロパティで override できない構造のため）、読み取り専用の `SceneItem.sceneContentLength` として公開した。区切りの消費先はすべて `contentSeparations` 経由であり、振る舞いに差は無い。(3) シーン・ボイスの `contentLength` 自体は Mac ではモデル層で維持されない（従来どおり）。区切りは取得のたびに現在値から計算されるため、エコー値や追加時間の変化は次回取得へ即時反映される。FE-R15-006 のエコー追随（長さの決め直し）は動画・音声の管轄のままでシーン・ボイスへは拡張していない（Mac のシーン・ボイスには素材長の再計算経路自体が無いため）。
+- **手動チェックリストへの追加項目**（未実施。次回のフロントエンド目視確認へ）: (S1) シーンアイテムを含むプロジェクトを開き、シーンアイテムの後端トリムが自シーンの区切りへ吸着すること、再生速度の編集終了時に終端判定がシーン形で働くこと。(S2) ボイスアイテムで追加時間を変更した際、終端が区切り上にある場合の長さ追随の判定がボイス形で働くこと。
+
+検証: Mac（~/ymm4-work/fe-sep2/YMM4Mac）で実施。対象を絞った `swift test`（AudioDrift 除外）で全合格 — `ContentSeparationsOverrideTests` 20件（新規。ボイス形の定数・非定数・エコー・追加時間・入口ガードの負／0、シーン形の定数・ループ・非正速度・エコー・供給なし・非定数・終端判定、プロジェクト注入のライブ反映、decode での注入）、`ContentSeparationsTests` 30件、`PlaybackRateEditSessionTests` 10件、`YmmpCodecTests` 25件、`MediaItemLengthTests` 48件、`EditRecorderTests` 8件、計141件・失敗0。全スイートは回していない。AudioDriftTests は実行していない（本単位は音声クロック・リサンプリング中核の変更を含まない）。
+
+##### PR 本文の下書き（FE-SEP-OVERRIDES）
+
+## 概要
+SceneItem / VoiceItem の ContentSeparations 上書き形を実装し、FE-CONTENTSEP で差異として記録した残件を処分する。シーン形に必要な参照先シーンの長さは、プロジェクト側からクロージャを注入する供給継ぎ目で解決する。基点は FE-CONTENTSEP のブランチであり、本 PR は同 PR の後に積む前提とする。
+
+## 本家根拠
+- `SceneItem.cs:67-126`（ContentSeparations 上書き形。本体は参照先シーンの長さ、定数形は符号つき割り戻し、入口ガードなし）
+- `VoiceItem.cs:365-419`（上書き形。素材長は voiceLength、追加時間の区切りが最後に付く）
+- `VoiceItem.cs:350-362`（ContentLength の計算。入口ガードの判定値）
+- `SceneItem.cs:278` / `VoiceItem.cs:1354`（GetEchoLength は符号つき）
+- `PlaybackRateMap.cs:381-419`（FindContentExhaustedTime は末尾レートで外挿する）
+
+## 変更シンボル
+- `Sources/YMM4Core/Editing/ContentSeparations.swift`: `BaseItem.sceneContentSeparations(sceneLength:isLooped:echoIsEnabled:echoInterval:echoAttenuation:)` / `voiceContentSeparations(voiceLength:additionalTime:echoIsEnabled:echoInterval:echoAttenuation:)` を追加
+- `SceneItem.contentSeparations`（override 追加）、`SceneItem.sceneLengthProvider` / `sceneContentLength`（新設）
+- `VoiceItem.contentSeparations`（override 追加）
+- `Project.injectSceneLengthProviders()`（新設。弱参照のライブ参照で供給を注入）
+- `YmmpCodec.decode`: 組み立ての最後に `injectSceneLengthProviders()` を呼ぶ
+
+## 設計判断
+- シーン長の供給はクロージャ注入とし、アイテムがプロジェクトへの強参照を持つ構造にはしない（合成層の sceneTimelineResolver 注入と同じ形）。供給は引くたびに評価されるライブ参照で、シーン長の変化は再注入なしで反映される。
+- ボイス形の入口ガードは本家の ContentLength の計算を再現して判定する（Mac の保持値 contentLength はボイスアイテムでは維持されないため）。打ち切りは本家どおり「ちょうど 0 のとき」だけであり、負の場合でも列挙は進む。
+- 本体・エコーの列挙は動画・音声形のイテレータを再利用した（シーン形は速度が正の場合に本家の符号つき割り戻しと一致する）。
+
+## テスト
+Mac で対象を絞って実行し全合格: ContentSeparationsOverrideTests 20件（新規）・ContentSeparationsTests 30件・PlaybackRateEditSessionTests 10件・YmmpCodecTests 25件・MediaItemLengthTests 48件・EditRecorderTests 8件、計141件・失敗0。全スイートと AudioDriftTests は未実施（対象を絞る方針による）。
+
+## 実装記録
+docs/IMPLEMENTATION_LOG.md の FE-SEP-OVERRIDES 節。docs/ARCHITECTURE.md の区切りの記述を追随させた。
