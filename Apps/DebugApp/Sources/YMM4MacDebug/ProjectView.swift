@@ -1566,8 +1566,15 @@ struct ProjectView: View {
         case .ungroupSelection:
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
-            timeline.ungroupSelectedAndGroupedItems()
-            workspace.markEdited()
+            // グループ解除は Undo 記録の対象外のため、実際に解散した
+            // 場合だけ個別に立てる。アプリメニュー側にはツールバー／
+            // コンテキストメニューのような表示条件（group ≠ 0 のとき
+            // だけ出す）が無く、未グループの選択でも実行され得るため、
+            // 発火は Core の返す変更有無で判定する（FE-R33-131-02 と
+            // 同じ約束。FE-INT-131-01 の洗い出しで記録した同型の処分）。
+            if timeline.ungroupSelectedAndGroupedItems() {
+                workspace.markEdited()
+            }
             requestPreviewRender(modelChanged: true)
         case .toggleLock:
             // ロック切替は Undo 記録の対象外のため、実際に切り替えた

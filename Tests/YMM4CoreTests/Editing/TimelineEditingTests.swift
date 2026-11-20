@@ -204,6 +204,32 @@ final class TimelineEditingTests: XCTestCase {
         XCTAssertEqual(right?.group, b.group)
     }
 
+    // MARK: - グループ解除の戻り値（未保存フラグの発火判定用）
+
+    /// グループ化された選択を解除すると true を返し、全員の group が 0 になる。
+    func testUngroupSelectedAndGroupedItemsReturnsTrueWhenDissolved() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 0, length: 90, layer: 0, group: 3)
+        let b = makeItem(frame: 200, length: 10, layer: 0, group: 3)
+        timeline.items = [a, b]
+        timeline.selectItems([a])
+        XCTAssertTrue(timeline.ungroupSelectedAndGroupedItems())
+        XCTAssertEqual(a.group, 0)
+        XCTAssertEqual(b.group, 0)
+    }
+
+    /// 未グループの選択へ解除を実行しても何も変わらず、false を返す。
+    /// アプリメニューのように表示条件の無い経路から実行されても、
+    /// 呼び出し側が未保存フラグを立てずに済むための約束。
+    func testUngroupSelectedAndGroupedItemsReturnsFalseWhenNotGrouped() {
+        let timeline = Timeline()
+        let a = makeItem(frame: 0, length: 90, layer: 0)
+        timeline.items = [a]
+        timeline.selectItems([a])
+        XCTAssertFalse(timeline.ungroupSelectedAndGroupedItems())
+        XCTAssertEqual(a.group, 0)
+    }
+
     // MARK: - ChangeFrameRate
 
     func testChangeFrameRateUp() {
