@@ -20,7 +20,12 @@ final class AutoTestState: ObservableObject {
     /// - 無ければ同梱サンプル（Apps/DebugApp/Sample/sample.ymmp）
     /// - サンプルも読めなければ、開いている（空の）プロジェクトで測る
     /// 測定は書き出しと同じ専有スナップショットに対して行い、測定中の
-    /// 画面編集と競合させない（AUD-07 と同じ方針）。
+    /// 画面編集と競合させない（AUD-07 と同じ方針）。スナップショット
+    /// 生成に失敗した場合は、開いている実モデルへフォールバックせず
+    /// 測定を中止して理由を示す（FE-R30-130-01。実モデルは参照型で、
+    /// 合成経路がアイテムへ書き込むため、バックグラウンド測定が
+    /// プロジェクト切り替え後の旧モデルを変更し得る。書き出し
+    /// （ExportJob）も失敗時は中止する方式であり、それに揃える）。
     func run(workspace: WorkspaceState, trigger: String) {
         guard !isRunning else { return }
 
@@ -47,26 +52,24 @@ final class AutoTestState: ObservableObject {
             return
         }
 
-        let jobTimelines: [Timeline]
-        let jobTimeline: Timeline
-        let snapshotUsed: Bool
-        if let snapshot = try? target.project.makeExportSnapshot(of: timeline) {
-            jobTimelines = snapshot.timelines
-            jobTimeline = snapshot.timeline
-            snapshotUsed = true
-        } else {
-            jobTimelines = target.project.timelines
-            jobTimeline = timeline
-            snapshotUsed = false
+        let snapshot: (timelines: [Timeline], timeline: Timeline)
+        do {
+            snapshot = try target.project.makeExportSnapshot(of: timeline)
+        } catch {
+            // 実モデルへのフォールバックはしない（FE-R30-130-01）。
+            // 失敗理由を示して測定開始を中止する。
+            errorMessage =
+                "スナップショットの生成に失敗したため、測定を開始できませんでした: \(error)"
+            return
         }
 
         let job = AutoTestJob(
-            timeline: jobTimeline,
-            timelines: jobTimelines,
+            timeline: snapshot.timeline,
+            timelines: snapshot.timelines,
             baseDirectory: target.baseDirectory,
             projectSource: target.source,
             projectPath: target.path,
-            snapshotUsed: snapshotUsed,
+            snapshotUsed: true,
             trigger: trigger
         )
         isRunning = true
