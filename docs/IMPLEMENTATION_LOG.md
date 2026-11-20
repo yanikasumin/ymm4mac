@@ -2078,6 +2078,16 @@ PR #130 は未マージのままであるため、本ラウンドも main `88b5e
 **検証。** Mac（~/ymm4-work/fe-unit4-save/YMM4Mac）で Apps/DebugApp の `swift build` 成功。Core テストは対象を絞って実行し全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: `YmmpCodecTests` 27件・`EditRecorderTests` 8件・`UndoHistoryTests` 10件・`EditCoordinatorTests` 15件（合算フィルタ実行で60件）、`TimelineEditingLengthTests` 20件（+1）・`ItemKeyFrameEditingTests` 9件（+1）・`AnimationTests` を含む合算71件。新規3件（`testDeleteAllSpacesReturnsShiftAmount`、`testRemoveAllReportsNoChangeWithoutKeyFrames`、`testKeyFramesDistributeReportsNoChange`）は名前指定でも実行して合格を確認した。全スイートは実行していない（変更範囲に応じた検証範囲の規則による）。アプリ層の振る舞い（書き込み時点の記録、デリゲート転送の実挙動）は自動テストの対象が無いため、下の手動チェックで固定する。
 
 **手動検証チェックリストへの追加（Round 33、未実施）。** (20) 保存済みプロジェクトの動画アイテムで、ファイルパスを存在しないパスへ変更して確定すると未保存フラグが立ち、閉じる際に破棄確認が出ること。同じパスを再確定しても未保存にならないこと（FE-R33-131-01）。(21) 保存した直後の空のタイムラインで「すべての空間を削除」を実行しても未保存にならないこと。キーフレームの無いアイテムで「すべてのキーフレームを削除」、等間隔済みのキーフレームで「キーフレームを均等配置」を実行しても未保存にならないこと（FE-R33-131-02）。(22) 既存のウィンドウデリゲートが共存する状態（将来デリゲートを持つ部品を追加した場合）で、閉鎖以外のデリゲート通知が失われないこと。ガードの取り外し・再配置後も閉鎖確認が有効であること（FE-R33-131-03）。
+
+##### 最終統合（PR #130 マージ後、Round 34 の承認条件）
+
+PR #130 のマージで main が `13a7503` へ進んだため、`feat/fe-unit4-save` へ取り込んだ（merge `6f12f54`）。競合は文書2件のみ: `docs/ARCHITECTURE.md`（メディアアイテムの追加・差し替えの項は main 側＝FE-R16-002 の同一性確認の追記を採り、保存の項は本ブランチ側＝FE-R32-131-01/04 の形を採る合成）と本ファイル（FE-UNIT4 節と FE-R16-002 節の両方を保持）。ソースの競合は無く、`ProjectView.swift` は自動マージされたため、監査 Round 34 の最終統合確認点3件を統合後の実コードで再確認した。3件とも維持されており、修正は不要だった。
+
+- **確認点 (1) 非同期ファイル変更: 維持。** `ProjectView.applyFileChange` の Task は、取得後に要求世代・`isCapturedProjectCurrent(project)`・タイムライン所属・アイテム同一性の照合を通ってからモデルへ書き込み（`recordMediaInfo` と長さ調整）、取得失敗時の `WorkspaceState.statusMessage` への書き込みも照合の内側にある。未保存の記録は行側の書き込み成立時点（`FilePathRowView.applyChange` が値の変更を確認し `setStringValue` の成功直後に `onFilePathCommitted` を発火。`ProjectView.itemDetail` で `workspace.markEdited()` へ接続）に一本化されたままで、`applyFileChange` は記録に関与しない（FE-R33-131-01 の分離は不変）。
+- **確認点 (2) メディア追加: 維持。** `ProjectView.addMediaFiles` は、非同期取得の後に `isCapturedProjectCurrent(project)` とタイムライン所属の確認を通ってから `EditRecorder.recordTimelineChange` を呼び、その内側でのみ `tryAddItems` が実行される。成功した編集だけが履歴へ記録され、未保存フラグは履歴変更通知経由で立つ（この経路に直接の `markEdited` 呼び出しは無い）。
+- **確認点 (3) ワークスペース切り替えの順序: 維持。** `WorkspaceState.newProject()` は破棄確認 → `editRecorder.resetForProjectSwitch()` → プロジェクト差し替え → `hasUnsavedChanges = false` の順。`load(url:)` も読み込み成功後に限り同じ順序（リセット → 差し替え → フラグ解除）で、失敗時は旧プロジェクトと履歴を保持する。
+
+**検証（最終統合）。** Mac（~/ymm4-work/fe-unit4-save/YMM4Mac）で対象テスト全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: `YmmpCodecTests` 27件・`UndoHistoryTests` 10件・`EditCoordinatorTests` 15件＝計52件。Apps/DebugApp の `swift build` 成功。生成世代ベースの帰属（FE-R30-130-02）は別ブランチの範囲であり、本統合には含まれない。
 #### FE-R16-002 — プロジェクト切り替え後の旧プロジェクト非同期処理の継続を止める（フロントエンド監査 Round 16 で切り分け）
 
 **欠陥（監査 Round 16 で確定）。** ファイル参照単位（FE-FILEPATH）の非同期処理は、完了条件として「捕捉した Project オブジェクトの timelines に目標が同一性で含まれるか」を確認していた。しかし ProjectView はプロジェクト切り替え時に `.id(workspace.loadSequence)` で作り直される一方、旧ビューが起動した非構造化 Task はビューの破棄後も生き続け、捕捉した旧 Project オブジェクトとその timelines も存在し続けるため、この確認は切り替え後も通過してしまう。結果として (1) 旧プロジェクトで始めた編集操作（ファイル追加 `addMediaFiles`、ファイル変更 `applyFileChange`）が切り替え後も旧プロジェクトに対して確定処理を走らせ、(2) `applyFileChange` の取得失敗時の書き込みなど、共有の `WorkspaceState.statusMessage` への書き込みが新しいプロジェクトの画面へ表示されていた。監査の指定する修正方針は「確定時点で、現在の workspace.project と同一性が一致するかを確認する。タスクのキャンセルだけでは不十分（キャンセルと確定の競合を断ち切れない）ため同一性確認を正とする」。
