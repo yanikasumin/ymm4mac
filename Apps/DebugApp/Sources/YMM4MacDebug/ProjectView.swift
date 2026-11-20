@@ -3096,6 +3096,7 @@ struct ProjectView: View {
                         // させない。
                         workspace.markEdited()
                     },
+                    fileBaseDirectory: baseDirectory,
                     editRecorder: workspace.editRecorder,
                     editTargetOwner: item,
                     onPlaybackRateSessionBegan: { descriptor in
@@ -3117,7 +3118,8 @@ struct ProjectView: View {
                     onEdited: {
                         requestPreviewRender(modelChanged: true)
                         workspace.markEdited()
-                    }
+                    },
+                    fileBaseDirectory: baseDirectory
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)

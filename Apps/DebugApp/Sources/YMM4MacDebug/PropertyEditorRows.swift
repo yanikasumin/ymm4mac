@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import SwiftUI
 import YMM4Core
 
@@ -1156,13 +1157,21 @@ func formatNumber(_ value: Double) -> String {
 /// 確定した変更は、まず `onFilePathChanged` で呼び出し側へ通知し、
 /// それから記述子へ書き込む（呼び出し側が変更前のパスや素材長を
 /// 捕捉できるようにするため）。メディア情報の取得と長さの調整は
-/// 呼び出し側が非同期に行う（この行はファイルを開かない）。
+/// 呼び出し側が非同期に行う（この行は長さ決定のためにファイル
+/// を開かない）。
 /// 未編集のまま確定した場合は通知しない（FE-R1-019 と同じ趣旨）。
 /// 記述子への書き込みが成立したら `onFilePathCommitted` で知らせる。
 /// 未保存の記録はこの書き込み成立時点に置く（FE-R33-131-01）。
 /// パス自体はファイルの存在と無関係にモデルへ書かれるため、
 /// 情報取得の成否で記録すると、存在しないパスへの変更が
 /// 未保存にならずに失われる。
+///
+/// サムネイル（FE-R15-005）: 記述子の `showsThumbnail` が真の
+/// 場合のみ、確定済みパスのサムネイルを表示専用に非同期取得して
+/// 左端へ出す（本家 FileSelector の表示相当）。取得は
+/// `FileThumbnailLoader` の独立経路で行い、モデル・未保存記録・
+/// Undo には触れない。取得できない場合は何も出さない（本家の
+/// `HasThumbnail` が偽の扱い）。
 struct FilePathRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
@@ -1170,20 +1179,28 @@ struct FilePathRowView: View {
     /// 記述子へのパスの書き込みが成立した時点の通知（未保存の
     /// 記録用）。値が変わった確定でのみ、書き込みの直後に呼ばれる。
     var onFilePathCommitted: (() -> Void)?
+    /// 相対パスの解決の基準フォルダ（プロジェクトの位置）。
+    /// サムネイルの解決に使う。nil の場合はサムネイルを出さない。
+    var baseDirectory: URL?
     @State private var text: String
     @State private var uneditedPath: String
+    /// 表示中のサムネイルと、それが属する確定済みパス。
+    @State private var thumbnail: CGImage?
+    @State private var thumbnailPath: String?
     @FocusState private var isFocused: Bool
 
     init(
         descriptor: PropertyDescriptor,
         onEdited: @escaping () -> Void,
         onFilePathChanged: ((PropertyDescriptor, String) -> Void)?,
-        onFilePathCommitted: (() -> Void)? = nil
+        onFilePathCommitted: (() -> Void)? = nil,
+        baseDirectory: URL? = nil
     ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
         self.onFilePathChanged = onFilePathChanged
         self.onFilePathCommitted = onFilePathCommitted
+        self.baseDirectory = baseDirectory
         let initial = descriptor.stringValue ?? ""
         _text = State(initialValue: initial)
         _uneditedPath = State(initialValue: initial)
@@ -1191,6 +1208,18 @@ struct FilePathRowView: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            if let thumbnail {
+                Image(
+                    thumbnail, scale: 2,
+                    label: Text(
+                        URL(fileURLWithPath: uneditedPath).lastPathComponent)
+                )
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(
+                    width: FileThumbnailLoader.displayLength,
+                    height: FileThumbnailLoader.displayLength)
+            }
             TextField("", text: $text)
                 .textFieldStyle(.roundedBorder)
                 .focused($isFocused)
@@ -1200,6 +1229,38 @@ struct FilePathRowView: View {
                 }
             Button("参照…") { browse() }
         }
+        .task(id: thumbnailLoadKey) {
+            await loadThumbnail()
+        }
+    }
+
+    /// サムネイル取得の再実行キー。確定済みパス・取得種別・基準
+    /// フォルダのいずれかが変わったら取得し直す（.task の再実行で
+    /// 前の取得はキャンセルされる）。
+    private var thumbnailLoadKey: String {
+        let kind = descriptor.fileThumbnailKind
+            .map { String(describing: $0) } ?? "none"
+        return "\(kind)\u{1F}\(uneditedPath)\u{1F}\(baseDirectory?.path ?? "")"
+    }
+
+    /// 現在の確定パスに対するサムネイル取得（表示専用）。
+    /// 完了時に対象パスがまだ現在の確定パスか照合してから採用する
+    /// （素材情報の取得と同じ世代＋同一性の流儀。キャンセル済みの
+    /// 取得結果は採用しない）。
+    private func loadThumbnail() async {
+        let path = uneditedPath
+        guard let kind = descriptor.fileThumbnailKind,
+              let baseDirectory else {
+            thumbnail = nil
+            thumbnailPath = nil
+            return
+        }
+        if thumbnailPath == path, thumbnail != nil { return }
+        let loaded = await FileThumbnailLoader.load(
+            path: path, kind: kind, baseDirectory: baseDirectory)
+        guard !Task.isCancelled, uneditedPath == path else { return }
+        thumbnail = loaded
+        thumbnailPath = path
     }
 
     private func commit() {

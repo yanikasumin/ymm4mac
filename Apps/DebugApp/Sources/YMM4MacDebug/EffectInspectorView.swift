@@ -15,6 +15,9 @@ struct EffectInspectorView: View {
     let item: BaseItem
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
+    /// ファイル参照欄の相対パス解決の基準フォルダ（サムネイル表示用。
+    /// FE-R15-005）。
+    var fileBaseDirectory: URL? = nil
     @State private var isAddPopupPresented = false
     /// 追加・削除のたびに増やし、一覧の再構築を促す世代カウンタ。
     @State private var listRevision = 0
@@ -44,6 +47,7 @@ struct EffectInspectorView: View {
                     EffectInspectorRow(
                         item: item, index: index, preserved: effects[index],
                         animationContext: animationContext, onEdited: onEdited,
+                        fileBaseDirectory: fileBaseDirectory,
                         onRemove: { removeEffect(at: index) }
                     )
                     .id("\(index)-\(effects[index].typeName ?? "")-\(listRevision)")
@@ -98,6 +102,8 @@ private struct EffectInspectorRow: View {
     let preserved: PreservedObject
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
+    /// ファイル参照欄の相対パス解決の基準フォルダ（FE-R15-005）。
+    var fileBaseDirectory: URL? = nil
     var onRemove: () -> Void
     @State private var definition: VideoEffectDefinitionBase?
 
@@ -123,7 +129,8 @@ private struct EffectInspectorRow: View {
                     onEdited: {
                         EffectPropertyEditing.writeBack(definition, for: item, at: index)
                         onEdited()
-                    }
+                    },
+                    fileBaseDirectory: fileBaseDirectory
                 )
             } else {
                 Text(UIStrings.Inspector.unsupportedEffect)
