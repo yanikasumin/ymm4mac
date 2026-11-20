@@ -123,6 +123,10 @@ public final class PreviewBox: PreviewRenderSession {
     /// 矩形）であり、アイテムの変換式をアプリ側で複製しない。
     /// 描画内容の無いアイテム（出力0件の透明な代替描画のみ）は
     /// ここで除外され、当たり判定可能な矩形を持たない。
+    /// 当たり判定用の四隅は合成器が運ぶ変換後四隅（FE-R1-023-B、
+    /// 本家 TimelineItemRects の quad）をそのまま変換して載せる。
+    /// 四隅が無いアイテムは PreviewItemRect 側で矩形の四隅に
+    /// 代替される（本家が quad == null の場合の代替と同じ）。
     private func itemRects(
         from composer: TimelineComposer,
         devices: MetalGraphicsDevices,
@@ -145,7 +149,10 @@ public final class PreviewBox: PreviewRenderSession {
                 bounds: PreviewLayout.videoRect(
                     fromCenteredRect: centered, videoSize: videoSize
                 ),
-                drawOrder: drawOrder
+                drawOrder: drawOrder,
+                quad: itemOutput.quad.map {
+                    PreviewLayout.videoQuad(fromCenteredQuad: $0, videoSize: videoSize)
+                }
             )
         }
     }
