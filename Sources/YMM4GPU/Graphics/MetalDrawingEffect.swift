@@ -13,7 +13,12 @@ import YMM4Core
 /// 分岐まで含めて一致させる（その場合の出力は 1×1 透明）。
 /// 平面分割用の幾何情報（PlaneSplitGeometryProviding）も本家どおり、
 /// ワールド変換そのものと、ズーム適用後の入力境界を返す。
-public final class MetalDrawingEffect: DrawingEffectProcessor, PlaneSplitGeometryProviding {
+/// 当たり判定用の四隅（BoundsQuadProviding）は本家 TransformBoundsQuad
+/// に対応し、入力境界の四隅へ合成変換（透視を含む）を適用したものを
+/// 返す（独自四隅ではないため providesCustomBoundsQuad は false）。
+public final class MetalDrawingEffect: DrawingEffectProcessor, PlaneSplitGeometryProviding,
+    BoundsQuadProviding
+{
     private let context: MetalGraphicsContext
     private var inputImage: ImageReference?
     private let outputReference = ImageReference(label: "drawing-effect")
@@ -22,6 +27,12 @@ public final class MetalDrawingEffect: DrawingEffectProcessor, PlaneSplitGeometr
     private var isEmpty = false
     private var zoomTransform: Matrix4x4 = .identity
     private var worldTransform: Matrix4x4 = .identity
+
+    /// 当たり判定用の四隅（boundsQuad）の材料: 直近の更新で解決した
+    /// 入力の境界と、出力実体へ登録したのと同じ合成変換（入力自身の
+    /// 変換 → ズーム → ワールド → 透視）。入力が引けない更新では nil。
+    private var lastInputBounds: RectF?
+    private var lastCombinedTransform: Matrix4x4 = .identity
 
     public init(context: MetalGraphicsContext) {
         self.context = context
@@ -83,11 +94,20 @@ public final class MetalDrawingEffect: DrawingEffectProcessor, PlaneSplitGeometr
             || drawDescription.opacity == 0
         hasUpdated = true
 
-        if !isEmpty,
-           let inputImage,
-           let input = context.devices.image(for: inputImage) {
+        // 当たり判定用の四隅の材料は、出力の登録内容（空判定）によらず
+        // 入力が引ける時点で確定させる。本家 TransformBoundsQuad は
+        // 不透明度や空判定を見ず、入力境界と確定変換だけで決まる。
+        let input = inputImage.flatMap { context.devices.image(for: $0) }
+        if let input {
+            lastInputBounds = input.bounds
             // 入力自身の変換 → ズーム → ワールド → 透視、の順に合成する。
-            let combined = input.transform * zoomTransform * worldTransform * perspective
+            lastCombinedTransform = input.transform * zoomTransform * worldTransform * perspective
+        } else {
+            lastInputBounds = nil
+            lastCombinedTransform = .identity
+        }
+
+        if !isEmpty, let input {
             context.devices.register(
                 outputReference,
                 image: MetalImage(
@@ -95,7 +115,7 @@ public final class MetalDrawingEffect: DrawingEffectProcessor, PlaneSplitGeometr
                     bounds: input.bounds,
                     texturePlaneRect: input.texturePlaneRect,
                     planeOffset: input.planeOffset,
-                    transform: combined,
+                    transform: lastCombinedTransform,
                     opacity: drawDescription.opacity,
                     interpolation: drawDescription.zoomInterpolationMode
                 )
@@ -136,6 +156,38 @@ public final class MetalDrawingEffect: DrawingEffectProcessor, PlaneSplitGeometr
               let input = context.devices.image(for: inputImage)
         else { return nil }
         return Self.boundingRect(of: input.bounds, transformedBy: input.transform * zoomTransform)
+    }
+
+    // MARK: - BoundsQuadProviding
+
+    /// 独自四隅ではない（本家では通常の DrawingEffect は
+    /// IBoundsQuadProvider ではない）。
+    public var providesCustomBoundsQuad: Bool { false }
+
+    /// 入力境界の四隅へ合成変換を適用した四隅。本家
+    /// TransformBoundsQuad の妥当性規則: 変換後の同次座標 w が 0 以下、
+    /// または w 除算後の x / y が非有限なら nil。未更新・入力なしも nil。
+    public func boundsQuad() -> [Vector2]? {
+        guard hasUpdated, let bounds = lastInputBounds else { return nil }
+        let corners = [
+            Vector3(x: bounds.left, y: bounds.top, z: 0),
+            Vector3(x: bounds.right, y: bounds.top, z: 0),
+            Vector3(x: bounds.right, y: bounds.bottom, z: 0),
+            Vector3(x: bounds.left, y: bounds.bottom, z: 0),
+        ]
+        var quad: [Vector2] = []
+        quad.reserveCapacity(4)
+        for corner in corners {
+            let v = lastCombinedTransform.transform(
+                x: corner.x, y: corner.y, z: corner.z, w: 1
+            )
+            guard v.w > 0 else { return nil }
+            let x = v.x / v.w
+            let y = v.y / v.w
+            guard x.isFinite, y.isFinite else { return nil }
+            quad.append(Vector2(x: x, y: y))
+        }
+        return quad
     }
 
     /// 矩形の四隅を変換（w 除算つき）した外接矩形。

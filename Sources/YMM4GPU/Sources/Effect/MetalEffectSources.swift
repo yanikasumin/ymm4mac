@@ -52,12 +52,15 @@ public final class MetalEffectSource: MetalFrameBufferSourceBase {
 /// 平面分割用の幾何（PlaneSplitGeometryProviding）は本家
 /// IBoundsQuadProvider に対応し、ワールド変換（透視を含まない）と
 /// マスク図形の境界を返す。
+/// 当たり判定用の四隅（BoundsQuadProviding）も本家 IBoundsQuadProvider
+/// に対応する独自四隅であり、マスク図形の境界へマスク変換（透視を
+/// 含む）を適用したものを返す（providesCustomBoundsQuad は true）。
 ///
 /// 未対応: 型付きでない図形パラメータ（生保持）はラスタライズできず、
 /// マスクは全面透明になる（本家では図形プラグインが描く。Mac には
 /// 図形プラグインが無いための制限。台帳に記録）。
 public final class MetalEffectItemDrawingEffect: DrawingEffectProcessor,
-    PlaneSplitGeometryProviding
+    PlaneSplitGeometryProviding, BoundsQuadProviding
 {
     private let context: MetalGraphicsContext
     private let item: EffectItem
@@ -77,6 +80,10 @@ public final class MetalEffectItemDrawingEffect: DrawingEffectProcessor,
     /// 変換前のマスク図形の境界。未更新・図形なしでは nil。
     private var lastWorldTransform: Matrix4x4 = .identity
     private var lastShapeBounds: RectF?
+    /// 当たり判定用の四隅用: 直近の更新で使ったマスク変換（透視を
+    /// 含む）。本家 Mask.GetBoundsQuad が CreateTransformMatrix
+    /// （透視を含む）を使うことに対応する。
+    private var lastMaskTransform: Matrix4x4 = .identity
 
     public init(context: MetalGraphicsContext, item: EffectItem) {
         self.context = context
@@ -141,6 +148,7 @@ public final class MetalEffectItemDrawingEffect: DrawingEffectProcessor,
             m41: 0, m42: 0, m43: 0, m44: 1
         )
         let maskTransform = worldTransform * perspective
+        lastMaskTransform = maskTransform
 
         // 図形画像（中心原点の境界つき）。型付きでないパラメータは
         // ラスタライズできないため、マスク全面透明として扱う。
@@ -210,6 +218,54 @@ public final class MetalEffectItemDrawingEffect: DrawingEffectProcessor,
     /// マスク画像の局所境界を使うことに対応）。未更新・図形なしでは nil。
     public func transform3DInputBounds() -> RectF? {
         hasUpdated ? lastShapeBounds : nil
+    }
+
+    // MARK: - BoundsQuadProviding
+
+    /// 独自四隅を持つ（本家 IBoundsQuadProvider への適合に相当）。
+    public var providesCustomBoundsQuad: Bool { true }
+
+    /// マスク図形の境界へマスク変換（透視を含む）を適用した四隅。
+    /// 本家 Mask.GetBoundsQuad の妥当性規則: 図形の境界が非有限・
+    /// 絶対値 2.1474836e9 以上・空なら nil。変換後の同次座標 w が
+    /// 0.001 以下または非有限、w 除算後の座標が非有限なら nil。
+    /// 四隅の符号つき面積（shoelace 和）が非有限または絶対値 1e-6
+    /// 未満（潰れた四角形）でも nil。未更新・図形なしも nil。
+    public func boundsQuad() -> [Vector2]? {
+        guard hasUpdated, let bounds = lastShapeBounds else { return nil }
+        let limit = 2.1474836e9
+        guard bounds.left.isFinite, bounds.top.isFinite,
+              bounds.right.isFinite, bounds.bottom.isFinite,
+              abs(bounds.left) < limit, abs(bounds.top) < limit,
+              abs(bounds.right) < limit, abs(bounds.bottom) < limit,
+              bounds.right > bounds.left, bounds.bottom > bounds.top
+        else { return nil }
+        let corners = [
+            Vector3(x: bounds.left, y: bounds.top, z: 0),
+            Vector3(x: bounds.right, y: bounds.top, z: 0),
+            Vector3(x: bounds.right, y: bounds.bottom, z: 0),
+            Vector3(x: bounds.left, y: bounds.bottom, z: 0),
+        ]
+        var quad: [Vector2] = []
+        quad.reserveCapacity(4)
+        for corner in corners {
+            let v = lastMaskTransform.transform(
+                x: corner.x, y: corner.y, z: corner.z, w: 1
+            )
+            guard v.w > 0.001, v.w.isFinite else { return nil }
+            let x = v.x / v.w
+            let y = v.y / v.w
+            guard x.isFinite, y.isFinite else { return nil }
+            quad.append(Vector2(x: x, y: y))
+        }
+        var signedArea = 0.0
+        for i in quad.indices {
+            let a = quad[i]
+            let b = quad[(i + 1) % quad.count]
+            signedArea += a.x * b.y - a.y * b.x
+        }
+        guard signedArea.isFinite, abs(signedArea) >= 1e-6 else { return nil }
+        return quad
     }
 
     // MARK: - 内部
