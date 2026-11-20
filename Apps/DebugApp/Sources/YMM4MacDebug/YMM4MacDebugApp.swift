@@ -263,11 +263,13 @@ struct YMM4MacDebugApp: App {
                     .help(UIStrings.Menu.alwaysShowSceneTab + UIStrings.Common.unconnectedSuffix)
             }
 
-            // ツールメニュー（本家同梱ツールの並び）。各ツールの
-            // ウィンドウ／ドッキング基盤が無いため全て未接続。
+            // ツールメニュー（本家同梱ツールの並び）。キャラクター編集と
+            // ユーザー辞書は接続済み。その他のツールはウィンドウ／
+            // ドッキング基盤が無いため未接続。
             CommandMenu(UIStrings.Menu.tools) {
-                Button(UIStrings.Menu.characterEditor) {}.disabled(true)
-                    .help(UIStrings.Menu.characterEditor + UIStrings.Common.unconnectedSuffix)
+                Button(UIStrings.Menu.characterEditor) {
+                    workspace.isCharacterEditorPresented = true
+                }
                 Button(UIStrings.Menu.settingWindow) {}.disabled(true)
                     .help(UIStrings.Menu.settingWindow + UIStrings.Common.unconnectedSuffix)
                 Button(UIStrings.Menu.toolSearch) {}.disabled(true)

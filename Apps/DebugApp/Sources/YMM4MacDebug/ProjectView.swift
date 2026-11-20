@@ -133,6 +133,8 @@ struct ProjectView: View {
     @State private var isVideoSettingsPresented = false
     /// 「動画出力」シートの表示状態。
     @State private var isExportDialogPresented = false
+    /// 「キャラクター編集」シートの表示状態。
+    @State private var isCharacterEditorPresented = false
     /// タイムラインキャンバスの表示幅（全体フィット計算用。
     /// TimelineStripView から受け取る）。
     @State private var canvasViewportWidth: CGFloat = 800
@@ -320,6 +322,9 @@ struct ProjectView: View {
                                             seeksAfterAdd: seeksAfterAdd,
                                             timeline: timeline
                                         )
+                                    },
+                                    onOpenCharacterSettings: {
+                                        isCharacterEditorPresented = true
                                     }
                                 )
                                 .frame(minHeight: 26)
@@ -374,6 +379,22 @@ struct ProjectView: View {
                     if requested {
                         isExportDialogPresented = true
                         workspace.isExportPresented = false
+                    }
+                }
+                .sheet(isPresented: $isCharacterEditorPresented) {
+                    CharacterEditorView(project: project) {
+                        requestPreviewRender(modelChanged: true)
+                        // キャラクター編集は Undo 記録の対象外のため、
+                        // 編集の確定通知で未保存フラグも個別に立てる
+                        // （FE-R39-133-02。PR #131 の個別通知の流儀。
+                        // 通知は変更が実際に成立した場合に限る）。
+                        workspace.markEdited()
+                    }
+                }
+                .onChange(of: workspace.isCharacterEditorPresented) { _, requested in
+                    if requested {
+                        isCharacterEditorPresented = true
+                        workspace.isCharacterEditorPresented = false
                     }
                 }
                 .onChange(of: workspace.pendingAction?.sequence) { _, _ in
@@ -3205,6 +3226,23 @@ struct ProjectView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(String(describing: type(of: item)))
                     .bold()
+                // キャラクターを持つアイテムは、本家のアイテム編集画面
+                // と同じくキャラクター選択を先頭に置く（FE-UNIT6）。
+                // 記述子はプロジェクトの一覧を知らないため専用行で扱う。
+                if CharacterItemAccess.supports(item) {
+                    CharacterPickerRowView(
+                        item: item,
+                        characters: project.characters,
+                        onEdited: {
+                            requestPreviewRender(modelChanged: true)
+                            // 参照先の変更は Undo 記録の対象外のため、
+                            // 未保存フラグも個別に立てる
+                            // （FE-R39-133-02。通知は参照が実際に
+                            // 変わった場合に限る）。
+                            workspace.markEdited()
+                        }
+                    )
+                }
                 let context = animationContext(for: item, timeline: timeline)
                 PropertyInspectorView(
                     descriptors: ItemPropertyMetadata.descriptors(for: item),

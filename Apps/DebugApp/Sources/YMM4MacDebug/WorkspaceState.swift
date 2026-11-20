@@ -42,6 +42,9 @@ final class WorkspaceState: ObservableObject {
     @Published var isVideoSettingsPresented = false
     /// 「動画出力」ダイアログの表示要求（ファイルメニュー）。
     @Published var isExportPresented = false
+    /// 「キャラクター編集」シートの表示要求（ツールメニュー）。
+    /// 実際のシート表示は ProjectView 側が担う。
+    @Published var isCharacterEditorPresented = false
     /// メニュー経由の保存結果などの一時メッセージ。
     @Published var statusMessage: String?
     /// メニュー／ツールバーから ProjectView へ渡す編集アクションの要求。

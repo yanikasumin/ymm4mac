@@ -14,7 +14,9 @@
         Model/                 ドメインモデルの値型とプロジェクト構造
           VideoInfo.swift      解像度・FPS・サンプリングレート
           FrameTime.swift      フレーム⇔時間換算
-          Project.swift        プロジェクト（Timelines / Characters / ToolStates 等）
+          Project.swift        プロジェクト（Timelines / Characters / ToolStates 等。
+                               キャラクター参照の名前解決・再解決、名前の
+                               一意性検証、削除時の参照整合も担う）
           Timeline.swift       タイムライン（Length / MaxLayer はキャッシュ済み派生値）
           TimelineSupport.swift LayerSetting(s)、TimelineVerticalLine、SerializableToolState
           Character.swift      キャラクター（全プロパティ型付き。KeyGesture / VoiceDescription を含む）
@@ -367,6 +369,13 @@
           TimelineLayerLabels.swift レイヤーラベル列
           TimelineScale.swift  目盛り計算（純粋関数。SwiftUI／AppKit 共用）
           SerifInputView.swift セリフ入力行
+          CharacterEditorView.swift キャラクター編集シート（プロジェクトの
+                               キャラクター一覧管理と基本項目。名前は下書き＋
+                               確定時検証で編集し、削除と参照整合は Core の
+                               Project.removeCharacter へ委譲。FE-UNIT6）
+          CharacterPickerRowView.swift キャラクター参照アクセスの集約
+                               （CharacterItemAccess）とインスペクタの
+                               キャラクター選択行（FE-UNIT6）
           PropertyInspectorView.swift アイテムのプロパティ編集
           PropertyEditorRows.swift 編集行の部品
           EffectInspectorView.swift エフェクト編集
@@ -394,7 +403,7 @@
 
 ## データフロー（実装済みの範囲）
 
-- 読み込み: .ymmp テキスト → `JSONParser`（順序・数値リテラル保持）→ `YmmpCodec.decode` が $type を解決して `Project` / `Timeline` / アイテム13クラスを構築。未知の $type のアイテムは読み飛ばして診断情報へ記録し、未知のプロパティは各モデルの `additionalFields` に保持する。プラグイン型の値（エフェクト等）は `PreservedObject` として生 JSON のまま保持する。デコードの最後に、VoiceItem / TachieItem / TachieFaceItem の実行時参照 `character` を `Project.Characters` から `characterName` で引いて解決する（本家の `Character` は [JsonIgnore] で、保存されるのは名前だけであるため）。
+- 読み込み: .ymmp テキスト → `JSONParser`（順序・数値リテラル保持）→ `YmmpCodec.decode` が $type を解決して `Project` / `Timeline` / アイテム13クラスを構築。未知の $type のアイテムは読み飛ばして診断情報へ記録し、未知のプロパティは各モデルの `additionalFields` に保持する。プラグイン型の値（エフェクト等）は `PreservedObject` として生 JSON のまま保持する。デコードの最後に、VoiceItem / TachieItem / TachieFaceItem の実行時参照 `character` を `Project.Characters` から `characterName` で引いて解決する（本家の `Character` は [JsonIgnore] で、保存されるのは名前だけであるため）。解決の実体は `Project.resolveCharacterReferencesByName()` にあり、キャラクター一覧の変更後に未解決参照だけを結び直す `Project.reresolveUnresolvedCharacterReferences()` と規則（先頭一致・空名対象外）を共有する。
 - 編集: `Timeline` の編集操作（TimelineEditing.swift）がアイテム（参照型）を直接書き換える。本家の意味論どおり、前処理は入力を書き換え、原子的保証はコミット段階のみ。`Timeline.Length` / `MaxLayer` はキャッシュとして保守される。
 - 編集の Undo（FE-UNDO-WIRING）: 履歴の所有は `WorkspaceState`（プロジェクト＝ウィンドウごとに1つ）が `EditRecorder`（Core の記録集約。FE-R20-126-01 でアプリ層から Core の `Editing/` へ移設。アプリ層にはテスト対象が無いため、記録の振る舞いを Core のテストで固定する）経由で `EditCoordinator`（Core）を保持する。変更の捕捉は本家の自動監視ではなく明示トランザクション方式で、投入経路は `EditRecorder` の3形態（離散変更の即時確定／スライダ・ドラッグのセッション／タイムライン構造変更の前後差分捕捉）に限る。ここを通らない編集経路は履歴に残らない（未移行経路は実装ログ FE-UNDO-WIRING に列挙）。プロジェクトの差し替え時は、未確定セッションの破棄（巻き戻し）を先に行ってから履歴を消す順序に統一されている。Undo/Redo の実行後は ProjectView が選択・インスペクタ・タイムライン・プレビューを表示側でモデルへ追随させる。
 - Undo の開始拒否と所有権（FE-R20-126-02 / 03、FE-R21-126-01）: トランザクションを開始できない場合、編集は実行されない。`recordTimelineChange` は本体を実行せず false を返し、タイムラインドラッグの開始フック（`TimelineStripView.onDragBegan` → `TimelineInteractionView`）も可否を戻り値で受け、拒否時は操作層がモデル変更セッション自体を開始しない（クリック選択だけはモデル変更ではないため残る）。連続編集のセッションには所有権トークン（`EditSessionToken`）が結び付いており、値変更の記録・確定・破棄はトークン一致の場合だけ作用する。所有者でない経路の離散編集は、書き込みの入口（`EditRecorder.canRecordValueChange`）で確認してモデル変更自体を行わない。値変更の受け付け可否は `EditRecorder.acceptsValueChange` の1か所で判定し、入口確認と記録側が共有する: セッションが無い間に非 nil のトークンを提示された場合は失効として拒否し、離散編集は `EditCoordinator.isIdle`（読み取り専用照会）が真の場合だけ許可する（復元処理中は `activeTransaction` が nil でも拒否される）。スライダとプレビュードラッグは状態 `EditDragSession`（開始前・所有中・開始拒否）を保持し、開始拒否になったドラッグは終了まで書き込み禁止のままになる。
