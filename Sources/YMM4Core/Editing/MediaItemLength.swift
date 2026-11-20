@@ -234,15 +234,37 @@ extension BaseItem {
             length = Self.defaultItemLength
         }
         if (previousFirstValue < 0) != (newFirstValue < 0) {
-            let lengthTime = TimeSpanValue(
-                seconds: FrameTime.time(fromFrame: length, fps: fps)
-            )
-            let scaled = TimeSpanValue(
-                ticks: Int64(
-                    Double(lengthTime.ticks) * abs(previousFirstValue) / 100
-                )
-            )
-            contentOffset = contentLength - (contentOffset + scaled)
+            // 付け替えの tick 換算には、長さ側の FE-R27-129-05 と
+            // 同種の規模の問題がある（FE-R28-129-02）: 長さが
+            // 約 2.8×10^13 フレーム（30 FPS）を超えると秒から tick
+            // への変換が Int64 の範囲を超え、旧速度の絶対値が
+            // 大きい場合は割合の乗算でも超える。Swift の Int64
+            // 変換は範囲外で実行時トラップになるため、Double の
+            // 見積もりが範囲内のときだけ従来の変換で付け替え、
+            // 範囲外では付け替え自体を諦めてオフセットを元のまま
+            // にする（Mac 側の安全策。飽和させたオフセットは後段
+            // の TimeSpan 演算を溢れさせ得るため、表現できない
+            // 換算結果では置き換えない）。tick 同士の和と差も
+            // 溢れ得るため、報告付き演算で確認してから代入する。
+            // 範囲内の結果は従来と一致する（見積もりの Double は
+            // 従来の TimeSpanValue の tick と同値で、変換は同じ
+            // 切り捨てになる）。
+            let lengthSeconds = FrameTime.time(fromFrame: length, fps: fps)
+            let lengthTicks = (lengthSeconds * Double(TimeSpanValue.ticksPerSecond))
+                .rounded(.awayFromZero)
+            let scaledTicks = lengthTicks * abs(previousFirstValue) / 100
+            let int64Bounds = -9_223_372_036_854_775_808.0 ..< 9_223_372_036_854_775_808.0
+            if lengthTicks.isFinite, scaledTicks.isFinite,
+               int64Bounds.contains(lengthTicks),
+               int64Bounds.contains(scaledTicks) {
+                let scaled = TimeSpanValue(ticks: Int64(scaledTicks))
+                let sum = contentOffset.ticks.addingReportingOverflow(scaled.ticks)
+                let difference = contentLength.ticks
+                    .subtractingReportingOverflow(sum.partialValue)
+                if !sum.overflow, !difference.overflow {
+                    contentOffset = TimeSpanValue(ticks: difference.partialValue)
+                }
+            }
         }
         return length != oldLength || contentOffset != oldContentOffset
     }

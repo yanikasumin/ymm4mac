@@ -513,6 +513,90 @@ final class MediaItemLengthTests: XCTestCase {
         XCTAssertEqual(item.contentOffset, seconds(-12))
     }
 
+    /// FE-R28-129-02: ファイル由来の極端な旧速度（+1e15%）から
+    /// 通常の -100% へ反転すると、新しい長さが 3e15 フレームに
+    /// なり、オフセット付け替えの秒→tick 変換が Int64 の範囲を
+    /// 超える。修正前は実行時トラップになった。範囲外では
+    /// 付け替えを諦め、オフセットは元のままにする。
+    func testPlaybackRateChangeSignFlipWithExtremePreviousRateDoesNotTrap() {
+        let item = AudioItem()
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        item.contentOffset = seconds(2)
+        item.length = 300
+        item.playbackRate = -100
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 1e15, previousIsConstant: true, fps: 30
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertEqual(item.length, 3_000_000_000_000_000)
+        XCTAssertEqual(item.contentOffset, seconds(2))
+    }
+
+    /// FE-R28-129-02（台帳の例）: 旧速度 100%・長さ 300 フレーム
+    /// から新速度 -1e-12% へ反転すると、新しい長さが約 3e16
+    /// フレームになり tick 換算が範囲を超える。トラップせず、
+    /// オフセットは付け替えない。
+    func testPlaybackRateChangeSignFlipWithTinyNewRateDoesNotTrap() {
+        let item = AudioItem()
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        item.contentOffset = seconds(2)
+        item.length = 300
+        item.playbackRate = -1e-12
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        )
+        XCTAssertTrue(adjusted)
+        XCTAssertGreaterThan(item.length, 29_000_000_000_000_000)
+        XCTAssertLessThan(item.length, 31_000_000_000_000_000)
+        XCTAssertEqual(item.contentOffset, seconds(2))
+    }
+
+    /// FE-R28-129-02: 長さ側の換算結果が小さくても、旧速度の
+    /// 絶対値が大きいと割合の乗算側の tick 変換が範囲を超える。
+    /// この変換だけが範囲外の場合も付け替えを諦める。
+    func testPlaybackRateChangeSignFlipWithExtremeScaledTicksDoesNotTrap() {
+        let item = AudioItem()
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        item.contentOffset = seconds(2)
+        item.length = 300
+        item.playbackRate = -1e15
+        let adjusted = item.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 1e15, previousIsConstant: true, fps: 30
+        )
+        XCTAssertFalse(adjusted)
+        XCTAssertEqual(item.length, 300)
+        XCTAssertEqual(item.contentOffset, seconds(2))
+    }
+
+    /// FE-R28-129-02: tick 同士の和・差が溢れる場合も、代入せず
+    /// オフセットを元のままにする（修正前は和の演算でトラップ）。
+    func testPlaybackRateChangeSignFlipWithOverflowingOffsetArithmeticSkips() {
+        // 和の溢れ: ContentOffset + 付け替え量が Int64 を超える。
+        let sumItem = AudioItem()
+        sumItem.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        sumItem.contentOffset = TimeSpanValue(ticks: Int64.max - 5)
+        sumItem.length = 300
+        sumItem.playbackRate = -100
+        XCTAssertFalse(sumItem.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        ))
+        XCTAssertEqual(sumItem.contentOffset.ticks, Int64.max - 5)
+
+        // 差の溢れ: ContentLength - (ContentOffset + 付け替え量)
+        // が Int64 を下回る。素材長は再生速度の書き込みで素材長
+        // 再計算が発火するため、速度を設定した後に代入する。
+        let differenceItem = AudioItem()
+        differenceItem.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        differenceItem.length = 300
+        differenceItem.playbackRate = -100
+        differenceItem.contentLength = TimeSpanValue(ticks: Int64.min + 5)
+        differenceItem.contentOffset = .zero
+        XCTAssertFalse(differenceItem.adjustLengthAfterPlaybackRateChange(
+            previousFirstValue: 100, previousIsConstant: true, fps: 30
+        ))
+        XCTAssertEqual(differenceItem.contentOffset, .zero)
+    }
+
     /// 編集開始時点で定数でなければ分岐に入らない。
     func testPlaybackRateChangeRejectedWhenPreviousNotConstant() {
         let item = AudioItem()
