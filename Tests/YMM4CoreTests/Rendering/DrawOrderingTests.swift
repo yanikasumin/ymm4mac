@@ -276,3 +276,88 @@ final class DrawOrderingTests: XCTestCase {
         XCTAssertEqual(ordering.sortCallCount, 0)
     }
 }
+
+// MARK: - 四隅の統合（UnionQuads）
+
+/// DrawOrdering.unionBoundsQuads（FE-R1-023-B）: 本家
+/// EffectedItemSource.UnionQuads の規則（最初の四隅の局所座標系で
+/// 全頂点を囲む）を固定する。
+final class DrawOrderingUnionBoundsQuadsTests: XCTestCase {
+
+    private func assertQuad(
+        _ actual: [Vector2]?, equals expected: [Vector2],
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        guard let actual else {
+            XCTFail("四隅が nil", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(actual.count, expected.count, file: file, line: line)
+        for (a, e) in zip(actual, expected) {
+            XCTAssertEqual(a.x, e.x, accuracy: 1e-9, file: file, line: line)
+            XCTAssertEqual(a.y, e.y, accuracy: 1e-9, file: file, line: line)
+        }
+    }
+
+    private func rectQuad(
+        _ left: Double, _ top: Double, _ right: Double, _ bottom: Double
+    ) -> [Vector2] {
+        [
+            Vector2(x: left, y: top), Vector2(x: right, y: top),
+            Vector2(x: right, y: bottom), Vector2(x: left, y: bottom),
+        ]
+    }
+
+    /// 同じ向きの2つの四角形が横に並ぶ場合、外側まで広がる。
+    func testUnionOfSideBySideQuads() {
+        let union = DrawOrdering.unionBoundsQuads([
+            rectQuad(0, 0, 10, 10), rectQuad(20, 0, 30, 10),
+        ])
+        assertQuad(union, equals: rectQuad(0, 0, 30, 10))
+    }
+
+    /// 重なる四角形同士では、両方を含む範囲になる。
+    func testUnionOfOverlappingQuads() {
+        let union = DrawOrdering.unionBoundsQuads([
+            rectQuad(0, 0, 10, 10), rectQuad(5, 5, 15, 15),
+        ])
+        assertQuad(union, equals: rectQuad(0, 0, 15, 15))
+    }
+
+    /// 最初の四角形が回転している場合、その局所座標系（斜めの軸）で
+    /// 囲む。ダイヤ型（軸が (10,10) と (-10,10)）を軸方向へ1つ分
+    /// ずらした四角形との統合は、u 方向へ2つ分の四角形になる。
+    func testUnionInRotatedFrame() {
+        let diamond = [
+            Vector2(x: 0, y: -10), Vector2(x: 10, y: 0),
+            Vector2(x: 0, y: 10), Vector2(x: -10, y: 0),
+        ]
+        let shifted = diamond.map { Vector2(x: $0.x + 10, y: $0.y + 10) }
+        let union = DrawOrdering.unionBoundsQuads([diamond, shifted])
+        assertQuad(union, equals: [
+            Vector2(x: 0, y: -10), Vector2(x: 20, y: 10),
+            Vector2(x: 10, y: 20), Vector2(x: -10, y: 0),
+        ])
+    }
+
+    /// 1つだけの場合はその四角形自体が返る。
+    func testSingleQuadReturnsItself() {
+        let quad = rectQuad(1, 2, 3, 4)
+        assertQuad(DrawOrdering.unionBoundsQuads([quad]), equals: quad)
+    }
+
+    /// 最初の四角形が潰れている（全頂点が同一直線上）場合は
+    /// 局所座標系が張れないため nil。
+    func testDegenerateFirstQuadReturnsNil() {
+        let line = [
+            Vector2(x: 0, y: 0), Vector2(x: 10, y: 0),
+            Vector2(x: 20, y: 0), Vector2(x: 30, y: 0),
+        ]
+        XCTAssertNil(DrawOrdering.unionBoundsQuads([line, rectQuad(0, 0, 5, 5)]))
+    }
+
+    /// 空の列は nil。
+    func testEmptyReturnsNil() {
+        XCTAssertNil(DrawOrdering.unionBoundsQuads([]))
+    }
+}

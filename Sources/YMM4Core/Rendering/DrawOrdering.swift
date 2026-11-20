@@ -156,6 +156,47 @@ public enum DrawOrdering {
         return quad
     }
 
+    /// 複数の四隅の統合。本家 EffectedItemSource.UnionQuads の規則:
+    /// 最初の四隅が張る局所座標系（原点 = 第1頂点、軸 = 第1→第2頂点と
+    /// 第1→第4頂点）へ全頂点を写し、u / v の最小・最大で囲んだ四隅を
+    /// 元の座標系へ戻す。最初の四隅の行列式（2軸の外積）が非有限または
+    /// 絶対値 1e-6 未満なら nil（統合できない）。
+    /// 当たり判定用の四隅（GetTransformedBoundsQuad）が複数出力の
+    /// 統合に使う。平面分割用の四隅とは別経路である。
+    public static func unionBoundsQuads(_ quads: [[Vector2]]) -> [Vector2]? {
+        guard let first = quads.first, first.count == 4 else { return nil }
+        let origin = first[0]
+        let axisU = Vector2(x: first[1].x - origin.x, y: first[1].y - origin.y)
+        let axisV = Vector2(x: first[3].x - origin.x, y: first[3].y - origin.y)
+        let determinant = axisU.x * axisV.y - axisU.y * axisV.x
+        guard determinant.isFinite, abs(determinant) >= 1e-6 else { return nil }
+        var minU = Double.greatestFiniteMagnitude
+        var maxU = -Double.greatestFiniteMagnitude
+        var minV = Double.greatestFiniteMagnitude
+        var maxV = -Double.greatestFiniteMagnitude
+        for quad in quads {
+            for point in quad {
+                let d = Vector2(x: point.x - origin.x, y: point.y - origin.y)
+                let u = (d.x * axisV.y - d.y * axisV.x) / determinant
+                let v = (axisU.x * d.y - axisU.y * d.x) / determinant
+                minU = min(minU, u)
+                maxU = max(maxU, u)
+                minV = min(minV, v)
+                maxV = max(maxV, v)
+            }
+        }
+        func corner(_ u: Double, _ v: Double) -> Vector2 {
+            Vector2(
+                x: origin.x + axisU.x * u + axisV.x * v,
+                y: origin.y + axisU.y * u + axisV.y * v
+            )
+        }
+        return [
+            corner(minU, minV), corner(maxU, minV),
+            corner(maxU, maxV), corner(minU, maxV),
+        ]
+    }
+
     /// 四隅が平面をなすか。本家 PlaneSplitBsp.IsValidQuad（TryGetPlane）:
     /// Newell 法の法線の長さが 0.01 未満なら平面として扱えない。
     public static func isValidQuad(_ quad: [Vector3]) -> Bool {

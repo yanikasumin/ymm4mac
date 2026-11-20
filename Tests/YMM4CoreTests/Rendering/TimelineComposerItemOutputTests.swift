@@ -1,6 +1,25 @@
 import XCTest
 @testable import YMM4Core
 
+/// BoundsQuadProviding に適合する偽の DrawingEffect（FE-R1-023-B）。
+/// 独自四隅の有無・返す四隅・確定説明へ書き込む回転を差し替えられる。
+private final class QuadFakeDrawingEffect: DrawingEffectProcessor, BoundsQuadProviding {
+    var output: ImageReference? = ImageReference(label: "quad-de-out")
+    var providesCustomBoundsQuad = false
+    var quadResult: [Vector2]?
+    var rotationZ: Double = 0
+
+    func setInput(_ image: ImageReference?) {}
+    func clearInput() {}
+    func update(_ description: EffectDescription) throws -> DrawDescription {
+        var result = description.drawDescription
+        result.rotation.z = rotationZ
+        return result
+    }
+    func boundsQuad() -> [Vector2]? { quadResult }
+    func dispose() {}
+}
+
 /// TimelineComposer.itemOutputs（FE-R1-023-A）の契約:
 /// 直近の Update で描画されたアイテム別の出力を、描画順（背面から
 /// 前面）のまま、タイムライン内インデックスつきで公開する。
@@ -141,6 +160,129 @@ final class TimelineComposerItemOutputTests: XCTestCase {
         XCTAssertEqual(composer.itemOutputs.count, 1)
         XCTAssertEqual(composer.itemOutputs.first?.itemIndex, 0)
     }
+
+    /// 当たり判定用の四隅（FE-R1-023-B）: 回転・カメラ・独自四隅の
+    /// いずれも無いアイテムでは quad は nil になる（本家
+    /// GetTransformedBoundsQuad のゲート。消費側は矩形の四隅で
+    /// 代替する）。
+    func testQuadIsNilWhenGateIsClosed() throws {
+        let fixture = Fixture()
+        let item = makeVisualItem(TextItem(), frame: 0, length: 90, layer: 0)
+        fixture.timeline.items = [item]
+        let composer = fixture.makeComposer()
+
+        try composer.update(time: .zero, usage: .paused)
+
+        XCTAssertEqual(composer.itemOutputs.count, 1)
+        XCTAssertNil(composer.itemOutputs.first?.quad)
+    }
+
+    /// 独自四隅を持つ DrawingEffect（マスク等）では、回転が無くても
+    /// 四隅がそのまま運ばれる。
+    func testCustomProviderQuadIsCarriedWithoutRotation() throws {
+        let fixture = Fixture()
+        let item = makeVisualItem(TextItem(), frame: 0, length: 90, layer: 0)
+        fixture.timeline.items = [item]
+        let effect = QuadFakeDrawingEffect()
+        effect.providesCustomBoundsQuad = true
+        effect.quadResult = Self.sampleQuad
+        let source = FakeChainSource()
+        source.outputs = [StandardSourceOutput(
+            output: ImageReference(label: "img"), drawingEffect: effect
+        )]
+        fixture.registerSource(source, for: item)
+        let composer = fixture.makeComposer()
+
+        try composer.update(time: .zero, usage: .paused)
+
+        XCTAssertEqual(composer.itemOutputs.first?.quad, Self.sampleQuad)
+    }
+
+    /// 通常の DrawingEffect でも、回転がある場合は四隅が運ばれる
+    /// （ゲートは確定説明の回転で開く）。
+    func testStandardProviderQuadIsCarriedWhenRotated() throws {
+        let fixture = Fixture()
+        let item = makeVisualItem(TextItem(), frame: 0, length: 90, layer: 0)
+        fixture.timeline.items = [item]
+        let effect = QuadFakeDrawingEffect()
+        effect.rotationZ = 30
+        effect.quadResult = Self.sampleQuad
+        let source = FakeChainSource()
+        source.outputs = [StandardSourceOutput(
+            output: ImageReference(label: "img"), drawingEffect: effect
+        )]
+        fixture.registerSource(source, for: item)
+        let composer = fixture.makeComposer()
+
+        try composer.update(time: .zero, usage: .paused)
+
+        XCTAssertEqual(composer.itemOutputs.first?.quad, Self.sampleQuad)
+    }
+
+    /// ゲートが開いても、DrawingEffect が四隅を返せない場合は
+    /// アイテム全体の四隅が nil になる（本家は null を返す）。
+    func testProviderReturningNilQuadMakesItemQuadNil() throws {
+        let fixture = Fixture()
+        let item = makeVisualItem(TextItem(), frame: 0, length: 90, layer: 0)
+        fixture.timeline.items = [item]
+        let effect = QuadFakeDrawingEffect()
+        effect.providesCustomBoundsQuad = true
+        effect.quadResult = nil
+        let source = FakeChainSource()
+        source.outputs = [StandardSourceOutput(
+            output: ImageReference(label: "img"), drawingEffect: effect
+        )]
+        fixture.registerSource(source, for: item)
+        let composer = fixture.makeComposer()
+
+        try composer.update(time: .zero, usage: .paused)
+
+        XCTAssertEqual(composer.itemOutputs.count, 1)
+        XCTAssertNil(composer.itemOutputs.first?.quad)
+    }
+
+    /// 出力が複数のアイテムでは、各出力の四隅が最初の四隅の
+    /// 局所座標系で統合されて運ばれる（本家 UnionQuads）。
+    func testMultipleOutputsQuadIsUnioned() throws {
+        let fixture = Fixture()
+        let item = makeVisualItem(TextItem(), frame: 0, length: 90, layer: 0)
+        fixture.timeline.items = [item]
+        let first = QuadFakeDrawingEffect()
+        first.providesCustomBoundsQuad = true
+        first.quadResult = [
+            Vector2(x: 0, y: 0), Vector2(x: 10, y: 0),
+            Vector2(x: 10, y: 10), Vector2(x: 0, y: 10),
+        ]
+        let second = QuadFakeDrawingEffect()
+        second.providesCustomBoundsQuad = true
+        second.quadResult = [
+            Vector2(x: 20, y: 0), Vector2(x: 30, y: 0),
+            Vector2(x: 30, y: 10), Vector2(x: 20, y: 10),
+        ]
+        let source = FakeChainSource()
+        source.outputs = [
+            StandardSourceOutput(
+                output: ImageReference(label: "img-1"), drawingEffect: first
+            ),
+            StandardSourceOutput(
+                output: ImageReference(label: "img-2"), drawingEffect: second
+            ),
+        ]
+        fixture.registerSource(source, for: item)
+        let composer = fixture.makeComposer()
+
+        try composer.update(time: .zero, usage: .paused)
+
+        XCTAssertEqual(composer.itemOutputs.first?.quad, [
+            Vector2(x: 0, y: 0), Vector2(x: 30, y: 0),
+            Vector2(x: 30, y: 10), Vector2(x: 0, y: 10),
+        ])
+    }
+
+    private static let sampleQuad: [Vector2] = [
+        Vector2(x: -50, y: -25), Vector2(x: 50, y: -25),
+        Vector2(x: 50, y: 25), Vector2(x: -50, y: 25),
+    ]
 
     /// Update が失敗した場合、itemOutputs は前回の成功時の値のまま
     /// 残る（消費側は Update の成否と組で読む契約）。
