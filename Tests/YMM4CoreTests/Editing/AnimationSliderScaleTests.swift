@@ -374,4 +374,68 @@ final class AnimationSliderScaleTests: XCTestCase {
                 50.06, delta: 1, minimum: 0, maximum: 100),
             50.1, accuracy: 1e-9)
     }
+
+    func testFixedValueHugeValueWithIntegerScaledProductIsIdentity() {
+        // FE-R25-128-03: 拡大した積が厳密に整数になる巨大値では、
+        // .NET の Math.Round は値をそのまま返し、割り戻しの
+        // 1 ulp ずれは生じない（.NET 11.0.0 での実測と全セル一致を
+        // 確認済み。実装台帳 FE-P3-GUARDS）。旧方式では
+        // 1e17 + 32 が桁数 2・15 で隣の double へずれていた。
+        let huge = 1e17 + 32
+        for format in ["F1", "F2", "F3"] {
+            let delta = spec(0, 100, format: format).delta
+            XCTAssertEqual(
+                AnimationSliderScale.fixedValue(
+                    huge, delta: delta, minimum: -1e18, maximum: 1e18),
+                huge, "format \(format)")
+            XCTAssertEqual(
+                AnimationSliderScale.fixedValue(
+                    -huge, delta: delta, minimum: -1e18, maximum: 1e18),
+                -huge, "format \(format)")
+        }
+    }
+
+    func testFixedValueHugeFractionExactAtDigitsIsIdentity() {
+        // 小数部が丸め桁にちょうど収まる巨大値も恒等になる。
+        // F0 → Delta 1 → 桁数 1: 1e15 + 0.5 は旧方式で
+        // 1000000000000000.4 へずれていた。
+        let deltaF0 = spec(0, 100, format: "F0").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                1e15 + 0.5, delta: deltaF0, minimum: -2e15, maximum: 2e15),
+            1e15 + 0.5)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                999_999_999_999_999.5, delta: deltaF0,
+                minimum: -2e15, maximum: 2e15),
+            999_999_999_999_999.5)
+        // F1 → 桁数 2: 7.5e14 + 0.25 は旧方式で 750000000000000.4
+        // へずれていた。
+        let deltaF1 = spec(0, 100, format: "F1").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                750_000_000_000_000.25, delta: deltaF1,
+                minimum: -2e15, maximum: 2e15),
+            750_000_000_000_000.25)
+        // F2 → 桁数 10: 整数の 1e15 は旧方式で
+        // 1000000000000000.1 へずれていた。
+        let deltaF2 = spec(0, 100, format: "F2").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                1e15, delta: deltaF2, minimum: -2e15, maximum: 2e15),
+            1e15)
+    }
+
+    func testFixedValueHugeValueStillClampsAfterIdentity() {
+        // 恒等で返した値にもクランプは従来どおり丸めの後に効く。
+        let delta = spec(0, 100, format: "F1").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                1e17 + 32, delta: delta, minimum: 0, maximum: 100),
+            100)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -(1e17 + 32), delta: delta, minimum: -100, maximum: 0),
+            -100)
+    }
 }

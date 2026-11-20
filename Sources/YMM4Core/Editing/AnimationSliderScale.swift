@@ -196,6 +196,10 @@ public enum AnimationSliderScale {
     /// Delta が正でない・非有限の場合は本家に相当する入力が存在しない
     /// （属性の Delta は常に正）ため、丸め桁は上限の 15 として扱う。
     /// 値自体が非有限ならそのまま返す（呼び出し側が確定前に弾く）。
+    ///
+    /// 拡大した積が厳密に整数になる値では、.NET の正しく丸められた
+    /// 結果は値そのものであるため、割り戻さずに値を返す
+    /// （FE-R25-128-03）。
     public static func fixedValue(
         _ value: Double, delta: Double, minimum: Double, maximum: Double
     ) -> Double {
@@ -207,11 +211,27 @@ public enum AnimationSliderScale {
             digits = raw >= 15 ? 15 : (raw <= 0 ? 0 : Int(raw))
         }
         let factor = pow(10.0, Double(digits))
+        let scaled = value * factor
+        // .NET の Math.Round は厳密な値を正しく丸めるため、拡大した
+        // 積が厳密に整数になる値（丸める桁より下に小数部を持たない
+        // 値）では値そのものが結果になる。割り戻すと、積が 2^53 を
+        // 超える規模では割り戻しの誤差で隣の double へずれる
+        // （FE-R25-128-03。例: 1e17 + 32 が桁数 15 で 1 ulp 小さく
+        // なる）。積の残差は fma で厳密に求まり、残差が整数なら
+        // 厳密な積も整数なので、その場合は割り戻さず値を丸め結果
+        // とする。残差が整数でない場合の境界は実装台帳
+        // FE-P3-GUARDS の記録どおり未処分のまま残る。
+        if scaled == scaled.rounded(.towardZero) {
+            let residual = fma(value, factor, -scaled)
+            if residual == residual.rounded(.towardZero) {
+                return min(max(value, minimum), maximum)
+            }
+        }
         // .NET の MidpointRounding.AwayFromZero は「最近接へ丸め、
         // 同点のときだけ 0 から離れる」であり、Swift では
         // .toNearestOrAwayFromZero が対応する（.awayFromZero は
         // 常に切り上げ方向で別物）。
-        let rounded = (value * factor).rounded(.toNearestOrAwayFromZero) / factor
+        let rounded = scaled.rounded(.toNearestOrAwayFromZero) / factor
         return min(max(rounded, minimum), maximum)
     }
 }
