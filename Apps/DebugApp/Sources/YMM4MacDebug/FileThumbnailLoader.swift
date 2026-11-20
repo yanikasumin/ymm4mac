@@ -61,8 +61,11 @@ enum FileThumbnailLoader {
             // 動画種別に分類される静止画形式（GIF / WebP 等）は
             // フレーム生成が失敗するため、画像としての取得へ落とす
             // （本家もシェルのサムネイルが形式を問わず返す）。
-            image = await videoFrame(url: url)
-                ?? await Task.detached { imageThumbnail(url: url) }.value
+            var frame = await videoFrame(url: url)
+            if frame == nil {
+                frame = await Task.detached { imageThumbnail(url: url) }.value
+            }
+            image = frame
         }
         if let image, let key {
             cache.store(image, forKey: key)
