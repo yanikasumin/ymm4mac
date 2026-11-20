@@ -1993,7 +1993,7 @@ FE-FILEPATH 節で別単位へ移管した2件の処分。分岐 (3)（再生速
 
 **監査 Round 18 の処分（FE-R18-001、P1）。** FE-R1-022 の数式（PreviewLayout）は本家と整合していたが、SwiftUI への適用側に欠陥が残っていた。`previewView` の内側 ZStack は拡大画像（表示枠より大きい）を直接の子に持ち、その報告寸法が後段の `.frame(表示枠寸法)`（既定は中央揃え）の中で中心合わせされ、内容全体が (枠−画像)/2 だけずれる。画像は `imageOrigin` の offset でさらに同量ずれるため、画像と操作層（輪郭・ハンドル・当たり判定）が互いにずれた。処分は PreviewLayout の数式を変えず、配置だけを直した: 表示枠を座標の正本とし、内側 ZStack の frame と `previewInteractionLayer` の frame の双方に `alignment: .topLeading` を明示した。これにより内容の寸法がどれだけ大きくても、両 frame の左上＝PreviewLayout の座標原点に内容の原点が一致し、内容の寸法は親のレイアウト寸法にも原点にも影響しない。操作層側の frame も同じ処分が必要なのは、その左上が名前付き座標空間 `previewArea` の原点であり、選択アイテムの描画寸法が表示枠を超えると（全画面アイテムの拡大表示など）輪郭・ハンドルだけがジェスチャ座標からずれていたため。ドラッグ変換（移動はヒットレイヤーのローカル座標、ハンドルは `previewArea`）と当たり判定（`videoPoint` 変換）の入力前提は、どちらも表示枠左上原点であり、描画側と一致することをコード上で確認した。検証: Mac（~/ymm4-work/fe-preview/YMM4Mac）で Apps/DebugApp の `swift build` 成功。PreviewCoreTests は PreviewLayoutTests 4 件・PreviewRenderWorkerTests 8 件、全合格（回帰なし）。配置そのものはアプリ層のため自動テストでは固定できず、手動検証チェックリスト (6)(7) で固定する。
 
-**手動検証チェックリスト（未実施）。** (1) レイヤーの目ボタンで非表示にすると、プレビューからそのレイヤーのアイテムが消え、再表示で戻ること。再生中も停止への遷移で反映されること。(2) コントロールポイント表示を「常に表示しない」にすると選択中でもハンドルが出ず、「マウスオーバー時」ではプレビューへカーソルを入れたときだけハンドルが出ること。(3) ロックしたアイテムはプレビューでクリックしても選択・移動できず、下に別のアイテムがあればそちらが掴めること。タイムライン上でキーフレームマーカーをドラッグしても動かないこと。(4) プレビュー倍率 200%・400% で映像の縦横比が崩れず、中央が拡大表示されること。選択輪郭とハンドルが見えている映像の位置と一致すること。(5) 合成で例外が起きる条件では、プレビューに理由を含む失敗文が出て、診断タブの履歴にも previewComposition の記録が残ること。(6) 倍率 200% で全画面のアイテムを選択したとき、映像の中心が表示枠の中心にあり、選択輪郭が映像の見えている範囲と一致し、アイテムをドラッグすると掴んだ位置からずれずに動き始めること（FE-R18-001）。(7) 倍率 400% でも同様に、映像中心・選択輪郭・ハンドルの表示位置が一致し、ハンドルのドラッグ開始位置と表示位置がずれないこと（FE-R18-001）。(8) 回転したアイテム（例: 立ち絵を 30° 回転）をプレビューでクリックしたとき、回転後の見えている範囲で選択でき、選択輪郭が回転後の外接矩形と一致すること。回転の余白（外接矩形内だが絵が無い角）でも選択されるのは AABB の仕様として許容する（FE-R1-023-A）。(9) 前面・背面のアイテムが重なる位置をクリックしたとき、前面（後に描画される方）が選択されること。前面をロックすると背面が掴めること（FE-R1-023-A）。(10) アイテムを追加・移動した直後（プレビューが再合成される前）にプレビューをクリックしても、古い矩形で別のアイテムが選択されず何も起きないこと。再合成後は新しい位置で選択できること（FE-R1-023-A の保留の安全策）。
+**手動検証チェックリスト（未実施）。** (1) レイヤーの目ボタンで非表示にすると、プレビューからそのレイヤーのアイテムが消え、再表示で戻ること。再生中も停止への遷移で反映されること。(2) コントロールポイント表示を「常に表示しない」にすると選択中でもハンドルが出ず、「マウスオーバー時」ではプレビューへカーソルを入れたときだけハンドルが出ること。(3) ロックしたアイテムはプレビューでクリックしても選択・移動できず、下に別のアイテムがあればそちらが掴めること。タイムライン上でキーフレームマーカーをドラッグしても動かないこと。(4) プレビュー倍率 200%・400% で映像の縦横比が崩れず、中央が拡大表示されること。選択輪郭とハンドルが見えている映像の位置と一致すること。(5) 合成で例外が起きる条件では、プレビューに理由を含む失敗文が出て、診断タブの履歴にも previewComposition の記録が残ること。(6) 倍率 200% で全画面のアイテムを選択したとき、映像の中心が表示枠の中心にあり、選択輪郭が映像の見えている範囲と一致し、アイテムをドラッグすると掴んだ位置からずれずに動き始めること（FE-R18-001）。(7) 倍率 400% でも同様に、映像中心・選択輪郭・ハンドルの表示位置が一致し、ハンドルのドラッグ開始位置と表示位置がずれないこと（FE-R18-001）。(8) 回転したアイテム（例: 立ち絵を 30° 回転）をプレビューでクリックしたとき、回転後の見えている範囲で選択でき、選択輪郭が回転後の外接矩形と一致すること。回転の余白（外接矩形内だが絵が無い角）でも選択されるのは AABB の仕様として許容する（FE-R1-023-A）。(9) 前面・背面のアイテムが重なる位置をクリックしたとき、前面（後に描画される方）が選択されること。前面をロックすると背面が掴めること（FE-R1-023-A）。(10) アイテムを追加・移動した直後（プレビューが再合成される前）にプレビューをクリックしても、古い矩形で別のアイテムが選択されず何も起きないこと。再合成後は新しい位置で選択できること（FE-R1-023-A の保留の安全策）。(11) 回転したアイテム（例: 立ち絵を 30° 回転）の、外接矩形の四隅付近（絵の無い余白）をクリックしても選択されず、絵のある部分では選択されること（FE-R1-023-B。(8) の余白部分の記述は本項目で置き換える）。(12) 透視（回転X/Y）をつけたアイテムで、表示されている絵の形に沿って当たり判定が効くこと（台形の外側は当たらないこと）（FE-R1-023-B）。(13) マスク（エフェクトアイテム）を持つアイテムの当たり判定が、回転・移動に追随すること（FE-R1-023-B）。
 
 **未解決。** FE-R1-023（実描画矩形の供給経路の新設）と FE-R1-031（スナップショット生成の所有設計）は要設計判断として切り分け。拡大時のプレビューのパン、本家のコントローラ全種（エフェクト操作点・キーフレームマーカーのプレビュー表示）への対応は未実装。コンテキストメニュー操作に対するロック規則は本家確認待ちの申し送り。（追記: FE-R1-023 は監査の設計判断を経て FE-R1-023-A で処分した。次節参照。コンテキストメニューのロック規則は監査判断で「本家はロックを読まないため変更なし・CLOSED」となった。）
 
@@ -2032,6 +2032,50 @@ FE-FILEPATH 節で別単位へ移管した2件の処分。分岐 (3)（再生速
 - 主要な設計判断: 完成条件は「現在表示されている画像に対応する正しい矩形で操作できること」。画像と矩形は PreviewFrameResult として一体で運び、同じ結果から採用する。矩形の出所は GPU 層の内容境界（アイテム変換式のアプリ側複製はしない）。中心原点→左上原点の変換は PreviewLayout の1か所。恒久的な BaseItem ID は導入せず、スナップショット内インデックス＋アイテム列の同一性照合で版数間の再利用を防ぐ。編集未反映の間は当たり判定を保留する。AABB の限界（クリッピング・透明部分・回転の余白を含む外接矩形であり画素単位ではない）は台帳に明示。
 - 実行したテスト: Mac で Apps/DebugApp の swift build 成功。PreviewCoreTests 20件、Core の TimelineComposer フィルタ 17件、EffectedItemSource 等のフィルタ 30件、いずれも全合格・失敗0。全スイートと AudioDriftTests は未実施。手動チェックリスト (8)–(10) は未実施。
 - 対応する実装記録: docs/IMPLEMENTATION_LOG.md の FE-R1-023-A 節。ARCHITECTURE.md のプレビュー実描画矩形の項を追随。
+- 承認状況: 監査（フロントエンド監査）の設計判断に基づく実装。PR 作成時点で監査レビューを依頼する。
+
+#### FE-R1-023-B — 四角形（quad）対応の当たり判定とマスク合成の planeOffset 検証（FE-R1-023-A の分離事項の処分、IMPLEMENTED、Mac 検証済み）
+
+**基点と PR の前提。** 本単位のブランチ `feat/fe-r023b-quad` は FE-R1-023-A 単位のブランチ（`feat/fe-r023a-aabb`、先端 52d4e70）の上に積む。PR は 023-A の PR の後に作成する（積み重ね PR）。
+
+**調査結果 1 — 本家の当たり判定は矩形ではなく四角形（実コードで確定）。** 本家 `TimelineVideoPlayer.cs` のプレビュー直接操作は、`TimelineItemRects` が運ぶ `(item, rect, quad, desc, controllers)` の quad を `IsMouseOver(x.quad, pos)`（645行・775行ほか）で判定し、矩形は別の用途（ドラッグ中の参照等）に使う。サイズ変更・回転のマーカー位置も quad から導く（GetResizeMarkerPoints / GetRotationMarkerPoints）。quad の出所は `EffectedItemSource.GetTransformedBoundsQuad()`（Player.Video）であり、`TimelineSource.cs:241-245` が TimelineItemRects へ登録する際に `GetTransformedBoundsQuad() ?? 矩形（GetImageLocalBounds(Output)）の四隅` のフォールバックを取る。
+
+**調査結果 2 — planeSplitQuad は流用不可（別物であることを実コードで確定）。** 平面分割用の四角形（Mac の `EffectedItemSource.getPlaneSplitQuad` / 本家 `GetPlaneSplitQuad`）は BSP の順序決定用で、ワールド変換のみ（透視を含まない）を、Transform3D 入力境界の和集合へ適用したものである。一方 `GetTransformedBoundsQuad` は、描画前出力（PreRenderOutput）の局所境界へ、反転・ズーム → 回転・平行移動・カメラ・透視（M34 = -0.001）の確定変換を適用した四隅であり、ズーム・反転・透視の分だけ描画結果との対応が異なる。よって当たり判定へは後者を移植し、前者は流用しない。
+
+**本家の GetTransformedBoundsQuad の規則（移植した仕様）。**
+- ゲート: 出力のいずれかで「DrawingEffect が IBoundsQuadProvider」または「回転 ≠ 0」または「カメラ ≠ 単位」でなければ全体が null（その場合の四隅は矩形の四隅と一致する）。いずれかの出力の PreRenderOutput が null なら全体が null。
+- 出力ごと: IBoundsQuadProvider（マスク用の EffectItemDrawingEffect）なら `GetBoundsQuad()` = マスク図形（マスク画像）の局所境界へマスク変換（回転・平行移動・カメラ・透視。Mask.CreateTransformMatrix）を適用した四隅。妥当性: 境界が非有限・絶対値 2.1474836e9 以上・空なら null、変換後の w が 0.001 以下または非有限・除算後の座標が非有限なら null、四隅の符号つき面積（shoelace 和）の絶対値が 1e-6 未満でも null。
+- それ以外は `TransformBoundsQuad(局所境界, DrawDescription)`: 四隅へ 2D 行列（反転（中心まわり）×ズーム）→ 4×4（回転Z→回転Y（符号反転）→回転X（符号反転）→平行移動→カメラ→透視）を適用し w で割る。w ≤ 0 または除算後の x/y が非有限なら null。
+- 複数出力は `UnionQuads`: 最初の四角形の局所座標系（原点 = 第1頂点、軸 = 第1→第2頂点・第1→第4頂点）へ全頂点を写し、u/v の最小・最大で囲んで戻す。行列式が非有限または絶対値 1e-6 未満なら null。
+- 当たり判定 `IsPointInQuad`（TimelineVideoPlayer.cs:1279）: 各辺の外積の符号一致で判定し、外積 0 の辺は判定から外れる（境界上の点は内側）。全辺の外積が 0 の場合だけ、四隅の外接矩形で判定するフォールバック。
+
+**Mac 側の実装。**
+- Core: 新プロトコル `BoundsQuadProviding`（`Sources/YMM4Core/Rendering/EffectContracts.swift`。`providesCustomBoundsQuad` = 本家 IBoundsQuadProvider への適合に相当するか、`boundsQuad()` = 変換後四隅）。平面分割の `PlaneSplitGeometryProviding` と同じ「Core がプロトコルで GPU 層へ幾何を尋ねる」境界に倣う。`EffectedItemSource.getTransformedBoundsQuad()` がゲート・出力ごとの収集・統合を担い、`DrawOrdering.unionBoundsQuads` が UnionQuads の移植。`TimelineItemOutput` に `quad: [Vector2]?`（中心原点座標）を追加し、合成器が描画順の公開クエリへ載せる。
+- GPU: `MetalDrawingEffect` が BoundsQuadProviding に適合（独自四隅ではない）。更新時に入力の境界と合成変換（入力自身の変換 → ズーム → ワールド → 透視。出力実体へ登録するのと同じ行列）を保持し、`boundsQuad()` が本家 TransformBoundsQuad の妥当性（w ≤ 0・非有限）で四隅を返す。材料の確定は出力の登録内容（空判定）によらない（本家 TransformBoundsQuad は不透明度・空判定を見ないため）。`MetalEffectItemDrawingEffect`（マスク用）も適合し（独自四隅 = true）、図形の境界へマスク変換（透視を含む。更新時に保持）を適用した四隅を、本家 Mask.GetBoundsQuad の妥当性（境界の範囲・w > 0.001・面積）つきで返す。
+- PreviewCore / アプリ層: `PreviewBox` が itemOutputs の quad を `PreviewLayout.videoQuad`（中心原点→左上原点の変換。videoRect と並ぶ変換の置き場所）で映像座標へ変換し、`PreviewItemRect.quad` に載せる（無い場合は初期化子が bounds の四隅で代替 = 本家のフォールバックと同じ）。当たり判定は新設 `PreviewQuad.contains`（IsPointInQuad の移植）を使い、`PreviewItemRect.frontmostIndex` の包含判定を矩形から四角形へ切り替えた。選択輪郭・操作ハンドルは引き続き bounds（AABB）を使う（全面置き換えはしない）。ProjectView 側は frontmostIndex の呼び出し形が不変のため、コメントの追随のみ。
+
+**調査結果 3 — マスク合成の planeOffset は AABB へ影響しない（実コードで確定し、テストで固定）。** 023-A の未解決 (2) への回答。アイテム出力トークン（`EffectedItemSource.output`）の実体の登録経路は次の4つで、いずれも planeOffset = 0・transform = 恒等で、bounds が描画位置を表す。
+- 描画先（MetalRenderTarget）の close 登録: bounds = 内容境界、texturePlaneRect = 画面矩形、planeOffset は既定 0。
+- マスク合成の renderWarp 結果（MetalAlphaMaskEffect.materialize）: bounds = 入力（描画先の出力）の境界で新規テクスチャへ描き直すため、planeOffset = 0 で登録される。
+- flood の恒等経路: 入力実体そのもの（= 描画先の出力、planeOffset 0）を登録する。
+- 透明フォールバック（registerTransparent）: bounds = 入力の境界、planeOffset = 0。
+さらに一般論として、描画先への描画（MetalRenderTarget.draw）は頂点位置を bounds と transform だけで決め、内容境界もその外接矩形で積み上げる。planeOffset は UV サンプリング（uv(forLocalX:)）だけをずらす量であり、合成グループの中心ずらしのように「境界と planeOffset を対でずらして同じテクスチャを指す」ための表現であって、描画位置そのものは常に bounds 側が表す。したがって AABB 算出（PreviewBox.itemRects）へ planeOffset の加算は不要であり、現行算出は正しい。この前提は GPU テスト（AlphaMaskPlaneOffsetTests: 3つの登録経路の実体が planeOffset 0・transform 恒等・bounds = 入力境界であること、および planeOffset を持つ画像を描いても内容境界がずれないこと）で固定した。
+
+**本家との差異・限界。** (1) 本家の quad は DrawingEffect の入力境界（= PreRenderOutput の局所境界）を変換したもので、AABB（描画先の内容境界）とは出所が異なる。単一出力では両者は一致するが、複数出力では AABB が「各出力の変換後 AABB の和」であるのに対し、quad は「和集合した境界の変換 + 最初の四角形の枠での統合」であり、厳密には一致しない場合がある（本家自身が rect と quad を併せて運ぶ設計であり、そのまま倣った）。(2) 本家はサイズ変更・回転マーカーの位置も quad から導くが、Mac 側のハンドルは AABB 基準のまま（本単位の範囲は当たり判定の精度のみ。マーカー位置の quad 化は未実施として残す）。(3) クリッピングで隠れた部分は quad にも残る（quad は描画変換の幾何であり、アルファの形ではない。本家も同じ）。
+
+**手動検証チェックリストへの追加（未実施）。** FE-PREVIEW 節へ (11)〜(13) を追加する: (11) 回転したアイテム（例: 立ち絵を 30° 回転）の、外接矩形の四隅付近（絵の無い余白）をクリックしても選択されず、絵のある部分では選択されること。(12) 透視（回転X/Y）をつけたアイテムで、表示されている絵の形に沿って当たり判定が効くこと（台形の外側は当たらないこと）。(13) マスク（エフェクトアイテム）を持つアイテムの当たり判定が、回転・移動に追随すること。
+
+**検証。** Mac（~/ymm4-work/fe-quad/YMM4Mac）で実施。ルートパッケージは方式名フィルタで実行し全合格・失敗0（XCTest の Executed 件数で判定）: 対象フィルタ（TimelineComposer / EffectedItemSource / TimelineSource / DrawOrdering / CompositeItemPicker / BoundsQuad / PlaneOffset）69件。内訳の新規分: TimelineComposerItemOutputTests 10件（既存5＋四隅の供給5: ゲートが閉じている場合の nil、独自四隅の運搬、回転時の運搬、取得不能時の全体 nil、複数出力の統合）、DrawOrderingUnionBoundsQuadsTests 6件（横並び・重なり・回転した枠での統合・単独・潰れた四角形・空）、MetalDrawingEffectBoundsQuadTests 6件（恒等・平行移動・ズーム・回転180°・回転90°の行列一致・入力なし）、MetalEffectItemDrawingEffectBoundsQuadTests 1件（マスク四隅の平行移動追随）、AlphaMaskPlaneOffsetTests 4件（透明経路・warp 経路・flood 経路の登録実体、planeOffset が描画位置をずらさないこと）。Apps/DebugApp は `swift build` 成功、PreviewCoreTests 25件全合格（PreviewItemRectTests 9件 = 既存4＋四角形判定5: ダイヤ型での前面・背面の振り分け、境界上の点、台形、潰れた四角形のフォールバック、代替四隅の最大辺包含。PreviewLayoutTests 7件、PreviewRenderWorkerTests 9件に回帰なし）。全スイートは回していない。AudioDriftTests は対象外（音声クロック・リサンプリング中核の変更を含まない）。
+
+**PR 本文の下書き。**
+
+- タイトル: FE-R1-023-B: 四角形（quad）対応の当たり判定とマスク合成 planeOffset の検証
+- 要件ID: フロントエンド監査 FE-R1-023 の分離事項（023-B）の処分。設計判断は FE-R1-023-A 節と監査判断に従う。要件定義の実質変更なし。基点は FE-R1-023-A のブランチ（feat/fe-r023a-aabb）であり、本 PR は同 PR の後に積む。
+- 本家根拠: プレビューの当たり判定は TimelineItemRects の quad を IsMouseOver(quad, pos) で判定する（TimelineVideoPlayer.cs:645, 775, 1269-1300）。quad の出所は EffectedItemSource.GetTransformedBoundsQuad（ゲート・TransformBoundsQuad・Mask.GetBoundsQuad・UnionQuads）で、null の場合は矩形の四隅で代替する（TimelineSource.cs:241-245）。平面分割用の GetPlaneSplitQuad は透視を含まず当たり判定には使われていない。
+- 変更したシンボル: Core — `BoundsQuadProviding`（新設プロトコル）、`EffectedItemSource.getTransformedBoundsQuad()`（新設）、`DrawOrdering.unionBoundsQuads`（新設）、`TimelineItemOutput.quad`（追加）。GPU — `MetalDrawingEffect` / `MetalEffectItemDrawingEffect` の BoundsQuadProviding 適合（入力境界と合成変換・マスク変換の保持を含む）。PreviewCore — `PreviewQuad.contains`（新設）、`PreviewItemRect.quad` / `contains(_:)`（追加）、`frontmostIndex` の包含判定を四角形へ切替、`PreviewLayout.videoQuad`（新設）、`PreviewBox` の四隅の受け渡し。アプリ層 — ProjectView の当たり判定コメント追随のみ（呼び出し形は不変）。
+- 主要な設計判断: 完成条件は「表示中の画像に対応する四角形で操作できること」（023-A と同じ契約の延長）。四角形の供給は矩形と同じく合成器→結果型の一体運搬とし、座標変換は PreviewLayout の1か所に限定。planeSplitQuad は変換範囲が異なるため流用せず、本家の GetTransformedBoundsQuad を移植した。選択輪郭・ハンドルは AABB のまま残し、当たり判定だけを四角形化した。planeOffset は調査の結果 AABB へ影響しないことを実コードで確定し、加算はせず前提をテストで固定した。
+- 実行したテスト: Mac で対象フィルタ69件（うち新規22件）全合格、Apps/DebugApp の swift build 成功・PreviewCoreTests 25件全合格。全スイートと AudioDriftTests は未実施。手動チェックリスト (11)–(13) は未実施。
+- 対応する実装記録: docs/IMPLEMENTATION_LOG.md の FE-R1-023-B 節。ARCHITECTURE.md のプレビュー実描画矩形の項へ四角形の供給と判定を追随。
 - 承認状況: 監査（フロントエンド監査）の設計判断に基づく実装。PR 作成時点で監査レビューを依頼する。
 
 #### FE-UNDO-CORE — フロントエンド基盤（Undo/Redo）の Core 側新設（IMPLEMENTED、Mac 検証済み）
