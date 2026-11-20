@@ -2183,7 +2183,7 @@ FE-CONTENTSEP で「意図的な差異・範囲外 (1)」として記録した�
 - **供給継ぎ目の設計**: `SceneItem.sceneLengthProvider: ((UUID) -> TimeSpanValue?)?`（保存対象外のクロージャ）を新設し、`Project.injectSceneLengthProviders()` が全タイムラインのシーンアイテムへ注入する。合成層の注入と同じクロージャ注入の形で、プロジェクトへの参照は弱参照（`[weak self]`）に留め、アイテムがプロジェクト全体への強参照を持つ構造にはしていない。供給は引くたびにプロジェクトのタイムライン群を評価するライブ参照であり、参照先シーンの長さの変化は再注入なしで反映される（本家の購読と同じ意味論）。シーン長は本家どおり参照先タイムラインの長さ（キャッシュ値）をそのタイムラインの FPS で時間へ換算した値。注入の契機は読み込み（`YmmpCodec.decode` がキャラクター参照の再解決と同じく組み立ての最後に呼ぶ）。未注入・未解決の場合はシーン長 0 として振る舞う（本家 `GlobalSceneInfo.GetValue` が未登録 ID に対して default を返す規則と一致）。
 - **実装**: `SceneItem.contentSeparations` / `VoiceItem.contentSeparations` の override を追加し、本体は `Editing/ContentSeparations.swift` の `sceneContentSeparations(sceneLength:isLooped:echoIsEnabled:echoInterval:echoAttenuation:)` / `voiceContentSeparations(voiceLength:additionalTime:echoIsEnabled:echoInterval:echoAttenuation:)` へ委譲する。本体・エコーの列挙は動画・音声形のイテレータ（`MediaConstantSeparationsIterator` / `MediaNonConstantSeparationsIterator`）を再利用した（シーン形は速度が正の場合に割り戻しが絶対値と一致するため、そのまま使える）。シーン形の本家との差2点（定数形の符号つき割り戻し、入口ガードの不存在）は構造として再現した。
 - **仕上げ時の是正（先行実装の不整合2件）**: (1) ボイス形の入口ガードが「実効素材長 > 0」で判定しており、実効素材長が負になる場合（短い音声に追加時間の負値が乗る等。本家の追加時間の範囲は −100000〜100000、スライダは −5〜5 秒）にも打ち切っていた。本家は `== TimeSpan.Zero` のときだけ打ち切るため、`!= .zero` へ是正し、負の場合と ちょうど 0 の場合の回帰テストを追加した。(2) テスト側の前提違い2件: 非定数レートのヘルパが実在しない `Animation` のメンバを変更していたため、既存 `ContentSeparationsTests` と同じ構築形（`.linear` ＋値2つ）へ是正した。「アイテム長の中で素材が尽きない場合は空」というテストは前提が誤りだった — 本家 `FindContentExhaustedTime` は末尾レートで外挿するため、区切りはアイテム長の外側に生まれるのが本家どおりである（消費側が範囲で打ち切る前提）。テストを「外挿で外側に生まれる」ケースと「末尾レート 0 で外挿できず真に空になる」ケースへ書き直した。実装側の不具合ではなかった。
-- **残した差分・制約**: (1) 注入の契機は読み込み（decode）のみ。編集時に追加・複製されたシーンアイテムは、次の注入（再読み込み、または書き出しスナップショットの decode 経由）まで供給を持たず、その間の区切りはシーン長 0 の形になる（終端判定と吸着がその分だけ本家とずれる）。アプリ層の操作時点で注入を呼ぶ接続はアプリ層の変更を伴うため本単位の範囲外として残す。(2) 本家の `SceneItem.OriginalContentLength`（＝シーン長）に相当する値は、Mac では `BaseItem` の保持プロパティ `originalContentLength` を上書きせず（保持プロパティは計算プロパティで override できない構造のため）、読み取り専用の `SceneItem.sceneContentLength` として公開した。区切りの消費先はすべて `contentSeparations` 経由であり、振る舞いに差は無い。(3) シーン・ボイスの `contentLength` 自体は Mac ではモデル層で維持されない（従来どおり）。区切りは取得のたびに現在値から計算されるため、エコー値や追加時間の変化は次回取得へ即時反映される。FE-R15-006 のエコー追随（長さの決め直し）は動画・音声の管轄のままでシーン・ボイスへは拡張していない（Mac のシーン・ボイスには素材長の再計算経路自体が無いため）。
+- **残した差分・制約**: (1) 注入の契機は読み込み（decode）のみ。編集時に追加・複製されたシーンアイテムは、次の注入（再読み込み、または書き出しスナップショットの decode 経由）まで供給を持たず、その間の区切りはシーン長 0 の形になる（終端判定と吸着がその分だけ本家とずれる）。アプリ層の操作時点で注入を呼ぶ接続はアプリ層の変更を伴うため本単位の範囲外として残す。→ **FE-SEP-RESIDUALS で処分済み**（アプリ層の接続点へ注入を接続し、欠落期間を無くした）。(2) 本家の `SceneItem.OriginalContentLength`（＝シーン長）に相当する値は、Mac では `BaseItem` の保持プロパティ `originalContentLength` を上書きせず（保持プロパティは計算プロパティで override できない構造のため）、読み取り専用の `SceneItem.sceneContentLength` として公開した。区切りの消費先はすべて `contentSeparations` 経由であり、振る舞いに差は無い。(3) シーン・ボイスの `contentLength` 自体は Mac ではモデル層で維持されない（従来どおり）。区切りは取得のたびに現在値から計算されるため、エコー値や追加時間の変化は次回取得へ即時反映される。FE-R15-006 のエコー追随（長さの決め直し）は動画・音声の管轄のままでシーン・ボイスへは拡張していない（Mac のシーン・ボイスには素材長の再計算経路自体が無いため）。
 - **手動チェックリストへの追加項目**（未実施。次回のフロントエンド目視確認へ）: (S1) シーンアイテムを含むプロジェクトを開き、シーンアイテムの後端トリムが自シーンの区切りへ吸着すること、再生速度の編集終了時に終端判定がシーン形で働くこと。(S2) ボイスアイテムで追加時間を変更した際、終端が区切り上にある場合の長さ追随の判定がボイス形で働くこと。
 
 検証: Mac（~/ymm4-work/fe-sep2/YMM4Mac）で実施。対象を絞った `swift test`（AudioDrift 除外）で全合格 — `ContentSeparationsOverrideTests` 20件（新規。ボイス形の定数・非定数・エコー・追加時間・入口ガードの負／0、シーン形の定数・ループ・非正速度・エコー・供給なし・非定数・終端判定、プロジェクト注入のライブ反映、decode での注入）、`ContentSeparationsTests` 30件、`PlaybackRateEditSessionTests` 10件、`YmmpCodecTests` 25件、`MediaItemLengthTests` 48件、`EditRecorderTests` 8件、計141件・失敗0。全スイートは回していない。AudioDriftTests は実行していない（本単位は音声クロック・リサンプリング中核の変更を含まない）。
@@ -2217,3 +2217,48 @@ Mac で対象を絞って実行し全合格: ContentSeparationsOverrideTests 20�
 
 ## 実装記録
 docs/IMPLEMENTATION_LOG.md の FE-SEP-OVERRIDES 節。docs/ARCHITECTURE.md の区切りの記述を追随させた。
+
+#### FE-SEP-RESIDUALS — ContentSeparations まわりの残件2件（シーン長供給のアプリ層接続／動画・音声形の入口ガード照合）（IMPLEMENTED、Mac 検証済み）
+
+FE-SEP-OVERRIDES で残した差分 (1)（注入の契機が読み込みのみ）と、同単位の仕上げ時に観察されたが未記録だった動画・音声形の入口ガードの形の違いの、2件の処分。基点は FE-SEP-OVERRIDES 単位のブランチ `feat/fe-sep-overrides`（先端 `72b10ab`）であり、PR は同単位の PR の後に積む前提とする（本単位単独では main へ出さない）。
+
+##### 残件1: シーン長供給の注入をアプリ層へ接続
+
+- **追加経路の列挙（実コードで確認）**: 新規アイテムのインスタンスがタイムラインへ入るアプリ層の経路は次の7つ。(1) `ProjectView.addItem`（メニュー／ツールバーの種別追加。シーンアイテムもこの経路）、(2) `ProjectView.addMediaFiles`（ファイル選択ダイアログ追加とドラッグ＆ドロップの共通の確定点）、(3) `ProjectView.addVoiceItem`（セリフ行からの生成）、(4) `TimelineStripView.addItemAtPlayhead`（コンテキストメニュー／目盛りの追加）、(5) `ProjectView.splitAtPlayhead`、(6) `TimelineStripView.splitAtPlayhead`（分割は左右とも `cloned()` の複製になるため、両断片とも供給を持たない）、(7) Alt ドラッグ複製（`TimelineInteractionView` が MouseDown 中に `Timeline.unsafeCloneWithoutCollision()` を呼ぶ。複製は JSON 往復のため供給を持たない）。加えて、プロジェクトの差し替え点は `WorkspaceState` の `load(url:)` のみ（`init` / `newProject()` はアイテムの無い空プロジェクトのため不変条件は空転する）。
+- **接続しなかった経路（確認済み）**: 貼り付けはアプリ未実装（ツールバーのボタンは無接続のプレースホルダで、`NSPasteboard` 経由のアイテム生成経路自体が無い）。空白削除系（`deleteTimelineSpace` / `deleteAllTimelineSpaces` / `deleteAllLayerSpaces`）は詰め直しのみでアイテムを生成しない。`Timeline.deleteIsolatedRanges` は内部で分割を使うがアプリからの呼び出しが無く到達不能（将来 UI を接続する場合は同じ注入が要る）。Undo/Redo とドラッグのキャンセル復元は、供給を保持する同一インスタンスを出し入れするため再注入は不要。シーン（タイムライン）の追加は空のタイムラインを作るだけで、その後のアイテム追加は上記の接続済み経路を通り、注入は全タイムラインを走査するため届く。書き出しスナップショットは decode 経由で注入される。
+- **実装**: `WorkspaceState.load(url:)` は差し替え直後に `loaded.injectSceneLengthProviders()` を呼ぶ（デコードでも注入されるが、「開いたプロジェクトには供給が行き渡っている」ことをアプリ層の不変条件として保証する）。`ProjectView` は追加3経路と分割の確定直後に `injectSceneLengthProvidersAfterItemCreation()`（`project.injectSceneLengthProviders()` の呼び出し）を置く。帯側の3経路（コンテキストメニューの追加・分割、Alt ドラッグ複製）は、受け口 `TimelineStripView.onItemsCreated` を新設して束ね、`TimelineInteractionConfiguration` へ同名の受け口を追加し、複製の直後に呼ぶ。`ProjectView` は構築時に `{ project.injectSceneLengthProviders() }` を渡す。再注入は冪等（同じ内容のクロージャで置き換えるだけ）であり、供給は引くたびに評価されるライブ参照のため、既存アイテムの解決結果・弱参照の形は変わらない。Alt ドラッグでは複製の生成時点で注入するため、ドラッグ中に複製側の区切りが参照されても解決できる（キャンセル時は複製自体が復元で消えるため、先行した注入に害は無い）。
+
+##### 残件2: 動画・音声形の入口ガードの本家形への照合
+
+- **本家根拠**（逆コンパイル済みソースで確認）: `VideoItem.cs` / `AudioItem.cs` の `ContentSeparations` は入口で `if (ContentLength == TimeSpan.Zero) yield break;` とし、打ち切りは尾込み素材長がちょうど 0 のときだけ。本体は生フィールド（尾なし）で判定する（定数形・非定数形とも本体の条件は尾なし素材長 `> TimeSpan.Zero`）。`ContentLength` プロパティは両型とも「尾なしが 0 なら 0、そうでなければ尾なし＋ `GetEchoLength()`」で、`GetEchoLength()` は `EchoEffect.AdditionalDuration × 先頭値 / 100` の符号つき。Mac 側の維持規則（`refreshContentLengthForEchoSettings`）はこの計算と一致している。
+- **到達可能性の確定（推測で閉じず、値の範囲を追った）**: 尾なし素材長はファイルの再生時間由来で負にならない。一方、尾は `EchoAudioStream.additionalDuration`（間隔 × 繰り返し回数。間隔は記述子の範囲で 0〜2 秒、繰り返しは 0〜50 で、非負）へ先頭値の符号がそのまま乗るため、逆再生（先頭値が負）では負になる。短い素材（例: 1 秒）へ間隔 0.5 秒・減衰 40%（繰り返し 6 回＝追加時間 3.0 秒）のエコーを −100% で掛けると、尾込み素材長は 1 − 3 = −2 秒になる。先頭値の負値は本家でも Mac でも再生速度の編集で到達可能（符号反転の処理が編集終了時調整に実在する）ため、**負の領域は到達可能**と確定し、本家の形へ是正した。基底形は本家も非定数分岐の内側で `> TimeSpan.Zero` を判定し定数分岐にガードが無く、Mac の現行と一致するため対象外とした。
+- **実装**: `mediaContentSeparations` の入口ガードを `contentLength > .zero` から `contentLength != .zero` へ変更（1行）。本体側の条件（定数形イテレータの尾なし素材長 `> .zero`、エコー分の符号条件、非定数形の本体条件）はもともと本家の構造と一致しており、ガード是正だけで負の領域の振る舞いが本家と揃うことを確認した。素材長がちょうど 0 の場合は従来どおり打ち切る（尾なしが残っていても同じ）。
+
+- **手動チェックリストへの追加項目**（未実施。次回のフロントエンド目視確認へ）: (S3) 編集でシーンアイテムを追加・複製（Alt ドラッグ）・分割した直後でも、後端トリムの吸着と再生速度の編集終了時調整の終端判定がシーン形で働くこと（再読み込みを挟まないこと）。(S4) 短い動画・音声へエコーを掛けて逆再生（−100%）にしたアイテムで、後端トリムが素材の区切りへ吸着すること。
+
+検証: Mac（~/ymm4-work/fe-sepres/YMM4Mac）で実施。他の swift-test が動いていないことを確認してから実行し、合否は "Executed N tests" で判定した。ルートパッケージの対象テスト **147件・失敗0** — `ContentSeparationsTests` 34件（新規4件: 尾込みちょうど0で尾なしが残っても空、尾込み負でも列挙が進む（直接代入）、維持経路で到達する負の定数形、負の非定数形）、`ContentSeparationsOverrideTests` 22件（新規2件: tryAddItems で追加したシーンアイテムへの再注入と冪等性、分割の両断片への再注入）、`PlaybackRateEditSessionTests` 10件、`MediaItemLengthTests` 48件、`YmmpCodecTests` 25件、`EditRecorderTests` 8件。Apps/DebugApp は `swift build` 成功（エラー0）、同梱テスト12件・失敗0。全スイートは回していない。AudioDriftTests は実行していない（本単位は音声クロック・リサンプリング中核の変更を含まない）。
+
+##### PR 本文の下書き（FE-SEP-RESIDUALS）
+
+## 概要
+ContentSeparations まわりの残件2件を処分する。(1) シーン長供給（`SceneItem.sceneLengthProvider`）の注入をアプリ層へ接続し、編集時に追加・複製・分割されたシーンアイテムが次の読み込みまで供給を持たない欠落期間を無くす。(2) 動画・音声形の入口ガードを本家の形（尾込み素材長がちょうど 0 のときだけ打ち切り）へ是正する。基点は FE-SEP-OVERRIDES のブランチであり、本 PR は同 PR の後に積む前提とする。
+
+## 本家根拠
+- `VideoItem.cs` / `AudioItem.cs` の `ContentSeparations`（入口は `ContentLength == TimeSpan.Zero` でのみ打ち切り、本体は尾なしフィールドで判定）
+- 両型の `ContentLength` プロパティと `GetEchoLength()`（尾は先頭値の符号つき。尾込み素材長は負になり得る）
+
+## 変更シンボル
+- `Sources/YMM4Core/Editing/ContentSeparations.swift`: `mediaContentSeparations` の入口ガードを `!= .zero` へ是正
+- `Sources/YMM4Core/Model/Project.swift`: `injectSceneLengthProviders()` の注入契機の記述を更新
+- アプリ層: `WorkspaceState.load(url:)`（開いた直後の注入）、`ProjectView` の追加3経路・分割（確定直後の注入）、`TimelineStripView.onItemsCreated`（新設。コンテキストメニューの追加・分割と Alt ドラッグ複製を束ねる）、`TimelineInteractionConfiguration.onItemsCreated`（新設。複製の直後に呼ぶ）
+
+## 設計判断
+- 注入の接続は「新規インスタンスがタイムラインへ入る確定点」に限定した。貼り付けはアプリ未実装、空白削除系はアイテムを生成しない、`deleteIsolatedRanges` はアプリから到達不能であることを実コードで確認し、接続対象から外した（台帳に列挙を記録）。
+- 再注入は冪等であり、供給はライブ参照のため、注入の頻度は解決結果に影響しない。Alt ドラッグでは確定時ではなく複製の生成時点で注入し、ドラッグ中の参照にも間に合わせる。
+- 入口ガードの負の領域は、値の範囲（尾なしは非負、尾は符号つきで最大で間隔2秒×50回分）を追って到達可能と確定したうえで是正した。推測では閉じていない。
+
+## テスト
+Mac で対象を絞って実行し全合格: ContentSeparationsTests 34件（新規4件）・ContentSeparationsOverrideTests 22件（新規2件）・PlaybackRateEditSessionTests 10件・MediaItemLengthTests 48件・YmmpCodecTests 25件・EditRecorderTests 8件、計147件・失敗0。Apps/DebugApp のビルド成功、同梱テスト12件・失敗0。全スイートと AudioDriftTests は未実施（対象を絞る方針による）。
+
+## 実装記録
+docs/IMPLEMENTATION_LOG.md の FE-SEP-RESIDUALS 節。docs/ARCHITECTURE.md の区切りの記述（注入の契機）を追随させた。FE-SEP-OVERRIDES 節の残差分 (1) へ処分済みの相互参照を追加した。
