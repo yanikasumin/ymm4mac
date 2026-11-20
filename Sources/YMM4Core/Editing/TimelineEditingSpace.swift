@@ -57,7 +57,11 @@ public extension Timeline {
     /// は累積の詰め量。先頭のアイテムもフレーム 0 へ寄る（先行空間も詰める）。
     /// DeleteAllTimelineSpaces ではレイヤーをまたいで処理するため、
     /// coveredEnd は全レイヤー通算の最大終了位置になる。
-    private static func compactAllSpaces(_ sortedItems: [BaseItem]) {
+    ///
+    /// - Returns: 累積の詰め量。0 ならどのアイテムも動いていない
+    ///   （呼び出し側が無変更の操作を編集として扱わないための判定。
+    ///   FE-R33-131-02）。
+    private static func compactAllSpaces(_ sortedItems: [BaseItem]) -> Int {
         var coveredEnd = 0
         var accumulatedShift = 0
         for item in sortedItems {
@@ -68,24 +72,31 @@ public extension Timeline {
             item.frame -= accumulatedShift
             coveredEnd = max(coveredEnd, item.frame + item.length)
         }
+        return accumulatedShift
     }
 
     /// 指定レイヤーの空間を全て詰める。本家 `DeleteAllLayerSpaces`。
-    func deleteAllLayerSpaces(layer: Int) {
+    /// 戻り値は詰めた量（`deleteTimelineSpace` と同じ約束）。
+    @discardableResult
+    func deleteAllLayerSpaces(layer: Int) -> Int {
         let sorted = items
             .filter { $0.layer == layer }
             .sorted { $0.frame < $1.frame }
-        if sorted.isEmpty { return }
-        Self.compactAllSpaces(sorted)
+        if sorted.isEmpty { return 0 }
+        let shift = Self.compactAllSpaces(sorted)
         refreshTimelineLengthAndMaxLayer()
+        return shift
     }
 
     /// 全レイヤーの空間を全て詰める。本家 `DeleteAllTimelineSpaces`。
-    func deleteAllTimelineSpaces() {
+    /// 戻り値は詰めた量（`deleteTimelineSpace` と同じ約束）。
+    @discardableResult
+    func deleteAllTimelineSpaces() -> Int {
         let sorted = items.sorted { $0.frame < $1.frame }
-        if sorted.isEmpty { return }
-        Self.compactAllSpaces(sorted)
+        if sorted.isEmpty { return 0 }
+        let shift = Self.compactAllSpaces(sorted)
         refreshTimelineLengthAndMaxLayer()
+        return shift
     }
 
     /// 選択範囲のうち、他アイテムに覆われていない孤立区間を削除する。

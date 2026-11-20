@@ -113,6 +113,7 @@ extension TimelineStripView {
                     timeline.layerSettings.items[index].isHidden = false
                 }
                 layerRevision += 1
+                onUnrecordedEdit()
                 onEdited()
             }
             Button(UIStrings.Timeline.disableOtherLayers) {
@@ -132,6 +133,7 @@ extension TimelineStripView {
             Button(UIStrings.Timeline.resetLayerSettings) {
                 timeline.layerSettings.items.removeAll()
                 layerRevision += 1
+                onUnrecordedEdit()
                 onEdited()
             }
             Divider()
@@ -145,6 +147,10 @@ extension TimelineStripView {
     /// レイヤー設定を書き換える（無ければ既定値から作って登録する）。
     /// Core の LayerSettings は参照型で items が公開されているため、
     /// ビュー側から直接書き換えられる。
+    /// レイヤー設定の変更は Undo 記録の対象外のため、書き換えの
+    /// たびに未保存フラグ側へも通知する（FE-R32-131-03。呼び出しは
+    /// 表示切替・色・名前・他レイヤーの一括非表示で、冪等なフラグ
+    /// 立てのため複数回呼ばれても問題ない）。
     func mutateLayerSetting(_ layer: Int, _ mutate: (inout LayerSetting) -> Void) {
         var setting = timeline.layerSettings.setting(forLayer: layer)
         mutate(&setting)
@@ -154,6 +160,7 @@ extension TimelineStripView {
             timeline.layerSettings.items.append(setting)
         }
         layerRevision += 1
+        onUnrecordedEdit()
     }
 
     func openLayerPopover(layer: Int) {

@@ -444,6 +444,40 @@ final class TimelineEditingLengthTests: XCTestCase {
         XCTAssertEqual(third.frame, 100)
     }
 
+    /// 全空間削除の戻り値（FE-R33-131-02 の無変更判定用）:
+    /// 詰めた量を返し、アイテムが無い・空間が無い場合は 0。
+    func testDeleteAllSpacesReturnsShiftAmount() {
+        // アイテムが無ければ 0 で何もしない。
+        let empty = Timeline()
+        XCTAssertEqual(empty.deleteAllTimelineSpaces(), 0)
+        XCTAssertEqual(empty.deleteAllLayerSpaces(layer: 0), 0)
+
+        // 空間が無ければ 0（位置は変わらない）。
+        let packed = Timeline()
+        let a = makeItem(frame: 0, length: 50, layer: 0)
+        let b = makeItem(frame: 50, length: 50, layer: 0)
+        packed.items = [a, b]
+        XCTAssertEqual(packed.deleteAllTimelineSpaces(), 0)
+        XCTAssertEqual(a.frame, 0)
+        XCTAssertEqual(b.frame, 50)
+
+        // 空間がある場合は累積の詰め量を返す。
+        let spaced = Timeline()
+        let c = makeItem(frame: 100, length: 50, layer: 0)
+        let d = makeItem(frame: 300, length: 50, layer: 0)
+        spaced.items = [c, d]
+        XCTAssertEqual(spaced.deleteAllTimelineSpaces(), 250)
+        XCTAssertEqual(c.frame, 0)
+        XCTAssertEqual(d.frame, 50)
+        // レイヤー単位でも同じ約束。
+        let layered = Timeline()
+        let e = makeItem(frame: 80, length: 20, layer: 2)
+        layered.items = [e]
+        XCTAssertEqual(layered.deleteAllLayerSpaces(layer: 2), 80)
+        XCTAssertEqual(e.frame, 0)
+        XCTAssertEqual(layered.deleteAllLayerSpaces(layer: 0), 0)
+    }
+
     /// DeleteIsolatedRanges: 他アイテムが無い選択範囲は丸ごと削除される。
     func testDeleteIsolatedRangesRemovesIsolatedSelection() {
         let timeline = Timeline()

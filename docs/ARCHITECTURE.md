@@ -335,8 +335,24 @@
         Sources/YMM4MacDebug/
           YMM4MacDebugApp.swift アプリ入口
           ContentView.swift    ルート画面（プロジェクト読み込みと検証サンプル）
-          WorkspaceState.swift 新規プロジェクト等の作業状態（Undo 履歴の
-                               所有も担う。プロジェクトごとに1つ）
+          WorkspaceState.swift 作業状態の所有者（プロジェクト保持・読み込み・
+                               保存。通常保存は読み込み元への上書き、別名保存は
+                               別操作。未保存フラグと破棄確認もここが担う。未保存
+                               フラグは Undo 履歴の変更通知で駆動し、履歴に
+                               残らない編集は各操作の成功後に個別に立てる
+                               （FE-R32-131-03。ファイル参照は記述子への
+                               書き込み成立時点で立て、素材長の非同期調整
+                               の成否には連動させない。FE-R33-131-01）。
+                               Undo 履歴の所有も担う。
+                               プロジェクトごとに1つ。レイアウト量の保存・
+                               復元（WorkspaceLayoutState）も同居）
+          WindowCloseGuard.swift メインウィンドウの閉鎖（閉じるボタン・⌘W）に
+                               破棄確認を接続する NSWindow デリゲートの差し込み
+                               （FE-R32-131-02。終了確認済みの印を1回だけ消費し
+                               二重表示を避ける。既存デリゲートとは共存し、
+                               windowShouldClose 以外の通知は元のデリゲート
+                               へ転送、取り外し時は元のデリゲートへ復元する。
+                               FE-R33-131-03）
           ProjectView.swift    製品 UI の土台（プレビュー・運送系・タイムライン・
                                ステータスバー・メニュー）
           PreviewBox.swift     プレビュー合成の表示
@@ -384,7 +400,7 @@
 - アニメーション種別変更の記録と復元（FE-R23-127-01）: 種別変更は値列の再構成と一体の不可逆な操作であるため、記録は種別だけではなく変更前後の状態（種別＋値列、`Animation.RecordedState`）を一体として保持する。Undo/Redo の適用は変換（`Animation.changeAnimationType`）を再実行せず、記述子の復元経路（`PropertyDescriptor.restoreAnimationRecordedState` → `Animation.restoreRecordedState`）で記録した状態をそのまま書き戻す。復元経路は Undo/Redo 専用であり、通常の編集は `setAnimationType` を通る。
 - 移動量指定の第2値の記録（FE-R25-128-01）: 第2値の書き込み（記述子の `setAnimationValue(_:atValueIndex:clampRange:)`）は短い値列の実体化（値列の個数の変化）を伴いうるため、記録は第1値と同じ値1つの記録ではなく、種別変更と同じく変更前後の `Animation.RecordedState` を一体として保持し、適用は同じ復元経路で書き戻す。履歴キーは第1値（#const / #first / #seg<n>）と種別変更（#type）から区別する（#movement）。書き込み経路も第1値と同じ契約に従う: 入口確認（`EditRecorder.canRecordValueChange`）を通らない場合はモデルを変更せず、スライダのドラッグは第1値とは独立した `EditDragSession` で1ドラッグを1エントリへまとめる。
 - メディアアイテムの追加・差し替え（FE-R1-043）: ファイル選択／ドロップ（アプリ層）→ `MediaFileInfoFetcher`（I/O 供給層。音声は PCM 供給工場の duration、動画は映像トラックの提示区間、画像は寸法のみ）→ `BaseItem.recordMediaInfo` / `resetLength` / `adjustLengthAfterFileChange`（編集操作層。Core の `Editing/MediaItemLength.swift` が本家 `ResetLength` と編集終了時の調整を担う）→ `Timeline.tryAddItems`（確定操作）の順に流れ、情報取得が成功するまでモデルへ確定しない。再生速度の編集終了時調整も同層が担い、適用層 `finishPlaybackRateEdit(baseline:fps:)` が分岐の優先を一元的に決める（(1) 素材本来の長さが基点から変わっていればファイル変更経路が優先し (3) を重ねない、(2) 素材区切りへの追随は区切り（`ContentSeparations`）の供給待ちで未実装、(3) `adjustLengthAfterPlaybackRateChange` による比率再計算）。基点（`PlaybackRateEditBaseline`: 編集開始時点の先頭値・定数判定・素材長・素材本来の長さ）は、アプリ層の行が編集セッションの開始時に捕捉して保持し（寿命はセッションと一致する）、終了時はセッションの確定前に調整が実行され、長さ・オフセットの変更が同じセッションへ記録されるため、速度の変更と調整は履歴1エントリへ収まる（FE-R27-129-01 / 03 / 04）。テキスト確定は原則として同期セッションで完結するが、スライダのドラッグ所有中に確定が届いた場合は新しいセッションを開かず、書き込みを所有中セッションへ統合する（調整と確定はドラッグ終了時に一度だけ。セッション状態 `EditDragSession` の開始は所有中の再入で所有を維持する。FE-R28-129-01）。素材長（エコー尾込み）は同層の `refreshContentLengthForEchoSettings` で再計算され、発火点は動画・音声アイテムのエコープロパティの didSet と、再生速度の先頭値の変更（`BaseItem.playbackRate2` の didSet。尾が先頭値で比例するためで、全書き込み経路がこの setter へ集約される。FE-R15-006 / FE-R27-129-02）である。パスの読み書きは `PropertyKind.filePath` の記述子経由で、setter はファイルを開かない。非同期完了時点の確定は、捕捉したプロジェクトが現在表示中のプロジェクトと同一である場合だけ行う（FE-R16-002。アプリ層の非同期完了経路は共通ヘルパー `ProjectView.isCapturedProjectCurrent` を通り、共有状態 `WorkspaceState.statusMessage` への書き込みもその内側に置く）。
-- 保存: `YmmpCodec.encode` がモデルを追加フィールドごと JSON 化（1行）→ 一時ファイルへ書き出し → 再読込で検証 → 本ファイルへコピー。
+- 保存: `YmmpCodec.encode` がモデルを追加フィールドごと JSON 化（1行）→ 保存先と同じフォルダの一時ファイルへ書き出し → 再読込で検証 → 既存ファイルは置換 API（`FileManager.replaceItemAt`）で置き換え、新規ファイルはコピー（FE-R32-131-01。検証前の内容で既存ファイルが置き換わる経路は無く、失敗時は元のファイルが残る）。別フォルダへの名前を付けて保存では、アイテムの相対 FilePath を保存用の写しに対して新フォルダ基準へ再計算してから書き出し、成功後にライブモデルへ反映する（FE-R32-131-04）。
 - アイテムの複製は JSON 往復（本家 GetClone と同じ経路）で、`BaseItem.cloned()` が担う。分割はこの複製を左右に作ってから行う。
 - 描画（実行部まで）: `TimelineComposer.update` が `ItemPicker.pickItems` でフレーム時点の対象アイテムを選定し、資源管理（範囲外の破棄・不足分の生成）と親エフェクトの再構築（顔・声解決→グループ解決）を行う → FrameBuffer 以外の各 `EffectedItemSource` が Source を更新し、`EffectedOutput` の連鎖（処理器の位置基準の再利用・差し替え）＋アイテム変換で DrawDescription を確定 → `DrawOrdering.ordered` が3キーで順序付け → `DrawSegmentBuilder` のセグメント列に従い、抽象描画先（RenderTarget）へ合成する。FrameBuffer アイテムでは描画先を閉じて Source へ渡し、新しい描画先で合成を続ける。
 - 描画（GPU 実行）: 描画先・DrawingEffect・基本 Source の実物は `Sources/YMM4GPU/`（Metal）。`MetalGraphicsDevices` がデバイスと ImageReference の登録表を所有し、`MetalGraphicsContext`（消費者ごとに生成）が描画先を供給する。DrawingEffect は中間テクスチャを作らず、入力実体へ変換（ズーム×ワールド×透視）と不透明度を記録した実体を出力として登録する（遅延評価）。描画先は画面サイズのテクスチャを実体とし、記録した描画を close() で同期実行する。RenderTarget の close() は throws であり（MAC-0021）、テクスチャ生成失敗やコマンドバッファの実行エラーは MetalRenderError として呼び出し側へ伝播し、失敗した描画先は出力として公開されない（最終合成の失敗時は旧出力が保持される）。Source の実物は画像（ImageIO デコード）、図形（SDF 描画）、テキストと字幕（CoreText でラスタライズ）、動画（AVAssetImageGenerator による時刻指定デコード）、シーン（内側 TimelineComposer の入れ子合成）、フレームバッファ（蓄積の実体化）、エフェクト（EffectItem。本家 EffectSource 相当。FrameBuffer 実装の共通部を基底クラスで共有しつつ、B-1 の特殊性＝基底へ FrameBufferItem として null を渡すため ClearBackground=false・Flood は不透明な黒・切り抜き境界は画面サイズ、を持つ専用 Source。蓄積画像へ ShapeParameter の図形をマスクとして適用し、アイテム自身の映像エフェクト列がマスク範囲にだけ効く。MAC-0035）、立ち絵（境界型 MetalTachieRenderer への委譲）、合成グループ（MetalCompositeSource が自前文脈と内部 TimelineComposer で子をタイムライン絶対時刻で中間画像へ合成。中心は CompositeCenter が ImageCenter のとき内容境界の中心、それ以外は (0,0)。グループの GroupEffects は子へ流れず、グループ自身の VideoEffects が合成結果全体へ一度だけ適用される。MAC-0027）、画面遷移（MetalTransitionSource が自前文脈と Before / After の内部 TimelineComposer（TransitionItemPicker）で遷移前後の画面を合成し、各側へ Before/AfterVideoEffects を適用してから内蔵ブレンド8種で合成する。MAC-0036）で、未対応種別は透明な空 Source になる。描画先は描画内容の境界を追跡し、MetalImage は境界とテクスチャ平面範囲（texturePlaneRect / planeOffset）を分けて持つ。動画の素材時刻は PlaybackRateMap で求め、素材を開いた時点で実 Duration が item.contentLength へ反映される。シーン解決は PreviewBox / ProjectView がプロジェクト全タイムラインを解決子として渡す。AVFoundation が開けないコンテナ（MKV / WebM / TS 等）は透明フォールバックのままで、FFmpeg 併用は未判断。Metal エフェクト処理器への入力は、共通規則（TRANSFORM47 / Issue #47）として、変換・不透明度を持つ実体が来た場合は基底（MetalEffectProcessor）が実体化（変換後の外接矩形への焼き込み＋不透明度の全成分乗算）してから各処理器へ渡し、発動は MetalGraphicsDevices の診断カウンタで数えられる（現行の Source・処理器・描画先はいずれもプレーンな実体しか出さないため、通常の合成では発動しない。実プロジェクト2件での測定でも 0 回）。エフェクト供給元は外側の合成器と内部合成器（シーン・合成グループ）で同じ MetalEffectPairProvider インスタンスを共有し、内部の子にも GPU エフェクトが効く（MAC-0028。プレビュー・書き出しとも同じ配線で、書き出し側は対象タイムラインも供給元へ渡すため合成グループが書き出しでも合成される）。クリッピング（IsClippingWithObjectAbove）の実効マスクは `MetalAlphaMaskEffectFactory` をプレビュー・書き出し・シーン・複合グループの全生成経路で TimelineComposer へ注入して有効化した（MAC-0035）。本家は効果グラフの遅延評価により描画段でのマスク入力設定が最終描画へ反映されるが、こちらは入力が設定されるたびに出力実体を作り直して登録し直すことで同じ意味論を作る。直前の画像が無い場合に合成器が渡す白 Flood のトークンは、全面不透明なマスクによる AlphaMask が恒等変換であることから、本体画像をそのまま出力として登録して解決する。画像・動画のデコードテクスチャは上下反転せずに生成する（MAC-0028 で是正。従来は反転していた）。デバッグアプリのプレビュー欄はこの経路で合成し、最終テクスチャを CGImage として読み戻して表示する。デバッグアプリのプレビュー合成は PreviewRenderWorker が専用直列キュー上で PreviewBox を所有して行い（R6-02）、合成器が読むのは編集モデルのスナップショット（Project.makeExportSnapshot）だけである。メインキューは再生位置の通知と完成画像の表示だけを行い、合成の実行はメインキューでは行わない。描画段の失敗のうち例外を投げられない境界（AlphaMaskEffect.setInput）で発生したものは、描画セッションが所有する RenderDiagnosticsCollector へ型付きの出来事として集約され（R6-06）、内部合成器の生成者へも同じ収集先が伝播する。現在の失敗状態とセッション履歴は分けて扱い、表示側は現在の失敗をプレビュー付近へ、履歴を診断タブへ出す。

@@ -454,11 +454,18 @@ public struct Animation: Equatable, Sendable {
     /// 全キーフレーム削除への連動。キーフレーム対応の型では値を
     /// 先頭（開始値）と末尾（終了値）だけに畳む（有効な値の数が
     /// キーフレーム数 + 2 から 2 へ戻るため）。
-    public mutating func removeAllKeyFrames() {
+    ///
+    /// - Returns: キーフレームの削除か値列の畳み込みが実際に
+    ///   起きたら true（FE-R33-131-02 の無変更判定用）。
+    @discardableResult
+    public mutating func removeAllKeyFrames() -> Bool {
+        let changed = !keyFrames.frames.isEmpty
+            || (animationType.isKeyFrameSupported && values.count > 2)
         if animationType.isKeyFrameSupported, values.count > 2 {
             values = [values[0], values[values.count - 1]]
         }
         keyFrames = KeyFrames()
+        return changed
     }
 
     /// キーフレームの位置だけを動かす。値はインデックスで対応する

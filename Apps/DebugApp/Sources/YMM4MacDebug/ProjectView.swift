@@ -171,7 +171,18 @@ struct ProjectView: View {
         self.project = project
         self.diagnostics = diagnostics
         self.sourceURL = sourceURL
-        _timelineIndex = State(initialValue: project.selectedTimelineIndex)
+        // 本家 OpenProjectAsync と同じく、保存済みインデックスは
+        // 範囲内へ丸めてから初期値にする。
+        _timelineIndex = State(initialValue: min(
+            max(project.selectedTimelineIndex, 0),
+            max(project.timelines.count - 1, 0)
+        ))
+        // 前回終了時のレイアウトを初期値へ反映する（FE-R1-036）。
+        let layout = WorkspaceLayoutState.load()
+        _previewPaneHeight = State(initialValue: layout.previewPaneHeight)
+        _timelineZoomPercent = State(initialValue: layout.timelineZoomPercent)
+        _layerRowHeight = State(initialValue: layout.layerRowHeight)
+        _previewDisplayZoom = State(initialValue: layout.previewDisplayZoom)
     }
 
     /// ステータスバー等に出すプロジェクト名。
@@ -271,6 +282,7 @@ struct ProjectView: View {
                                     reportedCanvasWidth: $canvasViewportWidth,
                                     reportedTopLayer: $topVisibleLayer,
                                     onEdited: { requestPreviewRender(modelChanged: true) },
+                                    onUnrecordedEdit: { workspace.markEdited() },
                                     onDragBegan: {
                                         beginTimelineDragUndo(timeline: timeline)
                                     },
@@ -320,7 +332,12 @@ struct ProjectView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .sheet(isPresented: $isVideoSettingsPresented) {
-                    VideoSettingsView(timeline: timeline) { resetPreview() }
+                    VideoSettingsView(timeline: timeline) {
+                        // 動画情報の書き込みはモデル変更（OK で適用した
+                        // 時点で確定する）ため未保存フラグも立てる。
+                        workspace.markEdited()
+                        resetPreview()
+                    }
                 }
                 .sheet(isPresented: $isExportDialogPresented) {
                     ExportDialogView(
@@ -373,6 +390,32 @@ struct ProjectView: View {
             }
         }
         .onAppear { resetPreview() }
+        .onChange(of: timelineIndex) { _, newIndex in
+            // 保存対象の選択シーンを表示へ追随させる（FE-R1-012）。
+            // 本家は保存時点の表示シーンから SelectedTimelineIndex を
+            // 作る（MainModel.SaveProject）。Mac 側はモデル側の値を
+            // 切替のたびに同期しておくことで同じ結果にする。
+            // シーン切替そのものは本家でも未保存扱いにならない
+            // （SelectScene は履歴へ記録されない）ため、編集フラグは
+            // ここでは立てない。
+            project.selectedTimelineIndex = newIndex
+        }
+        // レイアウト量が変わるたびにアプリ設定へ残す（FE-R1-036。
+        // 次回起動・次にプロジェクトを開いた際の初期値になる）。
+        .onChange(of: previewPaneHeight) { _, _ in persistLayout() }
+        .onChange(of: timelineZoomPercent) { _, _ in persistLayout() }
+        .onChange(of: layerRowHeight) { _, _ in persistLayout() }
+        .onChange(of: previewDisplayZoom) { _, _ in persistLayout() }
+    }
+
+    /// 現在のレイアウト量をアプリ設定へ保存する（FE-R1-036）。
+    private func persistLayout() {
+        WorkspaceLayoutState(
+            previewPaneHeight: previewPaneHeight,
+            timelineZoomPercent: timelineZoomPercent,
+            layerRowHeight: layerRowHeight,
+            previewDisplayZoom: previewDisplayZoom
+        ).save()
     }
 
     // MARK: - 上部ストリップ
@@ -458,19 +501,32 @@ struct ProjectView: View {
         project.timelines.append(newTimeline)
         timelineIndex = project.timelines.count - 1
         selectedItemIndex = nil
+        workspace.markEdited()
         resetPreview()
     }
 
     /// シーンを削除する（最低1つは残す）。
+    /// 表示対象の同一性は保つ（FE-R1-013）。本家は表示中シーンを
+    /// 参照で保持するため、別シーンの削除では表示は移らない。Mac 側は
+    /// インデックス保持のため、表示中より前を消したらインデックスを
+    /// 詰め、表示中自体を消したときだけ後継（同位置の次、末尾なら
+    /// 最後）へ移す。プレビューの作り直しと選択の解除は、表示対象が
+    /// 実際に変わった場合だけ行う。
     private func deleteTimeline(at index: Int) {
         guard project.timelines.count > 1,
               project.timelines.indices.contains(index) else { return }
+        let wasDisplayed = index == timelineIndex
         project.timelines.remove(at: index)
-        if timelineIndex >= project.timelines.count {
+        if index < timelineIndex {
+            timelineIndex -= 1
+        } else if timelineIndex >= project.timelines.count {
             timelineIndex = project.timelines.count - 1
         }
-        selectedItemIndex = nil
-        resetPreview()
+        workspace.markEdited()
+        if wasDisplayed {
+            selectedItemIndex = nil
+            resetPreview()
+        }
     }
 
     /// シーン名変更シートの対象（.sheet(item:) 用）。
@@ -504,9 +560,14 @@ struct ProjectView: View {
     }
 
     private func commitTimelineRename(index: Int) {
-        guard project.timelines.indices.contains(index) else { return }
-        project.timelines[index].name =
-            renameText.trimmingCharacters(in: .whitespaces)
+        // 名前が実際に変わる場合だけ代入と未保存記録を行う（FE-INT-131-01）。
+        // 同名のまま確定した場合は編集ではないので、未保存フラグを立てない。
+        let newName = renameText.trimmingCharacters(in: .whitespaces)
+        if project.timelines.indices.contains(index),
+           project.timelines[index].name != newName {
+            project.timelines[index].name = newName
+            workspace.markEdited()
+        }
         renamingTimelineIndex = nil
     }
 
@@ -1498,20 +1559,38 @@ struct ProjectView: View {
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
             timeline.groupSelectedAndGroupedItems()
+            // グループ化は Undo 記録の対象外のため個別に立てる
+            // （FE-R32-131-03）。
+            workspace.markEdited()
             requestPreviewRender(modelChanged: true)
         case .ungroupSelection:
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
-            timeline.ungroupSelectedAndGroupedItems()
+            // グループ解除は Undo 記録の対象外のため、実際に解散した
+            // 場合だけ個別に立てる。アプリメニュー側にはツールバー／
+            // コンテキストメニューのような表示条件（group ≠ 0 のとき
+            // だけ出す）が無く、未グループの選択でも実行され得るため、
+            // 発火は Core の返す変更有無で判定する（FE-R33-131-02 と
+            // 同じ約束。FE-INT-131-01 の洗い出しで記録した同型の処分）。
+            if timeline.ungroupSelectedAndGroupedItems() {
+                workspace.markEdited()
+            }
             requestPreviewRender(modelChanged: true)
         case .toggleLock:
-            selectedItem?.isLocked.toggle()
+            // ロック切替は Undo 記録の対象外のため、実際に切り替えた
+            // 場合だけ個別に立てる（FE-R32-131-03）。
+            if let item = selectedItem {
+                item.isLocked.toggle()
+                workspace.markEdited()
+            }
             requestPreviewRender(modelChanged: true)
         case .toggleClipping:
             if let visual = selectedItem as? VisualItem {
                 visual.isClippingWithObjectAbove.toggle()
+                workspace.markEdited()
             } else if let voice = selectedItem as? VoiceItem {
                 voice.isClippingWithObjectAbove.toggle()
+                workspace.markEdited()
             }
             requestPreviewRender(modelChanged: true)
         case .toggleWaveform:
@@ -1572,6 +1651,9 @@ struct ProjectView: View {
         }
         guard !targets.isEmpty else { return }
         timeline.splitItems(targets, frame: frame, mode: .both)
+        // 分割は Undo 記録の対象外のため、成功後に未保存フラグを
+        // 個別に立てる（FE-R32-131-03）。
+        workspace.markEdited()
         reflectCoreSelection(timeline)
         requestPreviewRender(modelChanged: true)
     }
@@ -1851,6 +1933,10 @@ struct ProjectView: View {
                     "ファイルが見つからないため、長さを更新できませんでした: \(newPath)"
                 return
             }
+            // 未保存の記録は行側の書き込み成立時点に一本化した
+            // （FE-R33-131-01）。ここは素材長の調整だけを担い、
+            // 記録には関与しない。取得失敗で戻る経路でも、書き込み
+            // 時点で立ったフラグは消えない。
             item.recordMediaInfo(info)
             // 長さが決め直されたら、タイムライン長のキャッシュも
             // 追随させる（FE-R16-001）。キャッシュは自動追随せず、
@@ -1960,6 +2046,9 @@ struct ProjectView: View {
     /// 現在フレーム・表示最上段レイヤー（GetCurrentLayer()）へ追加する。
     private func handleDroppedURLs(_ urls: [URL], timeline: Timeline) {
         if urls.count == 1, urls[0].pathExtension.lowercased() == "ymmp" {
+            // プロジェクトを開く操作と同じく、未保存の変更があれば
+            // 破棄確認を出してから読み込む（FE-R1-001）。
+            guard workspace.confirmDiscardUnsavedChanges() else { return }
             workspace.load(url: urls[0])
             return
         }
@@ -2281,10 +2370,10 @@ struct ProjectView: View {
                 workspace.newProject()
             }
             toolbarButton("folder", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.openProject, shortcut: UIStrings.Toolbar.shortcutOpen)) {
-                workspace.isImporterPresented = true
+                workspace.requestOpenProject()
             }
             toolbarButton("square.and.arrow.down", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.saveProject, shortcut: UIStrings.Toolbar.shortcutSave)) {
-                workspace.saveCopy()
+                workspace.save()
             }
             toolbarDivider
             toolbarButton("tuningfork", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.videoInfo)) {
@@ -2922,7 +3011,14 @@ struct ProjectView: View {
         usage: TimelineSourceUsage = .paused, modelChanged: Bool = false,
         forceModelRefresh: Bool = false
     ) {
-        if modelChanged { previewModelDirty = true }
+        if modelChanged {
+            previewModelDirty = true
+            // 未保存フラグはここでは立てない（FE-R32-131-03）。
+            // この合流点は遅延プレビュー更新や無変更のドラッグ終了
+            // でも通るため、フラグの駆動は履歴変更通知（記録される
+            // 編集）と、各操作の成功後の個別の markEdited()（記録
+            // されない編集）へ分けた。WorkspaceState 側を参照。
+        }
         if isPlayingForm {
             // 再生中はモデルに触らないため、識別子は現在設置済みの
             // もののまま（版数は再生中に上がらない）。
@@ -3047,6 +3143,13 @@ struct ProjectView: View {
                     onFilePathChanged: { _, newPath in
                         applyFileChange(item: item, newPath: newPath, timeline: timeline)
                     },
+                    onFilePathCommitted: {
+                        // パスの書き込みが成立した時点で未保存に
+                        // する（FE-R33-131-01）。情報取得の成否は
+                        // applyFileChange 側で扱い、記録には関与
+                        // させない。
+                        workspace.markEdited()
+                    },
                     editRecorder: workspace.editRecorder,
                     editTargetOwner: item,
                     onPlaybackRateSessionBegan: { descriptor in
@@ -3062,7 +3165,13 @@ struct ProjectView: View {
                 EffectInspectorView(
                     item: item,
                     animationContext: context,
-                    onEdited: { requestPreviewRender(modelChanged: true) }
+                    // エフェクト編集は Undo 記録の対象外のため、編集の
+                    // 確定通知で未保存フラグも個別に立てる
+                    // （FE-R32-131-03）。
+                    onEdited: {
+                        requestPreviewRender(modelChanged: true)
+                        workspace.markEdited()
+                    }
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
