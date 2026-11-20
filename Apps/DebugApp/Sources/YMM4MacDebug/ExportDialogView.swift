@@ -10,8 +10,12 @@ import YMM4Core
 /// 選択は実動し、「出力」は既存の書き出し実行へ接続する。
 /// 形式は MP4（ffmpeg）と PngWav（PNG 連番＋WAV、本家の
 /// PngWavFileWriter に対応）の2種（R6-04）。
-/// 音量正規化・コンプレッサの選択肢は形のみ（書き出し側の
-/// ExportSettings への反映は接続フェーズ）。
+/// 音量正規化・コンプレッサの選択は、書き出し要求を通じて
+/// `TimelineExporter` の初期化引数（Core の
+/// `LoudnessNormalizationSettings` / `CompressorSettings`）へ渡り、
+/// 音声供給側の解析とダイナミクス処理へ実際に効く（FE-R1-017）。
+/// 本家では両設定は永続設定（設定画面側）だが、こちらでは書き出し
+/// ごとの選択としてダイアログに置く（差異として台帳に記録）。
 struct ExportDialogView: View {
     let timeline: Timeline
     /// PngWav のファイル名接頭辞の初期値（プロジェクト名）。
@@ -28,8 +32,13 @@ struct ExportDialogView: View {
     @State private var pngWavFileName: String
     @State private var isPngOutputEnabled = true
     @State private var isWavOutputEnabled = true
-    @State private var normalization: Normalization = .none
-    @State private var useCompressor = false
+    // 初期値は、未接続だった間も書き出し側で実際に効いていた値
+    // （TimelineExporter の既定 = 本家の設定既定: 正規化は
+    // DownMaximumVolume、コンプレッサは Auto で有効）に合わせる。
+    // 形だけの初期値（しない／使わない）のままだと、配線した途端に
+    // 既定の書き出し結果が黙って変わってしまうため（FE-R1-017）。
+    @State private var normalization: Normalization = .peak
+    @State private var useCompressor = true
 
     enum ExportFormat: String, CaseIterable {
         case mp4 = "mp4（H.264 / AAC）"
@@ -163,10 +172,37 @@ struct ExportDialogView: View {
         .frame(width: 460)
     }
 
+    /// ダイアログの3択を Core の補正モードへ写す。本家の表示名は
+    /// しない=「音量調整しない」、ピーク=「最大音量を0dB以下にする」
+    /// （DownMaximumVolume）、ラウドネス=「目標音量にする」（Both、
+    /// 目標は Core 既定の −15 LKFS）。
+    private var loudnessSettings: LoudnessNormalizationSettings {
+        switch normalization {
+        case .none:
+            return LoudnessNormalizationSettings(mode: .disabled)
+        case .peak:
+            return LoudnessNormalizationSettings(mode: .downMaximumVolume)
+        case .loudness:
+            return LoudnessNormalizationSettings(mode: .both)
+        }
+    }
+
+    /// コンプレッサの入切。使う場合は Core 既定（倍率はピークから
+    /// 自動計算）、使わない場合は倍率決定モードだけを無効にする。
+    private var compressorSettings: CompressorSettings {
+        useCompressor
+            ? CompressorSettings()
+            : CompressorSettings(ratioMode: .disabled)
+    }
+
     private func makeRequest(outputURL: URL) -> ExportRequest {
         switch format {
         case .mp4:
-            return .mp4(fileURL: outputURL)
+            return .mp4(
+                fileURL: outputURL,
+                loudness: loudnessSettings,
+                compressor: compressorSettings
+            )
         case .pngWav:
             return .pngWav(
                 directoryURL: outputURL,
@@ -174,7 +210,9 @@ struct ExportDialogView: View {
                     fileName: pngWavFileName.trimmingCharacters(in: .whitespaces),
                     isPngOutputEnabled: isPngOutputEnabled,
                     isWavOutputEnabled: isWavOutputEnabled
-                )
+                ),
+                loudness: loudnessSettings,
+                compressor: compressorSettings
             )
         }
     }

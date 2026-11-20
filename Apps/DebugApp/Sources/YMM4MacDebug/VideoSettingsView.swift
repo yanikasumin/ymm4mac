@@ -113,8 +113,14 @@ struct VideoSettingsView: View {
         info.fps = min(max(fps, VideoInfo.fpsRange.lowerBound), VideoInfo.fpsRange.upperBound)
         info.hz = min(max(sampleRate, VideoInfo.hzRange.lowerBound), VideoInfo.hzRange.upperBound)
         info.backgroundColor = coreColor(from: background)
-        timeline.videoInfo = info
-        onApplied?()
+        // 実際に変わる場合だけ代入と適用通知を行う。無変更のまま OK を
+        // 押しても未保存フラグを立てないため（FE-INT-131-01 の洗い出しで
+        // 記録した同型の処分）。クランプで現在値へ戻る入力も、組み立て後の
+        // 比較では同値になるため無変更として扱われる。
+        if info != timeline.videoInfo {
+            timeline.videoInfo = info
+            onApplied?()
+        }
         dismiss()
     }
 

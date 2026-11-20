@@ -47,12 +47,19 @@ public struct KeyFrames: Equatable, Sendable {
     ///
     /// 本家 `Distribute(length)` の規則: i 番目（1始まり）の位置は
     /// `i * length / (count + 1)`（整数演算）。
-    public mutating func distribute(length: Int) {
+    ///
+    /// - Returns: 位置が実際に変わったら true（既に等間隔な場合と
+    ///   空の場合は false。無変更の操作を編集として扱わないための
+    ///   判定。FE-R33-131-02）。
+    @discardableResult
+    public mutating func distribute(length: Int) -> Bool {
         let count = frames.count
-        guard count > 0 else { return }
+        guard count > 0 else { return false }
+        let before = frames
         for i in frames.indices {
             frames[i] = (i + 1) * length / (count + 1)
         }
+        return frames != before
     }
 
     // MARK: - 分割用の一括削除（本家 RemovesLeft / RemovesRight）

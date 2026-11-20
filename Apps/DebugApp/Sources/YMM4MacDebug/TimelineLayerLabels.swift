@@ -113,6 +113,7 @@ extension TimelineStripView {
                     timeline.layerSettings.items[index].isHidden = false
                 }
                 layerRevision += 1
+                onUnrecordedEdit()
                 onEdited()
             }
             Button(UIStrings.Timeline.disableOtherLayers) {
@@ -132,6 +133,7 @@ extension TimelineStripView {
             Button(UIStrings.Timeline.resetLayerSettings) {
                 timeline.layerSettings.items.removeAll()
                 layerRevision += 1
+                onUnrecordedEdit()
                 onEdited()
             }
             Divider()
@@ -145,6 +147,10 @@ extension TimelineStripView {
     /// レイヤー設定を書き換える（無ければ既定値から作って登録する）。
     /// Core の LayerSettings は参照型で items が公開されているため、
     /// ビュー側から直接書き換えられる。
+    /// レイヤー設定の変更は Undo 記録の対象外のため、書き換えの
+    /// たびに未保存フラグ側へも通知する（FE-R32-131-03。呼び出しは
+    /// 表示切替・色・名前・他レイヤーの一括非表示で、冪等なフラグ
+    /// 立てのため複数回呼ばれても問題ない）。
     func mutateLayerSetting(_ layer: Int, _ mutate: (inout LayerSetting) -> Void) {
         var setting = timeline.layerSettings.setting(forLayer: layer)
         mutate(&setting)
@@ -154,6 +160,7 @@ extension TimelineStripView {
             timeline.layerSettings.items.append(setting)
         }
         layerRevision += 1
+        onUnrecordedEdit()
     }
 
     func openLayerPopover(layer: Int) {
@@ -170,8 +177,10 @@ extension TimelineStripView {
     }
 
     /// 名前変更とレイヤー全体の音量のポップオーバー。
-    /// 名前は LayerSetting へ実書き込み。音量は Core に保持先が無いため
-    /// 形のみ（ローカル状態）。
+    /// 名前・音量とも LayerSetting へ実書き込みする。音量は Core の
+    /// ミキサ（TimelineAudioMixer / GroupAudioBusSource）が
+    /// volume / 100 を乗算するため、保存と再生・書き出しの両方に効く
+    /// （FE-UNIT5 で接続。従来はローカル状態の形のみだった）。
     func layerPopover(layer: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(UIStrings.Timeline.layerSettingsTitle(layer))
@@ -186,10 +195,19 @@ extension TimelineStripView {
             HStack {
                 Text(UIStrings.Timeline.volume)
                     .frame(width: 44, alignment: .leading)
-                Slider(value: layerVolumeBinding(for: layer), in: 0...200)
-                Text("\(Int(layerVolumes[layer] ?? 100))%")
+                // スライダの上限は通常の操作範囲 200%。それを超える
+                // 値が保存されている場合は、その値まで広げて表示が
+                // 実値と食い違わないようにする（本家の値域は
+                // 0–10000% で、数値入力欄は持たない形にした）。
+                Slider(
+                    value: layerVolumeBinding(for: layer),
+                    in: 0...max(200, layerVolume(for: layer))
+                ) { editing in
+                    if !editing { onEdited() }
+                }
+                Text(volumePercentText(for: layer))
                     .monospacedDigit()
-                    .frame(width: 40, alignment: .trailing)
+                    .frame(width: 48, alignment: .trailing)
             }
             HStack {
                 Spacer()
@@ -206,10 +224,30 @@ extension TimelineStripView {
         mutateLayerSetting(layer) { $0.label = name.isEmpty ? nil : name }
     }
 
+    /// レイヤー全体の音量（%）の現在値（LayerSetting.volume）。
+    func layerVolume(for layer: Int) -> Double {
+        timeline.layerSettings.setting(forLayer: layer).volume
+    }
+
+    /// 音量表示（本家は小数1桁。整数値は小数部なし）。
+    func volumePercentText(for layer: Int) -> String {
+        let volume = layerVolume(for: layer)
+        if volume == volume.rounded() {
+            return "\(Int(volume))%"
+        }
+        return String(format: "%.1f%%", volume)
+    }
+
+    /// 音量の読み書きを LayerSetting.volume へ接続するバインディング。
+    /// 値域は本家どおり 0–10000% に丸める。
     func layerVolumeBinding(for layer: Int) -> Binding<Double> {
         Binding(
-            get: { layerVolumes[layer] ?? 100 },
-            set: { layerVolumes[layer] = $0 }
+            get: { layerVolume(for: layer) },
+            set: { newValue in
+                mutateLayerSetting(layer) {
+                    $0.volume = min(max(newValue, 0), 10_000)
+                }
+            }
         )
     }
 
