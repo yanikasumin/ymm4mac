@@ -438,4 +438,120 @@ final class AnimationSliderScaleTests: XCTestCase {
                 -(1e17 + 32), delta: delta, minimum: -100, maximum: 0),
             -100)
     }
+
+    // MARK: - 格納値の厳密な丸め（FE-FIXVALUE-EXACT）
+
+    func testFixedValueRoundsStoredValueBelowMidpointDown() {
+        // 格納値が十進中間値より僅かに小さい値は、.NET と同様に
+        // 中間値の手前へ丸まる。旧方式（拡大して丸めて割り戻す）
+        // では積がちょうど中間値に着地して逆へ倒れていた
+        // （.NET 11.0.0 での実測。実装台帳 FE-FIXVALUE-EXACT）。
+        // F0 → 桁数 1。
+        let deltaF0 = spec(0, 100, format: "F0").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                0.35, delta: deltaF0, minimum: -10000, maximum: 10000),
+            0.3)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -0.35, delta: deltaF0, minimum: -10000, maximum: 10000),
+            -0.3)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                0.15, delta: deltaF0, minimum: -10000, maximum: 10000),
+            0.1)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -0.15, delta: deltaF0, minimum: -10000, maximum: 10000),
+            -0.1)
+        // F1 → 桁数 2。
+        let deltaF1 = spec(0, 100, format: "F1").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                2.675, delta: deltaF1, minimum: -10000, maximum: 10000),
+            2.67)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -2.675, delta: deltaF1, minimum: -10000, maximum: 10000),
+            -2.67)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                1.005, delta: deltaF1, minimum: -10000, maximum: 10000),
+            1.0)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -1.005, delta: deltaF1, minimum: -10000, maximum: 10000),
+            -1.0)
+    }
+
+    func testFixedValueRoundsStoredValueAboveMidpointUp() {
+        // 格納値が中間値より僅かに大きい値は上へ丸まる（0.45 の
+        // 格納値は 0.45 より大きい）。厳密な同点（0.125 は二進で
+        // 厳密）では AwayFromZero で 0 から離れる。
+        let deltaF0 = spec(0, 100, format: "F0").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                0.45, delta: deltaF0, minimum: -10000, maximum: 10000),
+            0.5)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -0.45, delta: deltaF0, minimum: -10000, maximum: 10000),
+            -0.5)
+        let deltaF1 = spec(0, 100, format: "F1").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                0.125, delta: deltaF1, minimum: -10000, maximum: 10000),
+            0.13)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -0.125, delta: deltaF1, minimum: -10000, maximum: 10000),
+            -0.13)
+    }
+
+    func testFixedValueHugeNonIntegerScaledProductMatchesNet() {
+        // FE-P3-GUARDS の残存 (a): 拡大した積が厳密に整数でなく
+        // 2^53 以上になる構成。2000000000000000.25 を桁数 1 で
+        // 丸めると、厳密な結果（2000000000000000.3）に最も近い
+        // double は値そのものであり、.NET は不変を返す。旧方式は
+        // 2000000000000000.5 へずれていた。
+        let deltaF0 = spec(0, 100, format: "F0").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                2000000000000000.25, delta: deltaF0,
+                minimum: -4e15, maximum: 4e15),
+            2000000000000000.25)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -2000000000000000.25, delta: deltaF0,
+                minimum: -4e15, maximum: 4e15),
+            -2000000000000000.25)
+    }
+
+    func testFixedValueJustBelowPowerOfTwoStaysBelow() {
+        // 2 の冪の直下の値を大きな桁数で丸めても、冪そのものへは
+        // ならない。丸めた結果（例: 63.999999999999993）に最も
+        // 近い double は入力値自身であり、変換の格子は結果の
+        // 属する区間（binade）で決める必要がある。
+        let deltaF3 = spec(0, 100, format: "F3").delta
+        let justBelow64 = Double(bitPattern: (64.0).bitPattern - 1)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                justBelow64, delta: deltaF3, minimum: -10000, maximum: 10000),
+            justBelow64)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                -justBelow64, delta: deltaF3, minimum: -10000, maximum: 10000),
+            -justBelow64)
+        let justBelow128 = Double(bitPattern: (128.0).bitPattern - 1)
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                justBelow128, delta: deltaF3, minimum: -10000, maximum: 10000),
+            justBelow128)
+        // 対照: 小さい桁数では正当に冪へ丸まる（639.999… → 640）。
+        let deltaF0 = spec(0, 100, format: "F0").delta
+        XCTAssertEqual(
+            AnimationSliderScale.fixedValue(
+                justBelow64, delta: deltaF0, minimum: -10000, maximum: 10000),
+            64.0)
+    }
 }
