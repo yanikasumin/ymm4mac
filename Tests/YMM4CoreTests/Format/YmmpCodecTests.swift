@@ -182,6 +182,57 @@ final class YmmpCodecTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: directory)
     }
 
+    /// 既存ファイルへの上書き保存（FE-R32-131-01）: 置換 API で
+    /// 新しい内容に入れ替わり、一時ファイルは残らない。
+    func testSaveOverwritesExistingFile() throws {
+        let directory = NSTemporaryDirectory() + "ymm4mac-codec-test-\(UUID().uuidString)"
+        let path = directory + "/project.ymmp"
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let first = Project()
+        let firstTimeline = Timeline()
+        firstTimeline.name = "初回"
+        first.timelines = [firstTimeline]
+        try YmmpCodec.save(first, toFile: path)
+
+        let second = Project()
+        let secondTimeline = Timeline()
+        secondTimeline.name = "上書き後"
+        second.timelines = [secondTimeline]
+        try YmmpCodec.save(second, toFile: path)
+
+        let (loaded, _) = try YmmpCodec.load(fromFile: path)
+        XCTAssertEqual(loaded.timelines.first?.name, "上書き後")
+        // 一時ファイル（ymm4mac-<UUID>.ymmp）が保存先フォルダに
+        // 残っていないこと。
+        let entries = try FileManager.default.contentsOfDirectory(atPath: directory)
+        XCTAssertEqual(entries, ["project.ymmp"])
+    }
+
+    /// 保存先が既存のディレクトリを指す場合は保存が失敗し、元の
+    /// ディレクトリが残る（FE-R32-131-01。旧方式の「削除してから
+    /// コピー」では元が失われ得た経路の固定）。
+    func testSaveToExistingDirectoryFailsAndKeepsIt() throws {
+        let directory = NSTemporaryDirectory() + "ymm4mac-codec-test-\(UUID().uuidString)"
+        let targetDirectory = directory + "/target.ymmp"
+        try FileManager.default.createDirectory(
+            atPath: targetDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let project = Project()
+        project.timelines = [Timeline()]
+        XCTAssertThrowsError(try YmmpCodec.save(project, toFile: targetDirectory))
+
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: targetDirectory, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        )
+        // 一時ファイルも残らない。
+        let entries = try FileManager.default.contentsOfDirectory(atPath: directory)
+        XCTAssertEqual(entries, ["target.ymmp"])
+    }
+
     /// UTF-8 BOM 付きのファイルは本家（Newtonsoft）では読めるため、
     /// BOM を除去して読み込む（2026-11-17 の実ファイル読み込み失敗への対応）。
     func testLoadWithUTF8BOM() throws {
