@@ -384,6 +384,11 @@ struct ProjectView: View {
                 .sheet(isPresented: $isCharacterEditorPresented) {
                     CharacterEditorView(project: project) {
                         requestPreviewRender(modelChanged: true)
+                        // キャラクター編集は Undo 記録の対象外のため、
+                        // 編集の確定通知で未保存フラグも個別に立てる
+                        // （FE-R39-133-02。PR #131 の個別通知の流儀。
+                        // 通知は変更が実際に成立した場合に限る）。
+                        workspace.markEdited()
                     }
                 }
                 .onChange(of: workspace.isCharacterEditorPresented) { _, requested in
@@ -3228,7 +3233,14 @@ struct ProjectView: View {
                     CharacterPickerRowView(
                         item: item,
                         characters: project.characters,
-                        onEdited: { requestPreviewRender(modelChanged: true) }
+                        onEdited: {
+                            requestPreviewRender(modelChanged: true)
+                            // 参照先の変更は Undo 記録の対象外のため、
+                            // 未保存フラグも個別に立てる
+                            // （FE-R39-133-02。通知は参照が実際に
+                            // 変わった場合に限る）。
+                            workspace.markEdited()
+                        }
                     )
                 }
                 let context = animationContext(for: item, timeline: timeline)

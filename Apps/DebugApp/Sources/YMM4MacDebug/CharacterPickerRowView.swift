@@ -101,6 +101,8 @@ struct CharacterPickerRowView: View {
         Binding(
             get: { currentName },
             set: { newName in
+                let previousCharacter = CharacterItemAccess.character(of: item)
+                let previousName = CharacterItemAccess.characterName(of: item)
                 if newName.isEmpty {
                     CharacterItemAccess.setCharacter(nil, name: "", for: item)
                 } else if let character = characters.first(where: { $0.name == newName }) {
@@ -111,7 +113,13 @@ struct CharacterPickerRowView: View {
                     // 未解決の保持名を選び直した場合は状態を変えない。
                     return
                 }
-                onEdited()
+                // 参照（インスタンス）と保持名のどちらかが実際に
+                // 変わった場合に限り編集確定を通知する（無変更の
+                // 選び直しでは通知しない。FE-R39-133-02）。
+                if CharacterItemAccess.character(of: item) !== previousCharacter
+                    || CharacterItemAccess.characterName(of: item) != previousName {
+                    onEdited()
+                }
             }
         )
     }

@@ -29,7 +29,9 @@ extension Character: @retroactive Identifiable {}
 /// （FE-R39-133-03）。
 struct CharacterEditorView: View {
     let project: Project
-    /// 編集が確定するたびに呼ばれる（プレビュー再合成・未保存記録）。
+    /// 編集が実際に成立するたびに呼ばれる（プレビュー再合成・
+    /// 未保存記録）。無変更の操作（同値の確定・無効な名前下書き
+    /// など）では呼ばない（FE-R39-133-02）。
     var onEdited: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -186,7 +188,12 @@ struct CharacterEditorView: View {
                 Text("色")
                 ColorPicker("", selection: Binding(
                     get: { swiftUIColor(from: character.color) },
-                    set: { character.color = coreColor(from: $0); onEdited() }
+                    set: { newColor in
+                        let converted = coreColor(from: newColor)
+                        guard converted != character.color else { return }
+                        character.color = converted
+                        onEdited()
+                    }
                 ), supportsOpacity: true)
                 .labelsHidden()
             }
@@ -194,7 +201,11 @@ struct CharacterEditorView: View {
                 Text("レイヤー")
                 TextField("レイヤー", value: Binding(
                     get: { character.layer },
-                    set: { character.layer = $0; onEdited() }
+                    set: { newValue in
+                        guard newValue != character.layer else { return }
+                        character.layer = newValue
+                        onEdited()
+                    }
                 ), format: .number)
                 .frame(width: 80)
             }
@@ -214,26 +225,36 @@ struct CharacterEditorView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// 基本項目の入力。値が実際に変わる場合に限りモデルへ書き、
+    /// 編集確定を通知する（無変更の確定では通知しない。
+    /// FE-R39-133-02 の無変更不発火の条件）。
     private func binding(
         for character: Character, _ keyPath: ReferenceWritableKeyPath<Character, String>
     ) -> Binding<String> {
         Binding(
             get: { character[keyPath: keyPath] },
-            set: { character[keyPath: keyPath] = $0; onEdited() }
+            set: { newValue in
+                guard newValue != character[keyPath: keyPath] else { return }
+                character[keyPath: keyPath] = newValue
+                onEdited()
+            }
         )
     }
 
     /// 音声エンジン／話者の入力。両方が空なら Voice 自体を持たない
-    /// （nil）状態へ戻し、保存形式（未設定は null）を保つ。
+    /// （nil）状態へ戻し、保存形式（未設定は null）を保つ。値が
+    /// 実際に変わる場合に限り書き換えて通知する（同上）。
     private func voiceBinding(for character: Character, isAPI: Bool) -> Binding<String> {
         Binding(
             get: { isAPI ? (character.voice?.api ?? "") : (character.voice?.arg ?? "") },
             set: { newValue in
                 let api = isAPI ? newValue : (character.voice?.api ?? "")
                 let arg = isAPI ? (character.voice?.arg ?? "") : newValue
-                character.voice = (api.isEmpty && arg.isEmpty)
+                let newVoice = (api.isEmpty && arg.isEmpty)
                     ? nil
                     : VoiceDescription(api: api, arg: arg)
+                guard newVoice != character.voice else { return }
+                character.voice = newVoice
                 onEdited()
             }
         )
