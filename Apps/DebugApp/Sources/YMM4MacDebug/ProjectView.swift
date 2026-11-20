@@ -560,10 +560,14 @@ struct ProjectView: View {
     }
 
     private func commitTimelineRename(index: Int) {
-        guard project.timelines.indices.contains(index) else { return }
-        project.timelines[index].name =
-            renameText.trimmingCharacters(in: .whitespaces)
-        workspace.markEdited()
+        // 名前が実際に変わる場合だけ代入と未保存記録を行う（FE-INT-131-01）。
+        // 同名のまま確定した場合は編集ではないので、未保存フラグを立てない。
+        let newName = renameText.trimmingCharacters(in: .whitespaces)
+        if project.timelines.indices.contains(index),
+           project.timelines[index].name != newName {
+            project.timelines[index].name = newName
+            workspace.markEdited()
+        }
         renamingTimelineIndex = nil
     }
 
