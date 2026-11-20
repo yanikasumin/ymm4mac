@@ -521,6 +521,48 @@ final class PropertyMetadataTests: XCTestCase {
         XCTAssertNil(textDescriptors.first { $0.id == "FilePath" })
     }
 
+    /// FE-R15-005: サムネイル取得の振り分けは、記述子の表示仕様
+    /// （showsThumbnail とファイル種別）と現在のパスで決まる。
+    /// 動画はフレーム、画像は画像そのもの、音声（showsThumbnail が
+    /// 偽）はパスがあっても取得しない。パス未設定でも取得しない。
+    func testFileThumbnailKindRouting() throws {
+        let video = VideoItem()
+        video.filePath = "movie.mp4"
+        let videoDescriptor = try descriptor(
+            ItemPropertyMetadata.descriptors(for: video), "FilePath")
+        XCTAssertEqual(videoDescriptor.fileThumbnailKind, .videoFrame)
+
+        let image = ImageItem()
+        image.filePath = "picture.png"
+        let imageDescriptor = try descriptor(
+            ItemPropertyMetadata.descriptors(for: image), "FilePath")
+        XCTAssertEqual(imageDescriptor.fileThumbnailKind, .image)
+
+        let audio = AudioItem()
+        audio.filePath = "sound.mp3"
+        let audioDescriptor = try descriptor(
+            ItemPropertyMetadata.descriptors(for: audio), "FilePath")
+        XCTAssertNil(audioDescriptor.fileThumbnailKind)
+
+        // パス未設定（既定の空文字列）ではどの種別も取得しない。
+        let unsetDescriptor = try descriptor(
+            ItemPropertyMetadata.descriptors(for: VideoItem()), "FilePath")
+        XCTAssertNil(unsetDescriptor.fileThumbnailKind)
+
+        // 振り分けそのものの境界: showsThumbnail が偽なら種別に
+        // かかわらず取得せず、音声種別は true でも取得しない。
+        XCTAssertNil(FileThumbnailKind.resolve(
+            showsThumbnail: false, group: .video, path: "movie.mp4"))
+        XCTAssertNil(FileThumbnailKind.resolve(
+            showsThumbnail: true, group: .audio, path: "sound.mp3"))
+        XCTAssertNil(FileThumbnailKind.resolve(
+            showsThumbnail: true, group: .image, path: ""))
+        XCTAssertEqual(FileThumbnailKind.resolve(
+            showsThumbnail: true, group: .image, path: "picture.png"), .image)
+        XCTAssertEqual(FileThumbnailKind.resolve(
+            showsThumbnail: true, group: .video, path: "movie.mp4"), .videoFrame)
+    }
+
     /// R2-B04 対応: 相対パスは絶対化されず、そのまま読み書きされる
     /// （解決は供給層がプロジェクト位置を基準に行う）。
     /// setter はパスの保持だけで、長さや素材情報には触らない。

@@ -32,6 +32,39 @@ public enum PropertyFileGroup: Equatable, Sendable {
     case image
 }
 
+/// ファイル参照欄のサムネイル取得種別（FE-R15-005）。
+///
+/// 本家の FileSelector は、`ShowThumbnail` の付いたアイテム（動画・
+/// 画像）でのみ、設定ファイルのサムネイルを非同期に取得して表示する
+/// （FileSelector.cs の `FileItem.BeginLoadThumbnailAsync`）。
+/// 取得方法の振り分けは記述子のファイル種別で決まる: 画像は画像
+/// そのもの、動画はフレーム画像。実際の取得（ファイルを開く処理）
+/// はアプリ層が行い、ここは「要るか・どちらの方法か」の決定だけを
+/// 持つ（filePath 種別がファイルを開かない契約は変えない）。
+public enum FileThumbnailKind: Equatable, Sendable {
+    /// 画像ファイルそのものから取る。
+    case image
+    /// 動画ファイルのフレームから取る。
+    case videoFrame
+
+    /// 表示仕様と現在のパスから取得種別を決める。サムネイル不要
+    /// （`showsThumbnail` が偽。音声が該当する）・パス未設定
+    /// （空文字列）では nil を返す。
+    public static func resolve(
+        showsThumbnail: Bool, group: PropertyFileGroup, path: String
+    ) -> FileThumbnailKind? {
+        guard showsThumbnail, !path.isEmpty else { return nil }
+        switch group {
+        case .image:
+            return .image
+        case .video:
+            return .videoFrame
+        case .audio:
+            return nil
+        }
+    }
+}
+
 /// プロパティの値の型と、編集 UI が必要とする付随情報。
 public enum PropertyKind: Equatable, Sendable {
     /// 実数。範囲は編集時のクランプとスライダ表示に使う（nil は無制限）。
@@ -206,6 +239,14 @@ public struct PropertyDescriptor {
     public var filePathSpec: (group: PropertyFileGroup, showsThumbnail: Bool)? {
         guard case .filePath(let group, let showsThumbnail) = kind else { return nil }
         return (group: group, showsThumbnail: showsThumbnail)
+    }
+
+    /// 現在設定されているパスのサムネイル取得種別（FE-R15-005）。
+    /// サムネイルが不要な記述子・パス未設定では nil。
+    public var fileThumbnailKind: FileThumbnailKind? {
+        guard let spec = filePathSpec, let path = stringValue else { return nil }
+        return FileThumbnailKind.resolve(
+            showsThumbnail: spec.showsThumbnail, group: spec.group, path: path)
     }
 
     public var colorValue: Color? {
