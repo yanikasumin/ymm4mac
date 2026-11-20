@@ -161,8 +161,12 @@ struct ProjectView: View {
     @State private var waveformVisibility: WaveformVisibility = .always
     /// タイムラインキャンバスへのホバー（波形のマウスオーバーモード用）。
     @State private var isCanvasHovering = false
-    /// 縦グリッド線の表示（本家の VerticalLines.IsEnabled 相当）。
-    @State private var showVerticalLines = true
+    /// グリッド線設定の変更世代。表示の正本はモデルの
+    /// `TimelineVerticalLine.isEnabled` で、ツールバー／設定シート
+    /// からの変更をタイムラインへ再描画させるために増やす。
+    @State private var gridSettingsRevision = 0
+    /// 「グリッド線の設定」シートの表示状態。
+    @State private var isGridSettingsPresented = false
     /// シーン名変更シートの対象（nil で閉じている）。
     @State private var renamingTimelineIndex: Int?
     @State private var renameText = ""
@@ -278,7 +282,7 @@ struct ProjectView: View {
                                     zoomPercent: $timelineZoomPercent,
                                     rowHeight: CGFloat(layerRowHeight),
                                     showWaveform: effectiveShowWaveform,
-                                    showVerticalLines: $showVerticalLines,
+                                    gridSettingsRevision: $gridSettingsRevision,
                                     reportedCanvasWidth: $canvasViewportWidth,
                                     reportedTopLayer: $topVisibleLayer,
                                     onEdited: { requestPreviewRender(modelChanged: true) },
@@ -350,6 +354,14 @@ struct ProjectView: View {
                         isExportRunning: exportState.isRunning
                     ) { request in
                         runExport(timeline: timeline, request: request)
+                    }
+                }
+                .sheet(isPresented: $isGridSettingsPresented) {
+                    // onApplied は設定が実際に変わった場合にだけ呼ばれる
+                    // （FE-R35-132-04）。その時点で未保存フラグを立てる。
+                    GridLineSettingsView(timeline: timeline) {
+                        gridSettingsRevision += 1
+                        workspace.markEdited()
                     }
                 }
                 .onChange(of: workspace.isVideoSettingsPresented) { _, requested in
@@ -1595,6 +1607,8 @@ struct ProjectView: View {
             requestPreviewRender(modelChanged: true)
         case .toggleWaveform:
             waveformVisibility = waveformVisibility == .hidden ? .always : .hidden
+        case .setControlPointVisibility(let mode):
+            controlPointVisibility = mode
         case .selectAll:
             timeline.selectItems(timeline.items)
             selectedItemIndex = timeline.items.isEmpty ? nil : 0
@@ -2021,6 +2035,23 @@ struct ProjectView: View {
             panel.nameFieldStringValue = "thumbnail.jpg"
         }
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        // 本家は保存時にフレームを描き直し、alpha の有無でクリア色を
+        // 変える（TimelineVideoPlayer.RenderCurrentFrameBitmap:
+        // alpha=false は黒 (0,0,0,1) でクリアして合成、alpha=true は
+        // 透明のまま）。プレビューの読み戻し画像はアルファを保持して
+        // いるため、通常 PNG / JPEG では黒背景へ合成してから書き出し、
+        // 透過 PNG ではそのまま書き出す（FE-R1-026）。
+        let imageToWrite: CGImage
+        switch format {
+        case .pngAlpha:
+            imageToWrite = previewImage
+        case .png, .jpeg:
+            guard let flattened = Self.flattenedOnBlack(previewImage) else {
+                workspace.statusMessage = "サムネイルを保存できませんでした"
+                return
+            }
+            imageToWrite = flattened
+        }
         let type: CFString = format == .jpeg ? UTType.jpeg.identifier as CFString
             : UTType.png.identifier as CFString
         guard let destination = CGImageDestinationCreateWithURL(
@@ -2029,12 +2060,37 @@ struct ProjectView: View {
             workspace.statusMessage = "サムネイルを保存できませんでした"
             return
         }
-        CGImageDestinationAddImage(destination, previewImage, nil)
+        CGImageDestinationAddImage(destination, imageToWrite, nil)
         if CGImageDestinationFinalize(destination) {
             workspace.statusMessage = "サムネイルを保存しました: \(url.path)"
         } else {
             workspace.statusMessage = "サムネイルを保存できませんでした"
         }
+    }
+
+    /// アルファ保持の画像を不透明な黒背景へ合成した画像を返す
+    /// （本家のサムネイル保存 alpha=false のクリア規則。FE-R1-026）。
+    /// 入力はプレビュー読み戻しと同じ premultiplied BGRA 前提で、
+    /// 上下が反転しないよう描画側の座標系を反転してから描く。
+    private static func flattenedOnBlack(_ image: CGImage) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0,
+              let context = CGContext(
+                  data: nil, width: width, height: height,
+                  bitsPerComponent: 8, bytesPerRow: width * 4,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                      | CGBitmapInfo.byteOrder32Little.rawValue
+              )
+        else { return nil }
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+        context.fill(rect)
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        context.draw(image, in: rect)
+        return context.makeImage()
     }
 
     // MARK: - ファイルのドロップイン
@@ -2245,7 +2301,7 @@ struct ProjectView: View {
                 }
             }
             waveformSplitButton
-            gridSplitButton
+            gridSplitButton(timeline: timeline)
             meterMenuButton
             toolbarDivider
             toolbarButton("trash", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.delete, shortcut: UIStrings.Toolbar.shortcutDelete)) {
@@ -2317,27 +2373,35 @@ struct ProjectView: View {
     }
 
     /// グリッド線 SplitButton（本体 = 表示切替、ドロップダウン =
-    /// 切替＋設定。本家 §3.6(b)。設定画面は未実装のため無効表示）。
-    private var gridSplitButton: some View {
+    /// 切替＋設定。本家 §3.6(b)）。表示切替はモデルの
+    /// VerticalLine.IsEnabled を反転させ、設定は専用シートを開く
+    /// （FE-UNIT5 で接続）。反転は必ずモデルを変えるため、その時点で
+    /// 未保存フラグを立てる（FE-R35-132-04）。
+    private func gridSplitButton(timeline: Timeline) -> some View {
         HStack(spacing: 0) {
             toolbarButton(
                 "square.grid.3x3",
                 help: UIStrings.Toolbar.tip(UIStrings.Toolbar.gridLine)
             ) {
-                showVerticalLines.toggle()
+                timeline.verticalLine.isEnabled.toggle()
+                workspace.markEdited()
+                gridSettingsRevision += 1
             }
             Menu {
                 Button {
-                    showVerticalLines.toggle()
+                    timeline.verticalLine.isEnabled.toggle()
+                    workspace.markEdited()
+                    gridSettingsRevision += 1
                 } label: {
-                    if showVerticalLines {
+                    if timeline.verticalLine.isEnabled {
                         Label(UIStrings.Toolbar.gridLine, systemImage: "checkmark")
                     } else {
                         Text(UIStrings.Toolbar.gridLine)
                     }
                 }
-                Button(UIStrings.Toolbar.gridLineSettings) {}
-                    .disabled(true)
+                Button(UIStrings.Toolbar.gridLineSettings) {
+                    isGridSettingsPresented = true
+                }
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8))
@@ -2380,7 +2444,13 @@ struct ProjectView: View {
                 isVideoSettingsPresented = true
             }
             toolbarDivider
-            toolbarButton("film", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputExo)) {}
+            // EXO 書き出しの基盤（形式変換ライタ）が Core に無いため
+            // 未接続。無効である理由はツールチップで示す（FE-UNIT5）。
+            toolbarButton(
+                "film",
+                help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputExo)
+                    + UIStrings.Common.unconnectedSuffix
+            ) {}
                 .disabled(true)
             toolbarButton("play.rectangle", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputVideo)) {
                 isExportDialogPresented = true

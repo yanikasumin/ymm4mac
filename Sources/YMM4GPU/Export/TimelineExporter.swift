@@ -31,8 +31,9 @@ public final class TimelineExportCancellation: @unchecked Sendable {
 /// FFmpegProcessWriter と ExportSession へ接続する。書き出し範囲は
 /// タイムライン全体（本家 VideoFileWriterSettings の EncodeFrom /
 /// EncodeTo 既定に相当する範囲を `ExportRange.normalized` で正規化）。
-/// ラウドネスとコンプレッサは本家の既定設定を使う（設定層は未実装の
-/// ため、値の差し替えは初期化引数でのみ可能）。
+/// ラウドネスとコンプレッサは初期化引数で受け取る（アプリ層は
+/// 書き出しダイアログの選択をここへ渡す。FE-R1-017）。引数を省略した
+/// 場合は本家の設定既定（DownMaximumVolume / Auto）が効く。
 public final class TimelineExporter {
     /// 対象タイムライン。
     public let timeline: Timeline

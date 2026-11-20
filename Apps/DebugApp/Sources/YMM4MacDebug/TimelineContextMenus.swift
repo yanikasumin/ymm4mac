@@ -137,6 +137,17 @@ extension TimelineStripView {
         reflectSelection()
     }
 
+    /// グリッド線の表示切替（本家 ToggleVerticalLine コマンド:
+    /// モデルの VerticalLine.IsEnabled を反転させる）。反転は必ず
+    /// モデルを変えるため、非記録編集として未保存フラグへ通知する
+    /// （FE-R35-132-04）。
+    func toggleVerticalLines() {
+        timeline.verticalLine.isEnabled.toggle()
+        gridRevision += 1
+        onUnrecordedEdit()
+        onEdited()
+    }
+
     // MARK: - キャンバス背景メニュー（本家 §2.1）
 
     @ViewBuilder
@@ -166,7 +177,7 @@ extension TimelineStripView {
             onEdited()
         }
         Divider()
-        Button(UIStrings.Toolbar.gridLine) { showVerticalLines.toggle() }
+        Button(UIStrings.Toolbar.gridLine) { toggleVerticalLines() }
         Divider()
         Button(UIStrings.Menu.selectLeftItems) {
             selectItems { $0.frame + $0.length <= currentFrame }

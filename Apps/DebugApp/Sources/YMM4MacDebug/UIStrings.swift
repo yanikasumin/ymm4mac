@@ -174,6 +174,7 @@ enum UIStrings {
         static let waveformHidden = "非表示"
         static let gridLine = "グリッド線"
         static let gridLineSettings = "グリッド線の設定…"
+        static let gridLineSettingsTitle = "グリッド線の設定"
         static let meters = "メーター表示"
         static let peakMeter = "ピークメーターを表示"
         static let loudnessMeter = "ラウドネスメーターを表示"
