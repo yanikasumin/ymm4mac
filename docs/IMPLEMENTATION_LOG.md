@@ -2103,6 +2103,19 @@ PR #130 のマージで main が `13a7503` へ進んだため、`feat/fe-unit4-s
 **検証。** Mac（~/ymm4-work/fe-unit4-save/YMM4Mac）で Apps/DebugApp の `swift build` 成功。保存系の対象テスト全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: `YmmpCodecTests` 27件・`UndoHistoryTests` 10件・`EditCoordinatorTests` 15件＝計52件。
 
 **手動検証チェックリストへの追加（未実施）。** (23) シーン名変更シートで名前を変えずに確定しても未保存フラグが立たず、閉じる際に破棄確認が出ないこと。実際に名前を変えて確定すると未保存フラグが立つこと（FE-INT-131-01）。
+
+##### FE-INT-131-01 の洗い出しで記録した同型2件の処分（動画の設定 OK／アプリメニューのグループ解除）
+
+FE-INT-131-01 の処分時に「同型の疑いが残る」として記録した2件を処分した。いずれも FE-R33-131-02／FE-INT-131-01 と同種の無変更誤発火で、発生経路は洗い出し時の記録のとおり（本節の FE-INT-131-01 項を参照）。
+
+- **動画の設定の OK（`VideoSettingsView.apply()`）**: 組み立てた `VideoInfo`（値域クランプ済み）が現在の `timeline.videoInfo` と異なる場合に限り、代入と `onApplied()`（未保存フラグ＋プレビュー作り直し）を行う形へ変更した。同値ならシートを閉じるだけにする。`VideoInfo` は `Equatable` のため、背景色の変換結果を含めた全体比較で判定できる。クランプで現在値へ戻る入力も同値として扱われる。
+- **アプリメニューのグループ解除（`executeWorkspaceAction(.ungroupSelection)`)**: Core の `Timeline.ungroupSelectedAndGroupedItems()` が実際に解散したか（group が 0 でないアイテムがあったか）を `@discardableResult` の Bool で返す形へ変更し（FE-R33-131-02 の戻り値判定と同じ約束）、アプリ層は true の場合だけ `markEdited()` を呼ぶ形にした。コンテキストメニュー側の呼び出し元は表示条件（group ≠ 0 のときだけ出すトグル対）で変更が保証されており、戻り値を捨てるだけで無変更。
+
+**Round 33 の台帳前提の訂正。** FE-R33-131-02 の洗い出しには「グループ化／解除はメニューの表示条件により変更が保証される」と記録したが、この前提が成り立つのはツールバーとコンテキストメニューのトグル対だけであり、`YMM4MacDebugApp` の編集メニュー（表示・有効条件なし）経由の実行は含まれていなかった。前提の及ぶ範囲をこの2経路に限定し、アプリメニュー経路は Core の変更有無で判定する形に改めた。
+
+**検証。** Mac（~/ymm4-work/fe-unit4-save/YMM4Mac）で Apps/DebugApp の `swift build` 成功。対象テスト全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: `YmmpCodecTests` 27件・`UndoHistoryTests` 10件・`EditCoordinatorTests` 15件・`TimelineEditingTests` 28件＝計80件。Core へ解除の戻り値テストを2件追加（解散時は true で全員の group が 0 になる、未グループでは false）。
+
+**手動検証チェックリストへの追加（未実施）。** (24) 動画の設定で何も変えずに OK を押しても未保存フラグが立たず、閉じる際に破棄確認が出ないこと。実際に値を変えて OK を押すと未保存フラグが立つこと。(25) 未グループのアイテムを選択した状態でアプリメニュー（編集メニュー）の「グループ解除」を実行しても未保存フラグが立たないこと。グループ化されたアイテムを解除すると未保存フラグが立つこと。
 #### FE-R16-002 — プロジェクト切り替え後の旧プロジェクト非同期処理の継続を止める（フロントエンド監査 Round 16 で切り分け）
 
 **欠陥（監査 Round 16 で確定）。** ファイル参照単位（FE-FILEPATH）の非同期処理は、完了条件として「捕捉した Project オブジェクトの timelines に目標が同一性で含まれるか」を確認していた。しかし ProjectView はプロジェクト切り替え時に `.id(workspace.loadSequence)` で作り直される一方、旧ビューが起動した非構造化 Task はビューの破棄後も生き続け、捕捉した旧 Project オブジェクトとその timelines も存在し続けるため、この確認は切り替え後も通過してしまう。結果として (1) 旧プロジェクトで始めた編集操作（ファイル追加 `addMediaFiles`、ファイル変更 `applyFileChange`）が切り替え後も旧プロジェクトに対して確定処理を走らせ、(2) `applyFileChange` の取得失敗時の書き込みなど、共有の `WorkspaceState.statusMessage` への書き込みが新しいプロジェクトの画面へ表示されていた。監査の指定する修正方針は「確定時点で、現在の workspace.project と同一性が一致するかを確認する。タスクのキャンセルだけでは不十分（キャンセルと確定の競合を断ち切れない）ため同一性確認を正とする」。
