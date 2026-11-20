@@ -2088,6 +2088,21 @@ PR #130 のマージで main が `13a7503` へ進んだため、`feat/fe-unit4-s
 - **確認点 (3) ワークスペース切り替えの順序: 維持。** `WorkspaceState.newProject()` は破棄確認 → `editRecorder.resetForProjectSwitch()` → プロジェクト差し替え → `hasUnsavedChanges = false` の順。`load(url:)` も読み込み成功後に限り同じ順序（リセット → 差し替え → フラグ解除）で、失敗時は旧プロジェクトと履歴を保持する。
 
 **検証（最終統合）。** Mac（~/ymm4-work/fe-unit4-save/YMM4Mac）で対象テスト全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: `YmmpCodecTests` 27件・`UndoHistoryTests` 10件・`EditCoordinatorTests` 15件＝計52件。Apps/DebugApp の `swift build` 成功。生成世代ベースの帰属（FE-R30-130-02）は別ブランチの範囲であり、本統合には含まれない。
+
+##### FE-INT-131-01（P2、最終統合後の監査新規指摘）: シーン名を変えずに確定しても未保存フラグが立つ
+
+`ProjectView.commitTimelineRename(index:)` が前後の名前を比較せず、代入と `workspace.markEdited()` を無条件に行っていた。シーン名変更シートで名前を変えずに「変更」を押す（または Enter で確定する）と、実変更が無いのに未保存フラグが立ち、閉じる際に不要な破棄確認が出る。FE-R33-131-02（無変更操作での誤発火）と同種だが、対象は Round 33 の洗い出し範囲（`onUnrecordedEdit` の発火点とレイヤー操作）には含まれていなかった直接の `markEdited()` 経路。
+
+**処分。** トリミング後の新しい名前が現在の名前と異なる場合に限り、代入と `markEdited()` を行う形へ変更した。同名の場合もシートは閉じる（`renamingTimelineIndex = nil` は常に行う）。変更有無で分岐する形はコードで固定した。アプリ層のため自動テストは無く、手動検証チェックリスト (23) で担保する。
+
+**同型パターンの洗い出し（本処分では修正せず、記録のみ）。** `ProjectView.swift` 内の `markEdited()` 全発火点を確認した。代入・切替が常に対象の状態を変えるもの（シーン追加・削除、分割、ロック／クリッピングの toggle）、発火側に変更判定を持つもの（`onFilePathCommitted` は FE-R33-131-01 の変更確認済み経路、`onUnrecordedEdit` は発火規律が呼び出し側の契約）は同型ではない。同型の疑いが残るのは次の2件:
+
+- **動画の設定の OK（`VideoSettingsView.apply()`）**: 現在の `videoInfo` と比較せず、新しい `VideoInfo` を組み立てて代入し、`onApplied`（ProjectView 側で `markEdited()` へ接続）を無条件に呼ぶ。何も変えずに OK を押しても未保存フラグが立つ。
+- **アプリメニューのグループ解除（`YMM4MacDebugApp` の編集メニュー → `executeWorkspaceAction(.ungroupSelection)`)**: ツールバー側は「選択アイテムの group ≠ 0 のときだけ解除ボタンを出す」トグル対で変更が保証されるが、アプリメニュー側の「グループ化」「グループ解除」には表示・有効条件が無く、未グループの選択へグループ解除を実行すると Core 側は `group = 0` の無変更代入を行い、`markEdited()` が無条件に発火する。
+
+**検証。** Mac（~/ymm4-work/fe-unit4-save/YMM4Mac）で Apps/DebugApp の `swift build` 成功。保存系の対象テスト全合格（XCTest の Executed 件数で判定、AudioDrift 除外）: `YmmpCodecTests` 27件・`UndoHistoryTests` 10件・`EditCoordinatorTests` 15件＝計52件。
+
+**手動検証チェックリストへの追加（未実施）。** (23) シーン名変更シートで名前を変えずに確定しても未保存フラグが立たず、閉じる際に破棄確認が出ないこと。実際に名前を変えて確定すると未保存フラグが立つこと（FE-INT-131-01）。
 #### FE-R16-002 — プロジェクト切り替え後の旧プロジェクト非同期処理の継続を止める（フロントエンド監査 Round 16 で切り分け）
 
 **欠陥（監査 Round 16 で確定）。** ファイル参照単位（FE-FILEPATH）の非同期処理は、完了条件として「捕捉した Project オブジェクトの timelines に目標が同一性で含まれるか」を確認していた。しかし ProjectView はプロジェクト切り替え時に `.id(workspace.loadSequence)` で作り直される一方、旧ビューが起動した非構造化 Task はビューの破棄後も生き続け、捕捉した旧 Project オブジェクトとその timelines も存在し続けるため、この確認は切り替え後も通過してしまう。結果として (1) 旧プロジェクトで始めた編集操作（ファイル追加 `addMediaFiles`、ファイル変更 `applyFileChange`）が切り替え後も旧プロジェクトに対して確定処理を走らせ、(2) `applyFileChange` の取得失敗時の書き込みなど、共有の `WorkspaceState.statusMessage` への書き込みが新しいプロジェクトの画面へ表示されていた。監査の指定する修正方針は「確定時点で、現在の workspace.project と同一性が一致するかを確認する。タスクのキャンセルだけでは不十分（キャンセルと確定の競合を断ち切れない）ため同一性確認を正とする」。
