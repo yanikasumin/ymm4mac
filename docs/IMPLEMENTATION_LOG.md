@@ -2171,3 +2171,48 @@ PR #126 の Round 21 新規指摘「失効したセッショントークンが�
 - **残る論点（本処分の範囲外として明記）**: プロジェクト切り替え後の遅延イベントのうち、トークンを提示する経路は本契約で断たれる。トークンを持たない離散編集の遅延イベントはビューの破棄（プロジェクト切り替えで画面が作り直される既存構造）に依存しており、本処分では扱っていない。
 
 検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+#### FE-R15-005 — ファイル参照欄のサムネイル表示（IMPLEMENTED、Mac 検証済み）
+
+**指摘の復元の経緯。** Round 15 の指摘原文は台帳への転記が残っておらず（FE-FILEPATH 節には「FE-R15-005（サムネイル表示）。別単位へ移管」とだけある）、監査チャット「フロントエンド監査 恒二」への照会と、本家・Mac 双方の実コード照合で内容を確定した。確定した内容: 本家では動画・画像アイテムのファイル選択コントロール（FileSelector）が、設定されているファイルのサムネイルを非同期取得して表示する。根拠は VideoItem.cs:79 の `[FileSelector(FileGroupType.VideoItem, ShowThumbnail = true)]` と ImageItem.cs:34 の `[FileSelector(FileGroupType.ImageItem, ShowThumbnail = true, PropertyEditorSize = FullWidth)]`（音声は指定なし＝表示しない）、FileSelector.cs の `FileItem.BeginLoadThumbnailAsync`（独自ローダーを優先し、無ければシェルのサムネイル。`ShellThumbnail.ApplyThumbnailEffect` で 50 論理ピクセル相当へ縮小。失敗した場合は画像を出さない）。Mac 側は FE-FILEPATH で `PropertyKind.filePath` の契約として `showsThumbnail`（動画 true・音声 false・画像 true）を保持するだけで、アプリ層の `FilePathRowView` がその情報を使っておらず、サムネイル表示が欠けていた。本家の FileSelector が持つドロップダウン履歴・お気に入り機能は、監査でも当初の指摘範囲だったと確認できなかったため、本単位の範囲外とする（再現しない）。
+
+**実装。**
+- Core（`Sources/YMM4Core/Editing/PropertyMetadata.swift`）: 振り分けの決定 `FileThumbnailKind` を新設した。`showsThumbnail` が真でパスが空でない場合に、画像種別は `.image`、動画種別は `.videoFrame`、音声種別は nil。`PropertyDescriptor.fileThumbnailKind` で記述子の現在値から引ける。ここは決定だけを持ち、filePath 種別がファイルを開かない契約（FE-R1-043）は変えていない。
+- アプリ（`Apps/DebugApp/Sources/YMM4MacDebug/FileThumbnailLoader.swift`、新規）: 取得の実体。パス解決は素材情報の取得経路と同じ `MediaFileInfoFetcher.resolveURL`（相対パスはプロジェクトの基準フォルダから解決）。画像は ImageIO の縮小生成（最大 100 ピクセル＝表示 50 論理ピクセルの Retina 2 倍分、向き変換つき）、動画は `AVAssetImageGenerator` の先頭フレーム（前方 0・後方 1 秒の許容誤差、`preferredTransform` 適用、最大 100 ピクセル）。動画種別に拡張子分類される静止画形式（GIF / WebP）はフレーム生成が失敗するため、画像としての取得へフォールバックする（本家もシェルのサムネイルが形式を問わず返す）。成功結果だけをキャッシュし、キーは解決済みパス＋ファイル同一性（サイズ・更新時刻）とする — 同一パスへ別ファイルに差し替えた場合に古いサムネイルが出ないため（Issue #134 の教訓と同型）。失敗は保持しない（後からファイルが現れた場合に再試行できる）。所有はローダーの静的キャッシュ（プロセス内、上限 128 件の FIFO、ロック保護）。
+- 描画経路と共有しない判断: プレビューの描画経路（PreviewRenderWorker と Metal 供給）は「現在のモデル・現在のフレーム」の合成結果を出す仕組みであり、インスペクタの行が参照ファイルの静止画を1枚取る用途には重い。`MediaFileInfoFetcher` と同じ標準手段による独立の軽い経路とし、判断理由は本節とローダーのコメントに残した。
+- 行の表示（`FilePathRowView`）: `showsThumbnail` の場合のみ、確定済みパスのサムネイルを入力欄の左端へ 50×50 論理ピクセル・縦横比保持で出す。駆動は `.task(id:)` で、キーは取得種別＋確定済みパス＋基準フォルダ。パスが変われば再実行で前の取得はキャンセルされ、完了時にも対象パスが現在の確定パスと一致するか照合してから採用する（素材情報の取得と同じ世代＋同一性の流儀）。基準フォルダは `ProjectView` の `baseDirectory` を `PropertyInspectorView` / `EffectInspectorView` の `fileBaseDirectory` 経由で配線し、アイテム行・複合の子行・コレクションの子行・エフェクト行の全経路へ届く。基準フォルダが無い構成ではサムネイルを出さない。表示は表示状態のみであり、モデル・未保存記録・Undo には触れない。
+
+**本家との差分。** (1) 本家はサムネイルへ効果を適用する（不透明領域への切り抜き `CropOpaqueRect`、縦長画像の切り抜き `CropIfPortrait`）。Mac は切り抜かず、全体を縦横比保持で表示する（見た目のみの差）。(2) 本家の FileSelector は履歴・お気に入りを持つコンボボックスだが、上記のとおり指摘範囲と確認できなかったため再現していない。(3) パスの解決は、Mac の既存経路に合わせてプロジェクトフォルダ基準の相対解決を含む（本家の FileItem はパスをそのまま開く）。
+
+**手動検証チェックリスト（未実施）。** (1) 動画・画像アイテムのインスペクタで、設定済みファイルのサムネイルが参照欄の左端に出ること。音声アイテムでは出ないこと。(2) パスを別のファイルへ変更するとサムネイルが新しいファイルのものへ切り替わり、取得中・失敗の間は前のファイルのサムネイルが残らないこと。(3) 存在しないパス・開けないファイルではサムネイルが出ず、入力欄と参照ボタンが従来どおり使えること。(4) プロジェクトフォルダ基準の相対パスでもサムネイルが出ること。(5) サムネイルの表示・切り替わりで未保存フラグが立たず、Undo 履歴が増えないこと。
+
+**検証。** Mac（~/ymm4-work/fe-thumb/YMM4Mac）で実施。ルートパッケージの対象テスト 68 件・失敗 0（XCTest の Executed 件数で判定）: `PropertyMetadataTests` 24 件（新規 `testFileThumbnailKindRouting` を含む。振り分けの境界＝音声・パス未設定・showsThumbnail が偽の場合を取得しないことも固定）、`EffectPropertyMetadataTests` 17 件、`YmmpCodecTests` 27 件。DebugApp は `swift build` 成功（230 ステップ）、同梱の `PreviewCoreTests` 12 件・失敗 0。初回のビルドでローダーのフォールバック式（`??` の右辺に `await` を置く形）がコンパイルエラーになり、2段に分けて解消した（意味は不変）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。アプリ層の表示そのものには自動テストの対象が無いため、上記の手動チェックリストで確認する（未実施）。
+
+**PR 本文の下書き**（基点は PR #131 のブランチ `feat/fe-unit4-save`。PR は #131 の後に積む）:
+
+> ## FE-R15-005: ファイル参照欄のサムネイル表示
+>
+> ### 対象の指摘
+> FE-R15-005（P3、監査 Round 15 で別単位へ移管）。本家では動画・画像アイテムの FileSelector が設定ファイルのサムネイルを非同期表示するが、Mac 版は Core に `showsThumbnail` の契約だけがあり、アプリ層の参照欄が使っていなかった。指摘原文は台帳に残っていなかったため、監査チャットへの照会と本家・Mac 双方の実コード照合で内容を確定した（本家 FileSelector の履歴・お気に入りは指摘範囲と確認できず、範囲外）。
+>
+> ### 本家根拠
+> - VideoItem.cs:79 `[FileSelector(VideoItem, ShowThumbnail = true)]`、ImageItem.cs:34 `[FileSelector(ImageItem, ShowThumbnail = true, FullWidth)]`、音声は指定なし。
+> - FileSelector.cs `FileItem.BeginLoadThumbnailAsync`: 非同期取得、独自ローダー優先→シェルのサムネイル、`ShellThumbnail.ApplyThumbnailEffect` で 50 論理ピクセル相当へ縮小、失敗時は画像なし。
+>
+> ### 変更したシンボル
+> - Core: `FileThumbnailKind`（新設。振り分けの決定）、`PropertyDescriptor.fileThumbnailKind`。
+> - アプリ: `FileThumbnailLoader`（新設。解決・取得・キャッシュ）、`FilePathRowView`（サムネイル表示と取得の駆動）、`PropertyInspectorView` / `EffectInspectorView` / `ProjectView`（基準フォルダ `fileBaseDirectory` の配線）。
+>
+> ### 設計判断
+> - 振り分け（要否・方法）は Core の決定として固定し、取得の実体はアプリ層に置く。filePath 種別がファイルを開かない契約は不変。
+> - 取得経路はプレビューの描画経路と共有せず、AVFoundation / ImageIO の標準手段による独立経路とした（描画経路はモデル全体の合成用で、行単独の静止画には重いため）。
+> - キャッシュは成功結果のみ、キーは解決済みパス＋ファイル同一性（サイズ・更新時刻）。同一パスへの差し替えで古いサムネイルを出さない。
+> - 本家との差分: サムネイルの切り抜き効果（不透明領域・縦長）は適用せず全体を縦横比保持で表示する。FileSelector の履歴・お気に入りは再現しない（指摘範囲外）。
+>
+> ### テスト
+> - Mac で対象テスト 68 件・失敗 0（PropertyMetadataTests 24 件＝振り分けの新規テストを含む、EffectPropertyMetadataTests 17 件、YmmpCodecTests 27 件）。
+> - DebugApp `swift build` 成功、PreviewCoreTests 12 件・失敗 0。
+> - アプリ層の表示は手動チェックリスト（台帳 FE-R15-005 節の (1)〜(5)）で確認する（未実施）。
+>
+> ### 実装記録
+> docs/IMPLEMENTATION_LOG.md の FE-R15-005 節。基点は PR #131 のブランチであり、本 PR は #131 の後に積む。
