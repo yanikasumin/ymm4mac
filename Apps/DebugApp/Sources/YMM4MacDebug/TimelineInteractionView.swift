@@ -59,6 +59,12 @@ struct TimelineInteractionConfiguration {
     /// セッションのキャンセル（復元が済んだ後に1回だけ）。
     /// セッション状態の破棄より前に呼ばれる（FE-R9-002）。
     var onDragCancelled: () -> Void
+    /// Alt ドラッグで複製がタイムラインへ入った直後の通知。
+    /// 複製は生成時点ではシーン長供給を持たないため、接続側は
+    /// ここで注入する（FE-SEP-RESIDUALS）。ドラッグが後に
+    /// キャンセルされれば複製自体が復元で消えるため、注入が
+    /// 先行しても害は無い。
+    var onItemsCreated: () -> Void
 }
 
 final class TimelineInteractionView: NSView {
@@ -274,6 +280,7 @@ final class TimelineInteractionView: NSView {
             if modifiers.contains(.option),
                modifiers.intersection([.shift, .command, .control]).isEmpty {
                 timeline.unsafeCloneWithoutCollision()
+                configuration.onItemsCreated()
             }
             grabbedStart = (item.frame, item.length, item.layer)
             timeline.resolveItemCollision(timeline.selectedAndGroupedItems)

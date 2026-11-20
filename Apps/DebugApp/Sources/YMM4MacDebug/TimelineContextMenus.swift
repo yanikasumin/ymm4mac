@@ -102,6 +102,7 @@ extension TimelineStripView {
             added = timeline.tryAddItems([item], frame: currentFrame, layer: layer)
         }
         guard added else { return }
+        onItemsCreated()
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
         }
@@ -116,6 +117,9 @@ extension TimelineStripView {
         }
         guard !targets.isEmpty else { return }
         timeline.splitItems(targets, frame: currentFrame, mode: .both)
+        // 分割で生まれた右半分は複製（cloned）であり供給を持たない
+        // ため、確定の直後に注入する（FE-SEP-RESIDUALS）。
+        onItemsCreated()
         reflectSelection()
         onEdited()
     }

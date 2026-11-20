@@ -110,6 +110,11 @@ final class WorkspaceState: ObservableObject {
             // リセットする（失敗時は旧プロジェクトと履歴を保つ）。
             editRecorder.resetForProjectSwitch()
             project = loaded
+            // シーン長供給の注入はデコード側でも行われるが、
+            // 「開いたプロジェクトには供給が行き渡っている」ことを
+            // アプリ層の不変条件としてここでも保証する（冪等。
+            // FE-SEP-RESIDUALS）。
+            loaded.injectSceneLengthProviders()
             diagnostics = loadedDiagnostics
             sourceURL = url
             loadSequence += 1
