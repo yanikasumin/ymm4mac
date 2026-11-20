@@ -138,10 +138,13 @@ extension TimelineStripView {
     }
 
     /// グリッド線の表示切替（本家 ToggleVerticalLine コマンド:
-    /// モデルの VerticalLine.IsEnabled を反転させる）。
+    /// モデルの VerticalLine.IsEnabled を反転させる）。反転は必ず
+    /// モデルを変えるため、非記録編集として未保存フラグへ通知する
+    /// （FE-R35-132-04）。
     func toggleVerticalLines() {
         timeline.verticalLine.isEnabled.toggle()
         gridRevision += 1
+        onUnrecordedEdit()
         onEdited()
     }
 

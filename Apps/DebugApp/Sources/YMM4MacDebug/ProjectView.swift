@@ -357,8 +357,11 @@ struct ProjectView: View {
                     }
                 }
                 .sheet(isPresented: $isGridSettingsPresented) {
+                    // onApplied は設定が実際に変わった場合にだけ呼ばれる
+                    // （FE-R35-132-04）。その時点で未保存フラグを立てる。
                     GridLineSettingsView(timeline: timeline) {
                         gridSettingsRevision += 1
+                        workspace.markEdited()
                     }
                 }
                 .onChange(of: workspace.isVideoSettingsPresented) { _, requested in
@@ -2372,7 +2375,8 @@ struct ProjectView: View {
     /// グリッド線 SplitButton（本体 = 表示切替、ドロップダウン =
     /// 切替＋設定。本家 §3.6(b)）。表示切替はモデルの
     /// VerticalLine.IsEnabled を反転させ、設定は専用シートを開く
-    /// （FE-UNIT5 で接続）。
+    /// （FE-UNIT5 で接続）。反転は必ずモデルを変えるため、その時点で
+    /// 未保存フラグを立てる（FE-R35-132-04）。
     private func gridSplitButton(timeline: Timeline) -> some View {
         HStack(spacing: 0) {
             toolbarButton(
@@ -2380,11 +2384,13 @@ struct ProjectView: View {
                 help: UIStrings.Toolbar.tip(UIStrings.Toolbar.gridLine)
             ) {
                 timeline.verticalLine.isEnabled.toggle()
+                workspace.markEdited()
                 gridSettingsRevision += 1
             }
             Menu {
                 Button {
                     timeline.verticalLine.isEnabled.toggle()
+                    workspace.markEdited()
                     gridSettingsRevision += 1
                 } label: {
                     if timeline.verticalLine.isEnabled {

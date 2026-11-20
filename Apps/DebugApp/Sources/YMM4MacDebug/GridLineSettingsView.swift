@@ -11,7 +11,8 @@ import YMM4Core
 /// （本家の LineType setter と同じ意味論が Core 側にある）。
 struct GridLineSettingsView: View {
     let timeline: Timeline
-    /// 適用後に呼ばれる（タイムラインの再描画等）。
+    /// 設定が実際に変わった場合にだけ呼ばれる（タイムラインの再描画と
+    /// 未保存フラグの通知。無変更の OK では呼ばない。FE-R35-132-04）。
     var onApplied: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
@@ -187,9 +188,35 @@ struct GridLineSettingsView: View {
         line.startFrame = min(max(startFrame, -99_999), 99_999)
         line.group = min(max(group, 0), 99_999)
         line.isEnabled = isEnabled
-        timeline.verticalLine = line
-        onApplied?()
+        // 実際にモデルが変わった場合に限り代入と通知を行う（値域
+        // クランプで現在値へ戻る入力も無変更扱い。FE-R35-132-04、
+        // PR #131 の VideoInfo 同値判定と同じ流儀）。
+        if Self.hasChanges(line, from: timeline.verticalLine) {
+            timeline.verticalLine = line
+            onApplied?()
+        }
         dismiss()
+    }
+
+    /// 組み立てた線が現在の線と異なるか。種別が違う場合はパラメータの
+    /// 比較をせず変更ありとする。パラメータの getter は種別が合わない
+    /// とき既定値を返すため、種別が同じなら有効なパラメータ同士の
+    /// 比較になる。
+    private static func hasChanges(
+        _ line: TimelineVerticalLine, from current: TimelineVerticalLine
+    ) -> Bool {
+        if line.isEnabled != current.isEnabled
+            || line.startFrame != current.startFrame
+            || line.group != current.group
+            || line.lineType != current.lineType {
+            return true
+        }
+        switch line.lineType {
+        case .bpm: return line.bpm != current.bpm
+        case .frame: return line.frameInterval != current.frameInterval
+        case .time: return line.spanTicks != current.spanTicks
+        case .unknown: return false
+        }
     }
 
     /// BPM の表示形（整数値は小数部なし、それ以外は最短表記）。
