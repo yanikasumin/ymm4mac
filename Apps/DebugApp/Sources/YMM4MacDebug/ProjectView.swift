@@ -645,6 +645,16 @@ struct ProjectView: View {
                     }
                     .frame(width: fittedWidth, height: fittedHeight)
 
+                    // ホイール／ピンチによる連続ズームの受け口。
+                    // 同じく当たり判定を持たないイベントアダプタ
+                    // （FE-ZOOM-INPUT）。倍率と中心は表示状態であり、
+                    // 未保存・Undo の対象にはならない。
+                    PreviewZoomInputAdapter(layout: layout) { newZoom, center in
+                        previewDisplayZoom = newZoom
+                        previewViewCenter = center
+                    }
+                    .frame(width: fittedWidth, height: fittedHeight)
+
                     // 描画診断の通知（R6-06）。直近の描画で効果の失敗が
                     // あった場合だけ出す。詳細は診断タブの履歴を見る。
                     // 操作の邪魔をしないようヒットテストは無効にする。
