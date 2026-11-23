@@ -20,6 +20,11 @@ struct ProjectView: View {
     let diagnostics: YmmpLoadDiagnostics
     /// 読み込み元ファイル。未保存の新規プロジェクトでは nil。
     let sourceURL: URL?
+    /// このビューが属するプロジェクト世代のスタンプ（FE-R30-130-02）。
+    /// ContentView が生成時に現行世代で捕捉して渡す。プロジェクトが
+    /// 差し替わるとこのビューは作り直されるが、破棄は非同期であり、
+    /// 遅れて配送される編集イベントはこのスタンプの照合で棄却する。
+    let editStamp: EditProjectStamp
 
     @State private var timelineIndex: Int
     @State private var selectedItemIndex: Int?
@@ -133,6 +138,8 @@ struct ProjectView: View {
     @State private var isVideoSettingsPresented = false
     /// 「動画出力」シートの表示状態。
     @State private var isExportDialogPresented = false
+    /// 「キャラクター編集」シートの表示状態。
+    @State private var isCharacterEditorPresented = false
     /// タイムラインキャンバスの表示幅（全体フィット計算用。
     /// TimelineStripView から受け取る）。
     @State private var canvasViewportWidth: CGFloat = 800
@@ -161,17 +168,64 @@ struct ProjectView: View {
     @State private var waveformVisibility: WaveformVisibility = .always
     /// タイムラインキャンバスへのホバー（波形のマウスオーバーモード用）。
     @State private var isCanvasHovering = false
-    /// 縦グリッド線の表示（本家の VerticalLines.IsEnabled 相当）。
-    @State private var showVerticalLines = true
+    /// グリッド線設定の変更世代。表示の正本はモデルの
+    /// `TimelineVerticalLine.isEnabled` で、ツールバー／設定シート
+    /// からの変更をタイムラインへ再描画させるために増やす。
+    @State private var gridSettingsRevision = 0
+    /// 「グリッド線の設定」シートの表示状態。
+    @State private var isGridSettingsPresented = false
     /// シーン名変更シートの対象（nil で閉じている）。
     @State private var renamingTimelineIndex: Int?
     @State private var renameText = ""
 
-    init(project: Project, diagnostics: YmmpLoadDiagnostics, sourceURL: URL?) {
+    init(
+        project: Project, diagnostics: YmmpLoadDiagnostics, sourceURL: URL?,
+        editStamp: EditProjectStamp
+    ) {
         self.project = project
         self.diagnostics = diagnostics
         self.sourceURL = sourceURL
-        _timelineIndex = State(initialValue: project.selectedTimelineIndex)
+        self.editStamp = editStamp
+        // 本家 OpenProjectAsync と同じく、保存済みインデックスは
+        // 範囲内へ丸めてから初期値にする。
+        _timelineIndex = State(initialValue: min(
+            max(project.selectedTimelineIndex, 0),
+            max(project.timelines.count - 1, 0)
+        ))
+        // 前回終了時のレイアウトを初期値へ反映する（FE-R1-036）。
+        let layout = WorkspaceLayoutState.load()
+        _previewPaneHeight = State(initialValue: layout.previewPaneHeight)
+        _timelineZoomPercent = State(initialValue: layout.timelineZoomPercent)
+        _layerRowHeight = State(initialValue: layout.layerRowHeight)
+        _previewDisplayZoom = State(initialValue: layout.previewDisplayZoom)
+    }
+
+    /// このビューのプロジェクトが現行か（FE-R30-130-02）。
+    /// ワークスペース操作の配送や非同期コミットの直前で照合する。
+    ///
+    /// プロジェクト帰属の確認はこの世代照合へ一本化した
+    /// （FE-R41-135）。PR #130 の `isCapturedProjectCurrent`
+    /// （`workspace.project === captured` の同一性比較）は削除した。
+    /// 両者が全ての利用箇所で一致することは実コードで確認済み:
+    /// `workspace.project` の差し替えは `newProject()` と
+    /// `load(url:)` の成功時に限られ、どちらも差し替えの直前に
+    /// `editAttribution.advance()` を呼ぶ。名前を付けて保存は同じ
+    /// 実体をその場で書き換えるため、どちらの確認も現行のままに
+    /// なる（正しい）。同一性比較は「捕捉した実体そのものか」を、
+    /// 世代照合は「差し替えが起きたか」を問うが、スタンプは
+    /// ビューの生成時に表示中プロジェクトに対して発行されるため、
+    /// このビューに関する限り両者は同じ答えになる。世代側に寄せた
+    /// のは、判定を Core の純粋な型として回帰テストで固定でき、
+    /// プロジェクト実体を捕捉しないコールバック（インスペクタの
+    /// 各行など）にも同じ仕組みを使えるためである。
+    private var isProjectCurrent: Bool {
+        workspace.editAttribution.isCurrent(editStamp)
+    }
+
+    /// インスペクタの行へ渡す編集帰属のガード（FE-R30-130-02）。
+    private var editGuard: ProjectEditGuard {
+        ProjectEditGuard(
+            attribution: workspace.editAttribution, stamp: editStamp)
     }
 
     /// ステータスバー等に出すプロジェクト名。
@@ -251,10 +305,11 @@ struct ProjectView: View {
                                     zoomPercent: $timelineZoomPercent,
                                     rowHeight: CGFloat(layerRowHeight),
                                     showWaveform: effectiveShowWaveform,
-                                    showVerticalLines: $showVerticalLines,
+                                    gridSettingsRevision: $gridSettingsRevision,
                                     reportedCanvasWidth: $canvasViewportWidth,
                                     reportedTopLayer: $topVisibleLayer,
                                     onEdited: { requestPreviewRender(modelChanged: true) },
+                                    onUnrecordedEdit: { workspace.markEdited() },
                                     onDragBegan: {
                                         beginTimelineDragUndo(timeline: timeline)
                                     },
@@ -288,6 +343,9 @@ struct ProjectView: View {
                                             seeksAfterAdd: seeksAfterAdd,
                                             timeline: timeline
                                         )
+                                    },
+                                    onOpenCharacterSettings: {
+                                        isCharacterEditorPresented = true
                                     }
                                 )
                                 .frame(minHeight: 26)
@@ -304,7 +362,12 @@ struct ProjectView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .sheet(isPresented: $isVideoSettingsPresented) {
-                    VideoSettingsView(timeline: timeline) { resetPreview() }
+                    VideoSettingsView(timeline: timeline) {
+                        // 動画情報の書き込みはモデル変更（OK で適用した
+                        // 時点で確定する）ため未保存フラグも立てる。
+                        workspace.markEdited()
+                        resetPreview()
+                    }
                 }
                 .sheet(isPresented: $isExportDialogPresented) {
                     ExportDialogView(
@@ -319,6 +382,14 @@ struct ProjectView: View {
                         runExport(timeline: timeline, request: request)
                     }
                 }
+                .sheet(isPresented: $isGridSettingsPresented) {
+                    // onApplied は設定が実際に変わった場合にだけ呼ばれる
+                    // （FE-R35-132-04）。その時点で未保存フラグを立てる。
+                    GridLineSettingsView(timeline: timeline) {
+                        gridSettingsRevision += 1
+                        workspace.markEdited()
+                    }
+                }
                 .onChange(of: workspace.isVideoSettingsPresented) { _, requested in
                     if requested {
                         isVideoSettingsPresented = true
@@ -329,6 +400,22 @@ struct ProjectView: View {
                     if requested {
                         isExportDialogPresented = true
                         workspace.isExportPresented = false
+                    }
+                }
+                .sheet(isPresented: $isCharacterEditorPresented) {
+                    CharacterEditorView(project: project) {
+                        requestPreviewRender(modelChanged: true)
+                        // キャラクター編集は Undo 記録の対象外のため、
+                        // 編集の確定通知で未保存フラグも個別に立てる
+                        // （FE-R39-133-02。PR #131 の個別通知の流儀。
+                        // 通知は変更が実際に成立した場合に限る）。
+                        workspace.markEdited()
+                    }
+                }
+                .onChange(of: workspace.isCharacterEditorPresented) { _, requested in
+                    if requested {
+                        isCharacterEditorPresented = true
+                        workspace.isCharacterEditorPresented = false
                     }
                 }
                 .onChange(of: workspace.pendingAction?.sequence) { _, _ in
@@ -357,6 +444,32 @@ struct ProjectView: View {
             }
         }
         .onAppear { resetPreview() }
+        .onChange(of: timelineIndex) { _, newIndex in
+            // 保存対象の選択シーンを表示へ追随させる（FE-R1-012）。
+            // 本家は保存時点の表示シーンから SelectedTimelineIndex を
+            // 作る（MainModel.SaveProject）。Mac 側はモデル側の値を
+            // 切替のたびに同期しておくことで同じ結果にする。
+            // シーン切替そのものは本家でも未保存扱いにならない
+            // （SelectScene は履歴へ記録されない）ため、編集フラグは
+            // ここでは立てない。
+            project.selectedTimelineIndex = newIndex
+        }
+        // レイアウト量が変わるたびにアプリ設定へ残す（FE-R1-036。
+        // 次回起動・次にプロジェクトを開いた際の初期値になる）。
+        .onChange(of: previewPaneHeight) { _, _ in persistLayout() }
+        .onChange(of: timelineZoomPercent) { _, _ in persistLayout() }
+        .onChange(of: layerRowHeight) { _, _ in persistLayout() }
+        .onChange(of: previewDisplayZoom) { _, _ in persistLayout() }
+    }
+
+    /// 現在のレイアウト量をアプリ設定へ保存する（FE-R1-036）。
+    private func persistLayout() {
+        WorkspaceLayoutState(
+            previewPaneHeight: previewPaneHeight,
+            timelineZoomPercent: timelineZoomPercent,
+            layerRowHeight: layerRowHeight,
+            previewDisplayZoom: previewDisplayZoom
+        ).save()
     }
 
     // MARK: - 上部ストリップ
@@ -442,19 +555,32 @@ struct ProjectView: View {
         project.timelines.append(newTimeline)
         timelineIndex = project.timelines.count - 1
         selectedItemIndex = nil
+        workspace.markEdited()
         resetPreview()
     }
 
     /// シーンを削除する（最低1つは残す）。
+    /// 表示対象の同一性は保つ（FE-R1-013）。本家は表示中シーンを
+    /// 参照で保持するため、別シーンの削除では表示は移らない。Mac 側は
+    /// インデックス保持のため、表示中より前を消したらインデックスを
+    /// 詰め、表示中自体を消したときだけ後継（同位置の次、末尾なら
+    /// 最後）へ移す。プレビューの作り直しと選択の解除は、表示対象が
+    /// 実際に変わった場合だけ行う。
     private func deleteTimeline(at index: Int) {
         guard project.timelines.count > 1,
               project.timelines.indices.contains(index) else { return }
+        let wasDisplayed = index == timelineIndex
         project.timelines.remove(at: index)
-        if timelineIndex >= project.timelines.count {
+        if index < timelineIndex {
+            timelineIndex -= 1
+        } else if timelineIndex >= project.timelines.count {
             timelineIndex = project.timelines.count - 1
         }
-        selectedItemIndex = nil
-        resetPreview()
+        workspace.markEdited()
+        if wasDisplayed {
+            selectedItemIndex = nil
+            resetPreview()
+        }
     }
 
     /// シーン名変更シートの対象（.sheet(item:) 用）。
@@ -488,9 +614,14 @@ struct ProjectView: View {
     }
 
     private func commitTimelineRename(index: Int) {
-        guard project.timelines.indices.contains(index) else { return }
-        project.timelines[index].name =
-            renameText.trimmingCharacters(in: .whitespaces)
+        // 名前が実際に変わる場合だけ代入と未保存記録を行う（FE-INT-131-01）。
+        // 同名のまま確定した場合は編集ではないので、未保存フラグを立てない。
+        let newName = renameText.trimmingCharacters(in: .whitespaces)
+        if project.timelines.indices.contains(index),
+           project.timelines[index].name != newName {
+            project.timelines[index].name = newName
+            workspace.markEdited()
+        }
         renamingTimelineIndex = nil
     }
 
@@ -1451,6 +1582,11 @@ struct ProjectView: View {
     /// いずれも Core の既存編集操作への接続であり、構造を変える操作の
     /// 後はプレビューを再合成する。
     private func executeWorkspaceAction(_ action: WorkspaceAction, timeline: Timeline) {
+        // ワークスペース操作は pendingAction の観測で配送されるため、
+        // プロジェクト切り替え後に旧ビュー側の配送が遅れて届き得る。
+        // 帰属が現行でなければ、モデル変更・履歴操作のいずれも
+        // 行わずに棄却する（FE-R30-130-02。配送の単一の集約点で照合）。
+        guard isProjectCurrent else { return }
         switch action {
         case .undo:
             performUndo(timeline: timeline)
@@ -1482,24 +1618,44 @@ struct ProjectView: View {
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
             timeline.groupSelectedAndGroupedItems()
+            // グループ化は Undo 記録の対象外のため個別に立てる
+            // （FE-R32-131-03）。
+            workspace.markEdited()
             requestPreviewRender(modelChanged: true)
         case .ungroupSelection:
             guard selectedItem != nil else { return }
             syncSelectionToTimeline(timeline)
-            timeline.ungroupSelectedAndGroupedItems()
+            // グループ解除は Undo 記録の対象外のため、実際に解散した
+            // 場合だけ個別に立てる。アプリメニュー側にはツールバー／
+            // コンテキストメニューのような表示条件（group ≠ 0 のとき
+            // だけ出す）が無く、未グループの選択でも実行され得るため、
+            // 発火は Core の返す変更有無で判定する（FE-R33-131-02 と
+            // 同じ約束。FE-INT-131-01 の洗い出しで記録した同型の処分）。
+            if timeline.ungroupSelectedAndGroupedItems() {
+                workspace.markEdited()
+            }
             requestPreviewRender(modelChanged: true)
         case .toggleLock:
-            selectedItem?.isLocked.toggle()
+            // ロック切替は Undo 記録の対象外のため、実際に切り替えた
+            // 場合だけ個別に立てる（FE-R32-131-03）。
+            if let item = selectedItem {
+                item.isLocked.toggle()
+                workspace.markEdited()
+            }
             requestPreviewRender(modelChanged: true)
         case .toggleClipping:
             if let visual = selectedItem as? VisualItem {
                 visual.isClippingWithObjectAbove.toggle()
+                workspace.markEdited()
             } else if let voice = selectedItem as? VoiceItem {
                 voice.isClippingWithObjectAbove.toggle()
+                workspace.markEdited()
             }
             requestPreviewRender(modelChanged: true)
         case .toggleWaveform:
             waveformVisibility = waveformVisibility == .hidden ? .always : .hidden
+        case .setControlPointVisibility(let mode):
+            controlPointVisibility = mode
         case .selectAll:
             timeline.selectItems(timeline.items)
             selectedItemIndex = timeline.items.isEmpty ? nil : 0
@@ -1556,6 +1712,9 @@ struct ProjectView: View {
         }
         guard !targets.isEmpty else { return }
         timeline.splitItems(targets, frame: frame, mode: .both)
+        // 分割は Undo 記録の対象外のため、成功後に未保存フラグを
+        // 個別に立てる（FE-R32-131-03）。
+        workspace.markEdited()
         reflectCoreSelection(timeline)
         requestPreviewRender(modelChanged: true)
     }
@@ -1636,11 +1795,13 @@ struct ProjectView: View {
     /// Timeline の確定操作（tryAddItems）へ渡す。取得に失敗した
     /// ファイルは追加しない（空アイテムを残さない）。
     ///
-    /// 取得は非同期で、その間にタイムラインの切り替えや削除が
-    /// 起き得る。確定時は対象タイムラインがまだプロジェクトに
-    /// 属していることを確認し（FE-R15-002）、選択の写し戻しは
-    /// 追加先が現在表示中のタイムラインの場合だけ行う（別タイム
-    /// ラインへの追加で表示中の選択状態を書き換えない）。
+    /// 取得は非同期で、その間にタイムラインの切り替えや削除、
+    /// プロジェクト自体の切り替えが起き得る。確定時は、プロジェクト
+    /// が差し替わっていないこと（FE-R16-002 の同一性確認は世代照合へ
+    /// 一本化した。FE-R41-135）と、対象タイムラインがまだその
+    /// プロジェクトに属していること（FE-R15-002）を確認し、選択の
+    /// 写し戻しは追加先が現在表示中のタイムラインの場合だけ行う
+    /// （別タイムラインへの追加で表示中の選択状態を書き換えない）。
     private func addMediaFiles(
         _ entries: [(url: URL, kind: AddItemKind, group: PropertyFileGroup)],
         frame: Int, layer: Int, timeline: Timeline, baseDirectory: URL
@@ -1656,7 +1817,11 @@ struct ProjectView: View {
             prepareMediaItem(item, info: info, fps: timeline.videoInfo.fps)
             newItems.append(item)
         }
-        guard !newItems.isEmpty,
+        // コミット直前の帰属再確認（FE-R30-130-02、条件 F）。所属確認は
+        // 捕捉したプロジェクトに対するもので、切り替え後も旧プロジェ
+        // クト側では真のままになるため、現行世代との照合を併せる。
+        // 陳腐化していたら記録もモデル変更も行わない。
+        guard !newItems.isEmpty, isProjectCurrent,
               project.timelines.contains(where: { $0 === timeline })
         else { return }
         // 記録のスナップショットは確定の直前に取る（取得の非同期の
@@ -1784,11 +1949,15 @@ struct ProjectView: View {
     /// 通知は記述子が新しいパスを書き込むより前に届くため、ここで
     /// 変更前のパスと素材長を捕捉できる。情報取得（供給層）を
     /// 非同期に行い、対象の同一性と要求世代、タイムラインが
-    /// まだプロジェクトに属していることを照合してから、素材
-    /// 情報を記録して編集終了時相当の長さ調整（編集操作層）を
-    /// 行う。ファイルが存在しない場合は長さに触らず、状態表示で
-    /// 知らせる（利用者のトリムを守る。パス文字列自体は記述子が
-    /// 保持する）。
+    /// まだプロジェクトに属していること、プロジェクトが
+    /// 差し替わっていないこと（FE-R16-002 の同一性確認は世代
+    /// 照合へ一本化した。FE-R41-135）を照合してから、素材情報を
+    /// 記録して編集終了時相当の長さ調整（編集操作層）を行う。ファイルが存在しない場合の状態表示
+    /// （共有の statusMessage への書き込み）もこの照合の内側に
+    /// あるため、切り替え後の旧処理の結果が新しいプロジェクトの
+    /// 画面へ出ることはない。ファイルが存在しない場合は長さに
+    /// 触らず、状態表示で知らせる（利用者のトリムを守る。パス
+    /// 文字列自体は記述子が保持する）。
     private func applyFileChange(item: BaseItem, newPath: String, timeline: Timeline) {
         guard let group = fileGroup(of: item) else { return }
         let oldPath = filePath(of: item)
@@ -1818,7 +1987,12 @@ struct ProjectView: View {
                 path: newPath, group: group,
                 audioTrackIndex: audioTrackIndex, baseDirectory: baseDirectory
             )
-            guard fileChangeGenerations[key] == generation,
+            // コミット直前の帰属再確認（FE-R30-130-02、条件 F）。
+            // 世代・所属の確認は捕捉したプロジェクトに対するもので、
+            // 切り替え後の現行世代との照合を併せる。失敗時の状態
+            // メッセージ（共有状態への書き込み）もこの確認の内側に
+            // あるため、陳腐化した適用はそちらも行わない。
+            guard fileChangeGenerations[key] == generation, isProjectCurrent,
                   project.timelines.contains(where: { $0 === timeline }),
                   timeline.items.contains(where: { $0 === item })
             else { return }
@@ -1827,6 +2001,10 @@ struct ProjectView: View {
                     "ファイルが見つからないため、長さを更新できませんでした: \(newPath)"
                 return
             }
+            // 未保存の記録は行側の書き込み成立時点に一本化した
+            // （FE-R33-131-01）。ここは素材長の調整だけを担い、
+            // 記録には関与しない。取得失敗で戻る経路でも、書き込み
+            // 時点で立ったフラグは消えない。
             item.recordMediaInfo(info)
             // 長さが決め直されたら、タイムライン長のキャッシュも
             // 追随させる（FE-R16-001）。キャッシュは自動追随せず、
@@ -1911,6 +2089,23 @@ struct ProjectView: View {
             panel.nameFieldStringValue = "thumbnail.jpg"
         }
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        // 本家は保存時にフレームを描き直し、alpha の有無でクリア色を
+        // 変える（TimelineVideoPlayer.RenderCurrentFrameBitmap:
+        // alpha=false は黒 (0,0,0,1) でクリアして合成、alpha=true は
+        // 透明のまま）。プレビューの読み戻し画像はアルファを保持して
+        // いるため、通常 PNG / JPEG では黒背景へ合成してから書き出し、
+        // 透過 PNG ではそのまま書き出す（FE-R1-026）。
+        let imageToWrite: CGImage
+        switch format {
+        case .pngAlpha:
+            imageToWrite = previewImage
+        case .png, .jpeg:
+            guard let flattened = Self.flattenedOnBlack(previewImage) else {
+                workspace.statusMessage = "サムネイルを保存できませんでした"
+                return
+            }
+            imageToWrite = flattened
+        }
         let type: CFString = format == .jpeg ? UTType.jpeg.identifier as CFString
             : UTType.png.identifier as CFString
         guard let destination = CGImageDestinationCreateWithURL(
@@ -1919,12 +2114,37 @@ struct ProjectView: View {
             workspace.statusMessage = "サムネイルを保存できませんでした"
             return
         }
-        CGImageDestinationAddImage(destination, previewImage, nil)
+        CGImageDestinationAddImage(destination, imageToWrite, nil)
         if CGImageDestinationFinalize(destination) {
             workspace.statusMessage = "サムネイルを保存しました: \(url.path)"
         } else {
             workspace.statusMessage = "サムネイルを保存できませんでした"
         }
+    }
+
+    /// アルファ保持の画像を不透明な黒背景へ合成した画像を返す
+    /// （本家のサムネイル保存 alpha=false のクリア規則。FE-R1-026）。
+    /// 入力はプレビュー読み戻しと同じ premultiplied BGRA 前提で、
+    /// 上下が反転しないよう描画側の座標系を反転してから描く。
+    private static func flattenedOnBlack(_ image: CGImage) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0,
+              let context = CGContext(
+                  data: nil, width: width, height: height,
+                  bitsPerComponent: 8, bytesPerRow: width * 4,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                      | CGBitmapInfo.byteOrder32Little.rawValue
+              )
+        else { return nil }
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+        context.fill(rect)
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        context.draw(image, in: rect)
+        return context.makeImage()
     }
 
     // MARK: - ファイルのドロップイン
@@ -1936,6 +2156,9 @@ struct ProjectView: View {
     /// 現在フレーム・表示最上段レイヤー（GetCurrentLayer()）へ追加する。
     private func handleDroppedURLs(_ urls: [URL], timeline: Timeline) {
         if urls.count == 1, urls[0].pathExtension.lowercased() == "ymmp" {
+            // プロジェクトを開く操作と同じく、未保存の変更があれば
+            // 破棄確認を出してから読み込む（FE-R1-001）。
+            guard workspace.confirmDiscardUnsavedChanges() else { return }
             workspace.load(url: urls[0])
             return
         }
@@ -2132,7 +2355,7 @@ struct ProjectView: View {
                 }
             }
             waveformSplitButton
-            gridSplitButton
+            gridSplitButton(timeline: timeline)
             meterMenuButton
             toolbarDivider
             toolbarButton("trash", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.delete, shortcut: UIStrings.Toolbar.shortcutDelete)) {
@@ -2204,27 +2427,35 @@ struct ProjectView: View {
     }
 
     /// グリッド線 SplitButton（本体 = 表示切替、ドロップダウン =
-    /// 切替＋設定。本家 §3.6(b)。設定画面は未実装のため無効表示）。
-    private var gridSplitButton: some View {
+    /// 切替＋設定。本家 §3.6(b)）。表示切替はモデルの
+    /// VerticalLine.IsEnabled を反転させ、設定は専用シートを開く
+    /// （FE-UNIT5 で接続）。反転は必ずモデルを変えるため、その時点で
+    /// 未保存フラグを立てる（FE-R35-132-04）。
+    private func gridSplitButton(timeline: Timeline) -> some View {
         HStack(spacing: 0) {
             toolbarButton(
                 "square.grid.3x3",
                 help: UIStrings.Toolbar.tip(UIStrings.Toolbar.gridLine)
             ) {
-                showVerticalLines.toggle()
+                timeline.verticalLine.isEnabled.toggle()
+                workspace.markEdited()
+                gridSettingsRevision += 1
             }
             Menu {
                 Button {
-                    showVerticalLines.toggle()
+                    timeline.verticalLine.isEnabled.toggle()
+                    workspace.markEdited()
+                    gridSettingsRevision += 1
                 } label: {
-                    if showVerticalLines {
+                    if timeline.verticalLine.isEnabled {
                         Label(UIStrings.Toolbar.gridLine, systemImage: "checkmark")
                     } else {
                         Text(UIStrings.Toolbar.gridLine)
                     }
                 }
-                Button(UIStrings.Toolbar.gridLineSettings) {}
-                    .disabled(true)
+                Button(UIStrings.Toolbar.gridLineSettings) {
+                    isGridSettingsPresented = true
+                }
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8))
@@ -2257,17 +2488,23 @@ struct ProjectView: View {
                 workspace.newProject()
             }
             toolbarButton("folder", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.openProject, shortcut: UIStrings.Toolbar.shortcutOpen)) {
-                workspace.isImporterPresented = true
+                workspace.requestOpenProject()
             }
             toolbarButton("square.and.arrow.down", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.saveProject, shortcut: UIStrings.Toolbar.shortcutSave)) {
-                workspace.saveCopy()
+                workspace.save()
             }
             toolbarDivider
             toolbarButton("tuningfork", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.videoInfo)) {
                 isVideoSettingsPresented = true
             }
             toolbarDivider
-            toolbarButton("film", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputExo)) {}
+            // EXO 書き出しの基盤（形式変換ライタ）が Core に無いため
+            // 未接続。無効である理由はツールチップで示す（FE-UNIT5）。
+            toolbarButton(
+                "film",
+                help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputExo)
+                    + UIStrings.Common.unconnectedSuffix
+            ) {}
                 .disabled(true)
             toolbarButton("play.rectangle", help: UIStrings.Toolbar.tip(UIStrings.Toolbar.outputVideo)) {
                 isExportDialogPresented = true
@@ -2717,14 +2954,23 @@ struct ProjectView: View {
     }
 
     /// ワーカーからの完成通知を、識別子（セッションキー・世代・
-    /// モデル版数）が現在のものと一致する場合だけ表示へ反映する
+    /// モデル版数）が現在のものと一致し、かつプロジェクトが
+    /// 差し替わっていない場合だけ表示へ反映する
     /// （古いセッション・編集前のモデルの結果は捨てる。それ以外は、
     /// 後続の要求があっても採用する — 第9ラウンドの二段階規則）。
+    /// プロジェクト帰属の確認（FE-R16-002。同一性確認は世代照合へ
+    /// 一本化した。FE-R41-135）は、識別子の照合が
+    /// ビュー自身の状態同士の比較であり、ビューが表示を終えた後も
+    /// 自己整合してしまうため必要になる。特に onImage は保留中の
+    /// サムネイル保存（保存パネル表示と共有 statusMessage への
+    /// 書き込み）へ進み得るため、切り替え後の旧ワーカーの完成通知を
+    /// ここで落とす。
     private func wirePreviewWorker() {
         previewWorker.onImage = { image, identity, frame, failures, history in
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
-                  identity.version == previewModelVersion
+                  identity.version == previewModelVersion,
+                  isProjectCurrent
             else { return }
             // 停止中は現在位置と一致するフレームだけを採用する
             // （シーク前に始まった描画の結果で表示が巻き戻らない。
@@ -2758,7 +3004,8 @@ struct ProjectView: View {
         previewWorker.onRenderFailed = { identity, frame, failures, history in
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
-                  identity.version == previewModelVersion
+                  identity.version == previewModelVersion,
+                  isProjectCurrent
             else { return }
             // 正常画像と同じ採用条件にそろえる: 停止中は現在位置と
             // 一致するフレームの失敗だけを採用する（シーク前の失敗
@@ -2784,11 +3031,13 @@ struct ProjectView: View {
             previewDiagnostics = history
         }
         previewWorker.onModelFailed = { message, identity in
-            // 識別子が現在のモデルと一致する場合だけ表示する
-            // （旧モデルの失敗が新モデルを上書きしない。R11-03）。
+            // 識別子が現在のモデルと一致し、プロジェクトが切り替
+            // わっていない場合だけ表示する（旧モデルの失敗が新モデル
+            // を上書きしない。R11-03 / FE-R16-002）。
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
-                  identity.version == previewModelVersion
+                  identity.version == previewModelVersion,
+                  isProjectCurrent
             else { return }
             // 初期化失敗の理由をそのまま表示する（Issue #50）。
             // 旧モデルの画像が残ると理由文より画像が優先表示され、
@@ -2834,7 +3083,16 @@ struct ProjectView: View {
     /// 間引いた場合は少し遅れて確実に反映する。生成に失敗した場合は
     /// 理由を利用者へ示し、dirty のまま遅延再試行を予約する
     /// （失敗を無言で消さない。R11-06）。
+    ///
+    /// この関数は遅延確定（scheduleTrailingModelRefresh の
+    /// DispatchWorkItem）や再生エンジンの停止遷移通知からも呼ばれ、
+    /// ビューが表示を終えた時点でも発火し得る。生成失敗時の理由は
+    /// 共有の statusMessage へ書くため、入口でプロジェクトの帰属を
+    /// 確認し（FE-R16-002。世代照合へ一本化。FE-R41-135）、
+    /// 切り替え後であれば旧プロジェクトの
+    /// スナップショット生成も失敗表示も行わない。
     private func refreshPreviewModel(force: Bool = false) {
+        guard isProjectCurrent else { return }
         guard let timeline, previewSessionKey != nil else { return }
         if !force, Date().timeIntervalSince(lastPreviewSnapshotAt) < 0.1 {
             scheduleTrailingModelRefresh()
@@ -2879,7 +3137,14 @@ struct ProjectView: View {
         usage: TimelineSourceUsage = .paused, modelChanged: Bool = false,
         forceModelRefresh: Bool = false
     ) {
-        if modelChanged { previewModelDirty = true }
+        if modelChanged {
+            previewModelDirty = true
+            // 未保存フラグはここでは立てない（FE-R32-131-03）。
+            // この合流点は遅延プレビュー更新や無変更のドラッグ終了
+            // でも通るため、フラグの駆動は履歴変更通知（記録される
+            // 編集）と、各操作の成功後の個別の markEdited()（記録
+            // されない編集）へ分けた。WorkspaceState 側を参照。
+        }
         if isPlayingForm {
             // 再生中はモデルに触らないため、識別子は現在設置済みの
             // もののまま（版数は再生中に上がらない）。
@@ -2996,6 +3261,24 @@ struct ProjectView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(String(describing: type(of: item)))
                     .bold()
+                // キャラクターを持つアイテムは、本家のアイテム編集画面
+                // と同じくキャラクター選択を先頭に置く（FE-UNIT6）。
+                // 記述子はプロジェクトの一覧を知らないため専用行で扱う。
+                if CharacterItemAccess.supports(item) {
+                    CharacterPickerRowView(
+                        item: item,
+                        characters: project.characters,
+                        onEdited: {
+                            requestPreviewRender(modelChanged: true)
+                            // 参照先の変更は Undo 記録の対象外のため、
+                            // 未保存フラグも個別に立てる
+                            // （FE-R39-133-02。通知は参照が実際に
+                            // 変わった場合に限る）。
+                            workspace.markEdited()
+                        },
+                        editProjectGuard: editGuard
+                    )
+                }
                 let context = animationContext(for: item, timeline: timeline)
                 PropertyInspectorView(
                     descriptors: ItemPropertyMetadata.descriptors(for: item),
@@ -3004,8 +3287,16 @@ struct ProjectView: View {
                     onFilePathChanged: { _, newPath in
                         applyFileChange(item: item, newPath: newPath, timeline: timeline)
                     },
+                    onFilePathCommitted: {
+                        // パスの書き込みが成立した時点で未保存に
+                        // する（FE-R33-131-01）。情報取得の成否は
+                        // applyFileChange 側で扱い、記録には関与
+                        // させない。
+                        workspace.markEdited()
+                    },
                     editRecorder: workspace.editRecorder,
                     editTargetOwner: item,
+                    editProjectGuard: editGuard,
                     onPlaybackRateSessionBegan: { descriptor in
                         capturePlaybackRateEditBaseline(
                             descriptor: descriptor, item: item)
@@ -3019,7 +3310,13 @@ struct ProjectView: View {
                 EffectInspectorView(
                     item: item,
                     animationContext: context,
-                    onEdited: { requestPreviewRender(modelChanged: true) }
+                    // エフェクト編集は Undo 記録の対象外のため、編集の
+                    // 確定通知で未保存フラグも個別に立てる
+                    // （FE-R32-131-03）。
+                    onEdited: {
+                        requestPreviewRender(modelChanged: true)
+                        workspace.markEdited()
+                    }
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)

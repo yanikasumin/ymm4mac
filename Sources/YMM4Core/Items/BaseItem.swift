@@ -175,9 +175,20 @@ public class BaseItem {
 
     /// 全キーフレームを削除する。全 `Animation` の値列は開始値と
     /// 終了値だけに畳まれる。
-    public func removeAllKeyFrames() {
-        forEachAnimation { $0.removeAllKeyFrames() }
+    ///
+    /// - Returns: 実際に削除・畳み込みが起きたら true。キーフレーム
+    ///   が無いアイテムでは false（無変更の操作を編集として扱わ
+    ///   ないための判定。FE-R33-131-02）。
+    @discardableResult
+    public func removeAllKeyFrames() -> Bool {
+        var changed = !keyFrames.frames.isEmpty
+        forEachAnimation { animation in
+            if animation.removeAllKeyFrames() {
+                changed = true
+            }
+        }
         keyFrames = KeyFrames()
+        return changed
     }
 
     /// キーフレームの位置だけを動かす（隣を越えない範囲へ丸める）。

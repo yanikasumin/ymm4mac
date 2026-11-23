@@ -261,6 +261,16 @@ public final class Character {
 
     public init() {}
 
+    /// 深い複製（JSON 往復。アイテムの `cloned()` と同じ経路で、
+    /// 型付きプロパティ・保持オブジェクト・追加フィールドの全てが
+    /// 独立したインスタンスになる）。
+    public func cloned() -> Character {
+        guard let copy = Character.decode(from: encodeToJSONValue()) else {
+            fatalError("自前で書き出したキャラクターを読み戻せませんでした")
+        }
+        return copy
+    }
+
     /// .ymmp のオブジェクト形式へ書き出す（型付きプロパティ＋追加フィールド）。
     func encodeToJSONValue() -> JSONValue {
         var fields: [(key: String, value: JSONValue)] = [

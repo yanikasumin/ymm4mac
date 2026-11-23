@@ -15,17 +15,39 @@ final class ExportUIState: ObservableObject {
 }
 
 /// 書き出し要求（ダイアログで確定した出力形式と出力先）。
+/// 音量正規化・コンプレッサは形式に依らず音声供給側へ効くため、
+/// 両形式とも同じ設定対を持つ（FE-R1-017）。
 enum ExportRequest: Sendable {
     /// MP4（H.264 / AAC、ffmpeg 経由）。出力先はファイル。
-    case mp4(fileURL: URL)
+    case mp4(
+        fileURL: URL,
+        loudness: LoudnessNormalizationSettings,
+        compressor: CompressorSettings
+    )
     /// PNG 連番＋WAV（PngWav）。出力先はフォルダ。
-    case pngWav(directoryURL: URL, settings: PngWavExportSettings)
+    case pngWav(
+        directoryURL: URL,
+        settings: PngWavExportSettings,
+        loudness: LoudnessNormalizationSettings,
+        compressor: CompressorSettings
+    )
+
+    /// 音声処理設定（形式に依らない共通部）。
+    var audioSettings: (
+        loudness: LoudnessNormalizationSettings, compressor: CompressorSettings
+    ) {
+        switch self {
+        case .mp4(_, let loudness, let compressor),
+             .pngWav(_, _, let loudness, let compressor):
+            return (loudness, compressor)
+        }
+    }
 
     /// 要約表示用の出力先 URL。
     var outputURL: URL {
         switch self {
-        case .mp4(let fileURL): return fileURL
-        case .pngWav(let directoryURL, _): return directoryURL
+        case .mp4(let fileURL, _, _): return fileURL
+        case .pngWav(let directoryURL, _, _, _): return directoryURL
         }
     }
 }
@@ -61,8 +83,10 @@ final class ExportJob: @unchecked Sendable {
     func run() {
         let exporter: TimelineExporter
         do {
+            let audio = request.audioSettings
             exporter = try TimelineExporter(
-                timeline: timeline, timelines: timelines, baseDirectory: baseDirectory
+                timeline: timeline, timelines: timelines, baseDirectory: baseDirectory,
+                loudness: audio.loudness, compressor: audio.compressor
             )
         } catch let error as MetalInitializationError {
             // 初期化失敗の理由をそのまま表示する（Issue #50）。
@@ -82,12 +106,12 @@ final class ExportJob: @unchecked Sendable {
             }
             let outcome: ExportOutcome
             switch request {
-            case .mp4(let fileURL):
+            case .mp4(let fileURL, _, _):
                 outcome = try exporter.run(
                     outputPath: fileURL.path, cancellation: cancellation,
                     onProgress: progress
                 )
-            case .pngWav(let directoryURL, let settings):
+            case .pngWav(let directoryURL, let settings, _, _):
                 outcome = try exporter.runPngWav(
                     outputDirectory: directoryURL.path, settings: settings,
                     cancellation: cancellation, onProgress: progress

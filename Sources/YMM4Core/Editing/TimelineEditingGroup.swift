@@ -49,9 +49,19 @@ public extension Timeline {
     }
 
     /// 選択中アイテムとそのグループを解散する。本家 `UngroupSelectedAndGroupedItems`。
-    func ungroupSelectedAndGroupedItems() {
+    ///
+    /// 実際に解散した（group が 0 でないアイテムがあった）かを返す。
+    /// 呼び出し側が未保存フラグの発火を実際の変更有無で判定するための
+    /// 約束（FE-R33-131-02 の戻り値判定と同じ形）。
+    @discardableResult
+    func ungroupSelectedAndGroupedItems() -> Bool {
+        var changed = false
         for item in selectedAndGroupedItems {
-            item.group = 0
+            if item.group != 0 {
+                item.group = 0
+                changed = true
+            }
         }
+        return changed
     }
 }

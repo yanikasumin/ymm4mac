@@ -135,46 +135,17 @@ public enum YmmpCodec {
             }
         }
         project.loadOldTimeline(legacyTimeline: legacyTimeline)
-        resolveCharacterReferences(in: project)
+        // キャラクター参照の解決。本家では VoiceItem / TachieItem /
+        // TachieFaceItem の `Character` は [JsonIgnore] の実行時参照であり、
+        // 保存されるのは `CharacterName` だけである。そのため本家
+        // ファイルのアイテムには "Character" オブジェクトが存在せず、
+        // デコード直後は参照が未解決のままになる。読み込みの最後に、
+        // プロジェクトのキャラクター一覧から名前で引いて参照を
+        // 張り直す（MAC-0014 のレビュー制約）。規則の実体は
+        // `Project.resolveCharacterReferencesByName()`（編集後の
+        // 再解決と共通）。
+        project.resolveCharacterReferencesByName()
         return (project, diagnostics)
-    }
-
-    /// キャラクター参照の解決。本家では VoiceItem / TachieItem /
-    /// TachieFaceItem の `Character` は [JsonIgnore] の実行時参照であり、
-    /// 保存されるのは `CharacterName` だけである（VoiceItem.cs の
-    /// Character プロパティが [JsonIgnore]、CharacterName だけが保存対象）。
-    /// そのため本家ファイルのアイテムには "Character" オブジェクトが
-    /// 存在せず、デコード直後は参照が未解決のままになる。読み込みの
-    /// 最後に、プロジェクトのキャラクター一覧から名前で引いて参照を
-    /// 張り直す（MAC-0014 のレビュー制約）。名前が一致するキャラクターが
-    /// 無い場合は、デコード済みの参照（移行期の自前ファイルが埋め込む
-    /// 複製）をそのまま残す。
-    private static func resolveCharacterReferences(in project: Project) {
-        guard !project.characters.isEmpty else { return }
-        func resolve(_ characterName: String) -> Character? {
-            guard !characterName.isEmpty else { return nil }
-            return project.characters.first { $0.name == characterName }
-        }
-        for timeline in project.timelines {
-            for item in timeline.items {
-                switch item {
-                case let voice as VoiceItem:
-                    if let resolved = resolve(voice.characterName) {
-                        voice.character = resolved
-                    }
-                case let tachie as TachieItem:
-                    if let resolved = resolve(tachie.characterName) {
-                        tachie.character = resolved
-                    }
-                case let face as TachieFaceItem:
-                    if let resolved = resolve(face.characterName) {
-                        face.character = resolved
-                    }
-                default:
-                    break
-                }
-            }
-        }
     }
 
     /// ファイルからプロジェクトを読み込む。
@@ -201,8 +172,12 @@ public enum YmmpCodec {
 
     /// 本家の保存手順でファイルへ保存する。
     ///
-    /// 一時ファイルへ書き出し、再読込して検証できたら本ファイルへ
-    /// コピーする（ディレクトリが無ければ作る）。
+    /// 保存先と同じディレクトリ内の一時ファイルへ書き出し、再読込
+    /// して検証できたら、既存ファイルを置換 API で安全に置き換える
+    /// （FE-R32-131-01）。検証と置換は別物であり、「元ファイルを
+    /// 削除してからコピーする」方式では、削除後のコピー失敗で
+    /// 既存ファイルが失われるため採らない。置換が失敗しても元の
+    /// ファイルはそのまま残る。
     public static func save(_ project: Project, toFile path: String) throws {
         // 書き出しの再帰（serialized）がスタックオーバーフローで落ちる
         // ことを防ぐため、シリアライズ前にツリーの深さを上限と照合する。
@@ -216,8 +191,15 @@ public enum YmmpCodec {
         }
         let text = tree.serialized()
         let fileManager = FileManager.default
-        let temporaryPath = fileManager.temporaryDirectory
-            .appendingPathComponent("ymm4mac-\(UUID().uuidString).ymmp").path
+        let directory = (path as NSString).deletingLastPathComponent
+        if !directory.isEmpty {
+            try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        }
+        // 一時ファイルは置換先と同じディレクトリ（同じボリューム）に
+        // 置く。システムの一時ディレクトリでは、別ボリュームからの
+        // 置換が成立しない場合があるため。
+        let temporaryPath = ((directory.isEmpty ? "." : directory) as NSString)
+            .appendingPathComponent("ymm4mac-\(UUID().uuidString).ymmp")
         try text.write(toFile: temporaryPath, atomically: false, encoding: .utf8)
         do {
             let data = try Data(contentsOf: URL(fileURLWithPath: temporaryPath))
@@ -226,15 +208,33 @@ public enum YmmpCodec {
             try? fileManager.removeItem(atPath: temporaryPath)
             throw YmmpError.verificationFailed("\(error)")
         }
-        let directory = (path as NSString).deletingLastPathComponent
-        if !directory.isEmpty {
-            try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        do {
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                // 保存先がディレクトリを指している場合は置換対象に
+                // せず、明示的な保存エラーにする（置換 API は
+                // ディレクトリをファイルで置き換えてしまうため、
+                // 黙って成功扱いにしない）。
+                throw YmmpError.verificationFailed(
+                    "保存先がディレクトリです: \(path)"
+                )
+            }
+            if fileManager.fileExists(atPath: path) {
+                // 置換 API は成功時に一時ファイルを取り込み（保存先の
+                // パスに新しい内容が入る）、失敗時は元ファイルを残す。
+                _ = try fileManager.replaceItemAt(
+                    URL(fileURLWithPath: path),
+                    withItemAt: URL(fileURLWithPath: temporaryPath)
+                )
+            } else {
+                try fileManager.copyItem(atPath: temporaryPath, toPath: path)
+                try? fileManager.removeItem(atPath: temporaryPath)
+            }
+        } catch {
+            try? fileManager.removeItem(atPath: temporaryPath)
+            throw error
         }
-        if fileManager.fileExists(atPath: path) {
-            try fileManager.removeItem(atPath: path)
-        }
-        try fileManager.copyItem(atPath: temporaryPath, toPath: path)
-        try? fileManager.removeItem(atPath: temporaryPath)
     }
 
     // MARK: - プロジェクト／タイムラインの変換

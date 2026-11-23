@@ -69,7 +69,16 @@ final class ItemKeyFrameEditingTests: XCTestCase {
             AnimationValue(70), AnimationValue(100),
         ]
         item.setKeyFrames(KeyFrames(frames: [5, 12]))
-        item.removeAllKeyFrames()
+        XCTAssertTrue(item.removeAllKeyFrames())
+        XCTAssertEqual(item.keyFrames.frames, [])
+        XCTAssertEqual(values(of: item), [0, 100])
+    }
+
+    /// 全削除の戻り値（FE-R33-131-02 の無変更判定用）:
+    /// キーフレームが無ければ false で、値列も変わらない。
+    func testRemoveAllReportsNoChangeWithoutKeyFrames() {
+        let item = makeItem()
+        XCTAssertFalse(item.removeAllKeyFrames())
         XCTAssertEqual(item.keyFrames.frames, [])
         XCTAssertEqual(values(of: item), [0, 100])
     }
