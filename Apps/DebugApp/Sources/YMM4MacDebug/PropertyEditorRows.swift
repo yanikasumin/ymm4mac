@@ -95,8 +95,22 @@ enum EditDragSession {
     /// 試みる場合（再生速度行のテキスト確定）と、終了通知の
     /// 取りこぼし後に次のドラッグが始まる場合の双方を、この
     /// 1か所で断つ（全行・プレビュードラッグ共通の土台）。
-    mutating func begin(using recorder: EditRecorder?) {
+    ///
+    /// プロジェクト帰属の照合（FE-R41-135-02）: ガードが渡され、
+    /// 捕捉した世代が現行でない場合は、セッション自体を開始せず
+    /// 開始拒否として保持する。開始を許すと、陳腐化したビューが
+    /// 切り替え後の Recorder から新しいトークンを取得し、後段の
+    /// 照合をすり抜ける余地が生じる。所有中の再入は従来どおり
+    /// 所有を維持する（その場合の書き込みは `writeAllowed` 側の
+    /// 帰属照合で断つ）。
+    mutating func begin(
+        using recorder: EditRecorder?, projectGuard: ProjectEditGuard? = nil
+    ) {
         if case .owning = self { return }
+        if let projectGuard, !projectGuard.isCurrent {
+            self = .refused
+            return
+        }
         guard let recorder else {
             self = .idle
             return
@@ -115,9 +129,15 @@ enum EditDragSession {
     }
 
     /// このドラッグの書き込みが記録可能か。開始拒否の間は、他の
-    /// セッションが終了しても常に false のままである。
-    func writeAllowed(recorder: EditRecorder?) -> Bool {
+    /// セッションが終了しても常に false のままである。ガードが
+    /// 渡された場合はプロジェクト帰属も併せて照合する
+    /// （FE-R41-135-02。ドラッグの途中でプロジェクトが切り替わった
+    /// 場合に、所有中セッションへの継続書き込みを断つ）。
+    func writeAllowed(
+        recorder: EditRecorder?, projectGuard: ProjectEditGuard? = nil
+    ) -> Bool {
         if case .refused = self { return false }
+        if let projectGuard, !projectGuard.isCurrent { return false }
         return editWriteAllowed(recorder: recorder, sessionToken: token)
     }
 
@@ -205,7 +225,7 @@ struct NumberRowView: View {
     /// （FE-R21-126-01）。
     private func sliderEditingChanged(_ editing: Bool) {
         if editing {
-            sliderSession.begin(using: editRecorder)
+            sliderSession.begin(using: editRecorder, projectGuard: editProjectGuard)
         } else {
             sliderSession.endCommitting(to: editRecorder)
         }
@@ -228,7 +248,7 @@ struct NumberRowView: View {
                 // 自分のセッションの所有者でない書き込みは入口で
                 // 拒否する（FE-R20-126-03）。開始拒否されたドラッグ
                 // の継続書き込みも拒否される（FE-R21-126-01）。
-                guard sliderSession.writeAllowed(recorder: editRecorder)
+                guard sliderSession.writeAllowed(recorder: editRecorder, projectGuard: editProjectGuard)
                 else { return }
                 let old = descriptor.numberValue
                 descriptor.setNumberValue(newValue)
@@ -343,7 +363,7 @@ struct IntegerRowView: View {
     /// なる（FE-R21-126-01）。
     private func sliderEditingChanged(_ editing: Bool) {
         if editing {
-            sliderSession.begin(using: editRecorder)
+            sliderSession.begin(using: editRecorder, projectGuard: editProjectGuard)
         } else {
             sliderSession.endCommitting(to: editRecorder)
         }
@@ -361,7 +381,7 @@ struct IntegerRowView: View {
         Binding(
             get: { Double(descriptor.integerValue ?? 0) },
             set: { newValue in
-                guard sliderSession.writeAllowed(recorder: editRecorder)
+                guard sliderSession.writeAllowed(recorder: editRecorder, projectGuard: editProjectGuard)
                 else { return }
                 let old = descriptor.integerValue
                 descriptor.setIntegerValue(Int(newValue.rounded()))
@@ -806,7 +826,7 @@ struct AnimationRowView: View {
                 // 開始拒否されたドラッグの継続書き込みは、他の
                 // セッションが終わっても許可されない
                 // （FE-R21-126-01）。
-                guard sliderSession.writeAllowed(recorder: editRecorder)
+                guard sliderSession.writeAllowed(recorder: editRecorder, projectGuard: editProjectGuard)
                 else { return }
                 writeValue(newValue, sessionToken: sliderSession.token)
                 text = formatValue(editTargetValue)
@@ -837,7 +857,7 @@ struct AnimationRowView: View {
     /// 直前に編集終了時調整を差し挟む（FE-R27-129-01 / 03）。
     private func sliderEditingChanged(_ editing: Bool) {
         if editing {
-            sliderSession.begin(using: editRecorder)
+            sliderSession.begin(using: editRecorder, projectGuard: editProjectGuard)
             capturePlaybackRateBaselineIfSessionAccepted()
         } else {
             finishPlaybackRateSessionIfNeeded()
@@ -990,8 +1010,8 @@ struct AnimationRowView: View {
         if case .refused = sliderSession {
             return
         }
-        sliderSession.begin(using: editRecorder)
-        guard sliderSession.writeAllowed(recorder: editRecorder) else {
+        sliderSession.begin(using: editRecorder, projectGuard: editProjectGuard)
+        guard sliderSession.writeAllowed(recorder: editRecorder, projectGuard: editProjectGuard) else {
             // 開始拒否: 記録側にセッションは開かれていないため、
             // 状態だけを開始前へ戻す（endCancelling は所有中の
             // 場合にだけ作用する）。
@@ -1082,7 +1102,7 @@ struct AnimationRowView: View {
                 // 開始拒否されたドラッグの継続書き込みは、他の
                 // セッションが終わっても許可されない（第1値と
                 // 同じ規則。FE-R21-126-01）。
-                guard movementSliderSession.writeAllowed(recorder: editRecorder)
+                guard movementSliderSession.writeAllowed(recorder: editRecorder, projectGuard: editProjectGuard)
                 else { return }
                 writeMovementAmount(
                     newValue, sessionToken: movementSliderSession.token)
@@ -1098,7 +1118,7 @@ struct AnimationRowView: View {
     /// セッションとは独立である（FE-R25-128-01）。
     private func movementSliderEditingChanged(_ editing: Bool) {
         if editing {
-            movementSliderSession.begin(using: editRecorder)
+            movementSliderSession.begin(using: editRecorder, projectGuard: editProjectGuard)
         } else {
             movementSliderSession.endCommitting(to: editRecorder)
         }
@@ -1230,6 +1250,10 @@ struct FilePathRowView: View {
     /// 記述子へのパスの書き込みが成立した時点の通知（未保存の
     /// 記録用）。値が変わった確定でのみ、書き込みの直後に呼ばれる。
     var onFilePathCommitted: (() -> Void)?
+    /// 編集コールバックのプロジェクト帰属（FE-R41-135-01）。
+    /// 陳腐化した行の確定は、通知・書き込み・成立通知のいずれも
+    /// 行わない。nil の場合は照合しない（記録先が無い構成）。
+    var editProjectGuard: ProjectEditGuard?
     @State private var text: String
     @State private var uneditedPath: String
     @FocusState private var isFocused: Bool
@@ -1238,12 +1262,14 @@ struct FilePathRowView: View {
         descriptor: PropertyDescriptor,
         onEdited: @escaping () -> Void,
         onFilePathChanged: ((PropertyDescriptor, String) -> Void)?,
-        onFilePathCommitted: (() -> Void)? = nil
+        onFilePathCommitted: (() -> Void)? = nil,
+        editProjectGuard: ProjectEditGuard? = nil
     ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
         self.onFilePathChanged = onFilePathChanged
         self.onFilePathCommitted = onFilePathCommitted
+        self.editProjectGuard = editProjectGuard
         let initial = descriptor.stringValue ?? ""
         _text = State(initialValue: initial)
         _uneditedPath = State(initialValue: initial)
@@ -1267,6 +1293,13 @@ struct FilePathRowView: View {
     }
 
     private func applyChange(_ newPath: String) {
+        // プロジェクト帰属の照合（FE-R41-135-01）。フォーカス喪失に
+        // 伴う確定は切り替え後に遅れて届き得るため、入口で照合し、
+        // 陳腐化していたら通知・記述子への書き込み・書き込み成立
+        // 通知（未保存の記録）のいずれも行わない。成立通知は、
+        // この照合を通って実際に書き込めた場合に限り発火する。
+        guard editWriteAllowed(recorder: nil, projectGuard: editProjectGuard)
+        else { return }
         guard newPath != uneditedPath else { return }
         text = newPath
         onFilePathChanged?(descriptor, newPath)

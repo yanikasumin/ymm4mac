@@ -199,7 +199,8 @@ private struct PropertyRowView: View {
                 descriptor: descriptor,
                 onEdited: onEdited,
                 onFilePathChanged: onFilePathChanged,
-                onFilePathCommitted: onFilePathCommitted
+                onFilePathCommitted: onFilePathCommitted,
+                editProjectGuard: editProjectGuard
             )
         case .enumeration:
             EnumRowView(
@@ -208,10 +209,19 @@ private struct PropertyRowView: View {
                 editProjectGuard: editProjectGuard)
         case .color:
             // 色は連続変化の境界信号が無く、確定単位を切れないため
-            // 記録対象外（未移行経路として実装ログに明記）。
+            // 記録対象外（未移行経路として実装ログに明記）。記録の
+            // 仕様には触れず、入口でプロジェクト帰属だけを確認する
+            // （FE-R41-135-03）。陳腐化した行の確定は、記述子への
+            // 書き込みも編集通知も行わない。
             ColorPicker("", selection: Binding(
                 get: { swiftUIColor(from: descriptor.colorValue ?? .white) },
-                set: { descriptor.setColorValue(coreColor(from: $0)); onEdited() }
+                set: { newValue in
+                    guard editWriteAllowed(
+                        recorder: nil, projectGuard: editProjectGuard)
+                    else { return }
+                    descriptor.setColorValue(coreColor(from: newValue))
+                    onEdited()
+                }
             ), supportsOpacity: true)
             .labelsHidden()
         case .animation:

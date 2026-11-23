@@ -66,6 +66,12 @@ struct CharacterPickerRowView: View {
     let item: BaseItem
     let characters: [Character]
     var onEdited: () -> Void
+    /// 編集コールバックのプロジェクト帰属（FE-R41-135 で接続）。
+    /// 参照変更は Undo 記録の対象外のため、記録の仕様には触れず、
+    /// 入口で帰属だけを確認する（色行と同じ形）。陳腐化した行の
+    /// 選択は、参照の書き換えも編集確定の通知（未保存フラグの
+    /// 個別通知を含む）も行わない。nil の場合は照合しない。
+    var editProjectGuard: ProjectEditGuard? = nil
 
     /// 現在の実効名（解決済みならその名前、未解決なら保持名）。
     private var currentName: String {
@@ -101,6 +107,12 @@ struct CharacterPickerRowView: View {
         Binding(
             get: { currentName },
             set: { newName in
+                // プロジェクト帰属の照合（FE-R41-135）。切り替え後に
+                // 遅れて届いた選択で、旧アイテムの参照を書き換えたり
+                // 現行プロジェクトへ編集確定を通知したりしない。
+                guard editWriteAllowed(
+                    recorder: nil, projectGuard: editProjectGuard)
+                else { return }
                 let previousCharacter = CharacterItemAccess.character(of: item)
                 let previousName = CharacterItemAccess.characterName(of: item)
                 if newName.isEmpty {

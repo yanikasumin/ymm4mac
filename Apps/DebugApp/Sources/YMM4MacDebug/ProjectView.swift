@@ -202,6 +202,22 @@ struct ProjectView: View {
 
     /// このビューのプロジェクトが現行か（FE-R30-130-02）。
     /// ワークスペース操作の配送や非同期コミットの直前で照合する。
+    ///
+    /// プロジェクト帰属の確認はこの世代照合へ一本化した
+    /// （FE-R41-135）。PR #130 の `isCapturedProjectCurrent`
+    /// （`workspace.project === captured` の同一性比較）は削除した。
+    /// 両者が全ての利用箇所で一致することは実コードで確認済み:
+    /// `workspace.project` の差し替えは `newProject()` と
+    /// `load(url:)` の成功時に限られ、どちらも差し替えの直前に
+    /// `editAttribution.advance()` を呼ぶ。名前を付けて保存は同じ
+    /// 実体をその場で書き換えるため、どちらの確認も現行のままに
+    /// なる（正しい）。同一性比較は「捕捉した実体そのものか」を、
+    /// 世代照合は「差し替えが起きたか」を問うが、スタンプは
+    /// ビューの生成時に表示中プロジェクトに対して発行されるため、
+    /// このビューに関する限り両者は同じ答えになる。世代側に寄せた
+    /// のは、判定を Core の純粋な型として回帰テストで固定でき、
+    /// プロジェクト実体を捕捉しないコールバック（インスペクタの
+    /// 各行など）にも同じ仕組みを使えるためである。
     private var isProjectCurrent: Bool {
         workspace.editAttribution.isCurrent(editStamp)
     }
@@ -226,22 +242,6 @@ struct ProjectView: View {
     private var timeline: Timeline? {
         guard project.timelines.indices.contains(timelineIndex) else { return nil }
         return project.timelines[timelineIndex]
-    }
-
-    /// 非同期・遅延処理の完了時点で、開始時に捕捉したプロジェクトが
-    /// 現在表示中のプロジェクトと同一かを確認する（FE-R16-002）。
-    ///
-    /// プロジェクトを切り替えても旧 Project オブジェクトとその
-    /// timelines は存在し続けるため、「捕捉したプロジェクトの
-    /// timelines に対象が同一性で含まれるか」だけでは、その処理が
-    /// 現在表示中のプロジェクトのものかどうかを判定できない。
-    /// 編集操作の確定と、共有状態（WorkspaceState.statusMessage）
-    /// への書き込みは、この確認を通った場合だけ行う。タスクの
-    /// キャンセルだけではキャンセルと確定の競合を断ち切れないため、
-    /// 同一性確認を正とする（監査 Round 16 の指定）。非同期完了の
-    /// 全経路はこのヘルパーを同じ形で通すこと。
-    private func isCapturedProjectCurrent(_ captured: Project) -> Bool {
-        workspace.project === captured
     }
 
     private var selectedItem: BaseItem? {
@@ -1796,12 +1796,12 @@ struct ProjectView: View {
     /// ファイルは追加しない（空アイテムを残さない）。
     ///
     /// 取得は非同期で、その間にタイムラインの切り替えや削除、
-    /// プロジェクト自体の切り替えが起き得る。確定時は、捕捉した
-    /// プロジェクトが現在表示中のプロジェクトと同一であること
-    /// （FE-R16-002）と、対象タイムラインがまだそのプロジェクトに
-    /// 属していること（FE-R15-002）を確認し、選択の写し戻しは
-    /// 追加先が現在表示中のタイムラインの場合だけ行う（別タイム
-    /// ラインへの追加で表示中の選択状態を書き換えない）。
+    /// プロジェクト自体の切り替えが起き得る。確定時は、プロジェクト
+    /// が差し替わっていないこと（FE-R16-002 の同一性確認は世代照合へ
+    /// 一本化した。FE-R41-135）と、対象タイムラインがまだその
+    /// プロジェクトに属していること（FE-R15-002）を確認し、選択の
+    /// 写し戻しは追加先が現在表示中のタイムラインの場合だけ行う
+    /// （別タイムラインへの追加で表示中の選択状態を書き換えない）。
     private func addMediaFiles(
         _ entries: [(url: URL, kind: AddItemKind, group: PropertyFileGroup)],
         frame: Int, layer: Int, timeline: Timeline, baseDirectory: URL
@@ -1822,7 +1822,6 @@ struct ProjectView: View {
         // クト側では真のままになるため、現行世代との照合を併せる。
         // 陳腐化していたら記録もモデル変更も行わない。
         guard !newItems.isEmpty, isProjectCurrent,
-              isCapturedProjectCurrent(project),
               project.timelines.contains(where: { $0 === timeline })
         else { return }
         // 記録のスナップショットは確定の直前に取る（取得の非同期の
@@ -1950,10 +1949,10 @@ struct ProjectView: View {
     /// 通知は記述子が新しいパスを書き込むより前に届くため、ここで
     /// 変更前のパスと素材長を捕捉できる。情報取得（供給層）を
     /// 非同期に行い、対象の同一性と要求世代、タイムラインが
-    /// まだプロジェクトに属していること、捕捉したプロジェクトが
-    /// 現在表示中のプロジェクトと同一であること（FE-R16-002）を
-    /// 照合してから、素材情報を記録して編集終了時相当の長さ調整
-    /// （編集操作層）を行う。ファイルが存在しない場合の状態表示
+    /// まだプロジェクトに属していること、プロジェクトが
+    /// 差し替わっていないこと（FE-R16-002 の同一性確認は世代
+    /// 照合へ一本化した。FE-R41-135）を照合してから、素材情報を
+    /// 記録して編集終了時相当の長さ調整（編集操作層）を行う。ファイルが存在しない場合の状態表示
     /// （共有の statusMessage への書き込み）もこの照合の内側に
     /// あるため、切り替え後の旧処理の結果が新しいプロジェクトの
     /// 画面へ出ることはない。ファイルが存在しない場合は長さに
@@ -1994,7 +1993,6 @@ struct ProjectView: View {
             // メッセージ（共有状態への書き込み）もこの確認の内側に
             // あるため、陳腐化した適用はそちらも行わない。
             guard fileChangeGenerations[key] == generation, isProjectCurrent,
-                  isCapturedProjectCurrent(project),
                   project.timelines.contains(where: { $0 === timeline }),
                   timeline.items.contains(where: { $0 === item })
             else { return }
@@ -2956,11 +2954,12 @@ struct ProjectView: View {
     }
 
     /// ワーカーからの完成通知を、識別子（セッションキー・世代・
-    /// モデル版数）が現在のものと一致し、かつ捕捉したプロジェクトが
-    /// 現在表示中のプロジェクトと同一である場合だけ表示へ反映する
+    /// モデル版数）が現在のものと一致し、かつプロジェクトが
+    /// 差し替わっていない場合だけ表示へ反映する
     /// （古いセッション・編集前のモデルの結果は捨てる。それ以外は、
     /// 後続の要求があっても採用する — 第9ラウンドの二段階規則）。
-    /// プロジェクト同一性の確認（FE-R16-002）は、識別子の照合が
+    /// プロジェクト帰属の確認（FE-R16-002。同一性確認は世代照合へ
+    /// 一本化した。FE-R41-135）は、識別子の照合が
     /// ビュー自身の状態同士の比較であり、ビューが表示を終えた後も
     /// 自己整合してしまうため必要になる。特に onImage は保留中の
     /// サムネイル保存（保存パネル表示と共有 statusMessage への
@@ -2971,7 +2970,7 @@ struct ProjectView: View {
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
                   identity.version == previewModelVersion,
-                  isCapturedProjectCurrent(project)
+                  isProjectCurrent
             else { return }
             // 停止中は現在位置と一致するフレームだけを採用する
             // （シーク前に始まった描画の結果で表示が巻き戻らない。
@@ -3006,7 +3005,7 @@ struct ProjectView: View {
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
                   identity.version == previewModelVersion,
-                  isCapturedProjectCurrent(project)
+                  isProjectCurrent
             else { return }
             // 正常画像と同じ採用条件にそろえる: 停止中は現在位置と
             // 一致するフレームの失敗だけを採用する（シーク前の失敗
@@ -3038,7 +3037,7 @@ struct ProjectView: View {
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
                   identity.version == previewModelVersion,
-                  isCapturedProjectCurrent(project)
+                  isProjectCurrent
             else { return }
             // 初期化失敗の理由をそのまま表示する（Issue #50）。
             // 旧モデルの画像が残ると理由文より画像が優先表示され、
@@ -3088,11 +3087,12 @@ struct ProjectView: View {
     /// この関数は遅延確定（scheduleTrailingModelRefresh の
     /// DispatchWorkItem）や再生エンジンの停止遷移通知からも呼ばれ、
     /// ビューが表示を終えた時点でも発火し得る。生成失敗時の理由は
-    /// 共有の statusMessage へ書くため、入口でプロジェクトの同一性を
-    /// 確認し（FE-R16-002）、切り替え後であれば旧プロジェクトの
+    /// 共有の statusMessage へ書くため、入口でプロジェクトの帰属を
+    /// 確認し（FE-R16-002。世代照合へ一本化。FE-R41-135）、
+    /// 切り替え後であれば旧プロジェクトの
     /// スナップショット生成も失敗表示も行わない。
     private func refreshPreviewModel(force: Bool = false) {
-        guard isCapturedProjectCurrent(project) else { return }
+        guard isProjectCurrent else { return }
         guard let timeline, previewSessionKey != nil else { return }
         if !force, Date().timeIntervalSince(lastPreviewSnapshotAt) < 0.1 {
             scheduleTrailingModelRefresh()
@@ -3275,7 +3275,8 @@ struct ProjectView: View {
                             // （FE-R39-133-02。通知は参照が実際に
                             // 変わった場合に限る）。
                             workspace.markEdited()
-                        }
+                        },
+                        editProjectGuard: editGuard
                     )
                 }
                 let context = animationContext(for: item, timeline: timeline)
