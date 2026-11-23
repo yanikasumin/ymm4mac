@@ -2303,6 +2303,75 @@ PR #126 の Round 21 新規指摘「失効したセッショントークンが�
 - **残る論点（本処分の範囲外として明記）**: プロジェクト切り替え後の遅延イベントのうち、トークンを提示する経路は本契約で断たれる。トークンを持たない離散編集の遅延イベントはビューの破棄（プロジェクト切り替えで画面が作り直される既存構造）に依存しており、本処分では扱っていない。
 
 検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
+
+#### FE-R30-130-02 — トークンなし離散編集イベントのプロジェクト帰属（フロントエンド監査 Round 30 の分離単位、IMPLEMENTED、Mac 検証済み）
+
+**問題。** PR #126 の Undo 接続では、連続編集（スライダ・ドラッグ）はセッション所有権トークン（`EditSessionToken`）で陳腐化を断てるが、トークンを持たない離散編集（テキスト確定・トグル・メニュー操作・ワークスペース操作の配送など）は、捕捉したモデルやアイテムへ直接作用するコールバックのままだった。SwiftUI のビューの破棄は非同期であり、フォーカス喪失に伴う確定や `pendingAction` の観測配送はプロジェクト切り替え後に遅れて届き得る。切り替え時には `WorkspaceState` が共有の `EditRecorder` の履歴を消去するため、旧プロジェクト向けの離散編集が遅れて発火すると、(a) 旧アイテムへのモデル変更（実害は小さい）と (b) 新プロジェクトの履歴への記録汚染（適用クロージャが旧アイテムを保持し、新プロジェクトで Undo すると旧モデルが書き換わる）が起こり得た。監査 Round 30 の切り分けどおり、`EditRecorder` 自体の仕様は正しく変更しない。不足はアプリ層の「イベント→プロジェクト帰属」の仕組み側にあり、本単位はそちらを新設する。なお FE-UNDO-WIRING の Round 21 処分で「トークンを持たない離散編集の遅延イベントはビューの破棄に依存しており、本処分では扱っていない」と記録した残件が本単位の対象である。
+
+**棚卸し（実コードで判定）。** 対象は「プロジェクト切り替え後にも到達し得て、モデル変更または Undo 記録を行う、トークンなしの離散編集コールバック」。
+
+- **対象（帰属ガードを接続）**:
+  - インスペクタの記述子行の確定・書き込み（数値・整数・テキスト・複数行・列挙・アニメーション値の各行、真偽トグル、アニメーション種別メニュー）。全行が共通ヘルパー（`PropertyEditorRows.swift` の `editWriteAllowed` / `recordDescriptorValueChange`）へ集約されているため、照合はこの集約点へ入れた。フォーカス喪失時の確定（`onChange(of: isFocused)`）が遅延配送の代表経路である。真偽トグルと種別メニューは記録 API を直呼びしていたため、同じヘルパーへ寄せた（入口条件・記録条件の意味は従来と同一であることをコードで確認: 記録先が無い場合は無記録で書き込み、対象キーや旧値が無い場合は記録しない）。
+  - ワークスペース操作の配送（`ProjectView.executeWorkspaceAction`）。メニュー／ツールバーの要求は `WorkspaceState.pendingAction` へ積まれ、`onChange` の観測で配送される単一の集約点であり、入口で一括照合する。ここには Undo/Redo の実行、選択削除（記録あり）、分割・グループ化等の未記録の直接変更も含まれる。
+  - 非同期コミット経路2件（`addMediaFiles` の確定、`applyFileChange` の適用）。従来の確認は「捕捉したプロジェクトにタイムラインが属するか」で、切り替え後も旧プロジェクト側では真のままになる欠陥があった（切り替え先の履歴へ記録され得る）。条件 F のとおり、最後の待ちの直後・コミット直前に現行世代との照合を併せた。`applyFileChange` の失敗時ステータスメッセージ（共有状態への書き込み）も同じ確認の内側にあるため、陳腐化した適用では書かれない。
+- **対象外（根拠つき）**:
+  - 連続編集のトークン経路（プレビューのドラッグ、`finishPlaybackRateEditSession`、タイムラインドラッグの各フック）: 切り替え時にセッションは巻き戻し・破棄され、失効トークンは入口確認と記録側の双方で拒否される既存契約で足りる（条件 E。本単位では触っていない）。行の書き込みヘルパーに帰属照合を重ねたため、トークンを提示する書き込みも現行世代でなければ棄却されるが、これは契約の変更ではなく前段の追加である（現行プロジェクトのドラッグは従来どおり通る）。
+  - コンテキストメニュー（SwiftUI メニューとルーラーの `NSMenu`）: モーダルなトラッキング中に配送され、クロージャはビューと共に消える。メニューを開いたままプロジェクト切り替えを開始する手段が無いため、切り替え後に配送される経路が存在しない。
+  - シート類（動画の設定、シーン名変更）: ウィンドウモーダルであり、表示中は切り替えコマンド自体が配送されない。書き込みは捕捉対象への同期・未記録の変更のみ。
+  - シーン追加・削除・名前変更ボタン、コレクション要素の追加・削除ボタン、ProjectView 内ツールバーのボタン類: 生きているビューへの同期的なユーザー操作であり、遅延配送の仕組みを持たない（ワークスペース操作の配送とは別系統）。未記録の経路でもある。
+  - エフェクトインスペクタ経路（`PropertyInspectorView` を `editRecorder: nil` で使う構成）: 記録を行わず、捕捉した対象への同期書き込みのみ。履歴汚染の経路が無く、モデル変更も生きているビューからの同期操作に限られるため、ガードは渡さない（nil のまま従来どおり）。行側の入口確認は、ガードが渡された場合に限り記録先の有無によらず帰属を先に照合する形にしたため、この構成の振る舞いは変わらない。
+  - タイムライン操作層の監視（キーウィンドウ喪失→セッション取消、スクロール境界の通知）、ホイールズームのイベント監視: 前者はトークン契約の内側、後者は表示状態のみでモデルを変更しない。
+  - プレビュー系（描画要求の遅延実行、ワーカーの完了通知）: 編集イベントではなく PR #130（FE-R16-002）の同一性ガードの担当範囲。本単位では扱わない（下記の統合方針を参照）。
+  - 辞書エディタ: 編集対象はアプリ全体の共有状態（プロジェクトの内容ではない）。
+  - 書き出し・全自動テスト: 開始時点でスナップショット／現行プロジェクトを解決する設計であり、編集イベントではない。
+
+**仕組み。** 世代（ジェネレーション）方式を採った。同一性（オブジェクト参照）ではなく世代番号で判定するため、プロジェクト実体の寿命に依存しない。
+
+- Core（`Sources/YMM4Core/Editing/ProjectEditAttribution.swift`）: `ProjectEditAttribution` が世代の所有者。`currentStamp()` で現行世代のスタンプ（`EditProjectStamp`、世代番号のみを持つ値型）を発行し、`advance()` で世代を進めると旧スタンプは `isCurrent(_:)` が偽になる。判定ロジックを Core へ置いたのは、`EditRecorder` の前例（アプリ層にテスト対象が無いため記録の振る舞いを Core で固定する）と同じ理由による。スレッド安全性は持たず、`EditRecorder` と同じ前提（UI 編集はメインで直列化）に置くことをドキュメントに明記した。`EditRecorder` / `UndoHistory` / `EditCoordinator` の契約は変更していない。
+- 所有と前進: `WorkspaceState` が `editAttribution` を保持し、プロジェクトの差し替え（`newProject()` と `load(url:)` の成功時）で、履歴リセット（`resetForProjectSwitch()`）に隣接して `advance()` する。読み込み失敗時は世代も履歴も進めない（従来の失敗時保持と一致）。
+- 捕捉と照合: `ContentView` が `ProjectView` の生成時に現行スタンプを渡し、`ProjectView` が保持する。インスペクタへは `ProjectEditGuard`（所有者＋スタンプの組、アプリ層の受け渡し形）として渡し、`PropertyInspectorView` → `PropertyRowView` → 複合行 → 各行へ、`editRecorder` / `editTarget` と同じ転送経路で運ぶ。照合は2段: 入口確認 `editWriteAllowed` がモデル変更より前に、記録ヘルパー `recordDescriptorValueChange` が記録の直前にもう一度（`EditRecorder` 自身の入口／記録の二重照合と同じ形）。ワークスペース操作は `executeWorkspaceAction` の入口で `ProjectView.isProjectCurrent` を一括照合する。
+
+**条件 A〜F への対応。** A: 編集コールバックはビュー生成時に捕捉した世代スタンプを持つ（行は `ProjectEditGuard`、ProjectView 自身は `editStamp`）。B: 照合は入口確認（モデル変更の前段）と記録ヘルパー（記録の前段）の双方に置いた。C: 陳腐化したイベントはモデルを変更せず、履歴も増やさないことを Core の回帰テストで固定した（下記）。D: 現行プロジェクトの離散編集が従来どおり実行・記録され Undo できることも同じテストで固定した。E: トークン契約には触っておらず、切り替えで破棄されたセッションの失効トークンが拒否され、切り替え後の新規セッションが通常どおり使えることをテストに追加した。F: 非同期経路2件は最後の `await` の直後、コミット直前の既存ガードへ現行世代の照合を併せた。
+
+**PR #130 のガードとの関係（最終統合で一本化）。** PR #130（FE-R16-002、未マージ）は非同期経路向けに `ProjectView.isCapturedProjectCurrent`（`workspace.project === captured` の同一性比較）を導入する。本単位の `isProjectCurrent`（世代照合）は同じ目的の別実装であり、本ブランチの基点（main `88b5e14`）に #130 が含まれないため自己完結に実装した。最終統合時は、非同期経路の照合をどちらか一方へ一本化すること（世代方式へ寄せるのが自然である。同一性比較は「同じプロジェクト実体か」、世代は「差し替えが起きたか」であり、本単位の対象である遅延イベントの棄却には世代の方が直接対応する）。`addMediaFiles` / `applyFileChange` では両方の確認が併存し得るが、意味の重なりは統合時に解消する。プレビュー系の通知は #130 の担当範囲のままとする。
+
+**手動検証チェックリスト（追加分、未実施。アプリ層にテスト対象が無い部分）**: (23) プロジェクトを開いた直後（または新規作成直後）に、旧プロジェクトのインスペクタで編集中だったテキスト欄の確定が遅れて届いても、新プロジェクトのモデルが変わらず、Undo 履歴が増えない（再現できた場合のみ。コード形状での固定が主）。(24) メニューから編集操作（削除・分割等）を発行した直後にプロジェクトを切り替えても、新プロジェクト側でその操作が実行されない（同上）。(25) ファイル差し替えの情報取得中にプロジェクトを切り替えると、切り替え後に長さ調整もステータスメッセージも出ない（同上）。(26) 現行プロジェクトでは、テキスト確定・トグル・種別変更・メニュー操作が従来どおり実行され、Undo/Redo が効く（FE-UNDO-WIRING のチェックリスト (1)〜(8) と併せて確認）。
+
+**検証。** Mac（同期先 ~/ymm4-work/fe-r30-130-02/YMM4Mac）で実施。`Apps/DebugApp` の `swift build` 成功。対象を絞った `swift test`（ルートパッケージ、`--skip AudioDrift`、フィルタ `ProjectEditAttribution|EditRecorder|EditCoordinator|UndoHistory|ListAddRemove|TimelineEditSnapshot`）で全合格・失敗0: 新規 `ProjectEditAttributionTests` 5件（スタンプの陳腐化、陳腐化した離散編集の棄却＝条件 B・C、現行編集の記録と Undo＝条件 D、トークン契約の不変＝条件 E）、`EditRecorderTests` 8件、`EditCoordinatorTests` 15件、`UndoHistoryTests` 10件、`ListAddRemoveCommandTests` 9件、`TimelineEditSnapshotTests` 6件、計53件。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。ARCHITECTURE.md はファイル構成へ `ProjectEditAttribution.swift` を追加し、データフローへ編集帰属の項を追加した（所有と処理経路の追加のため）。
+
+**PR 本文の下書き（PR 作成時に使用）。**
+
+> ## FE-R30-130-02 — トークンなし離散編集イベントのプロジェクト帰属
+>
+> **要件・監査根拠**: フロントエンド監査 Round 30 の分離単位（PR #130 のレビューで切り分け）。受け入れ条件 A〜F は監査で確定。関連: FE-UNDO-WIRING の Round 21 処分で未処分として記録された「トークンを持たない離散編集の遅延イベント」。`EditRecorder` の仕様は監査の明示により変更しない。
+>
+> **問題**: トークンを持たない離散編集コールバック（テキスト確定、トグル、種別メニュー、ワークスペース操作の配送、非同期コミット）は、プロジェクト切り替え後に遅れて配送されると、旧アイテムへのモデル変更と、共有 `EditRecorder` 経由で新プロジェクトの履歴への記録汚染を起こし得た。非同期経路の従来ガードは捕捉プロジェクトへの所属確認のみで、切り替え後も真のままだった。
+>
+> **変更したシンボル**:
+> - Core 新設: `ProjectEditAttribution` / `EditProjectStamp`（`Sources/YMM4Core/Editing/ProjectEditAttribution.swift`）。世代の所有・発行・照合。`EditRecorder` / `UndoHistory` / `EditCoordinator` の契約は不変。
+> - アプリ層: `WorkspaceState.editAttribution`（所有。差し替え時に `advance()`）、`ContentView` → `ProjectView.editStamp`（捕捉）、`ProjectView.isProjectCurrent` / `editGuard`、`ProjectEditGuard`（`PropertyEditorRows.swift`）、`editWriteAllowed` / `recordDescriptorValueChange` への `projectGuard` 引数追加（既定 nil で従来構成は不変）、各行・`PropertyInspectorView` 系・`AnimationTypeMenuButton` への転送、`executeWorkspaceAction` の入口照合、`addMediaFiles` / `applyFileChange` のコミット直前再確認（条件 F）。真偽トグルと種別メニューの記録直呼び出しは共通ヘルパーへ統一（振る舞い不変）。
+>
+> **設計判断**: 世代方式（オブジェクト同一性ではなく世代番号）を採用 — プロジェクト実体の寿命に依存せず、判定を Core の純粋な型として回帰テストで固定できるため。照合は入口と記録直前の2段（`EditRecorder` の二重照合と同じ形）。エフェクトインスペクタ等の記録先が無い同期経路は対象外（台帳の棚卸しに根拠を記録）。PR #130 の `isCapturedProjectCurrent` とは最終統合時に一本化する（台帳に方針を記録）。
+>
+> **テスト**: 新規 `ProjectEditAttributionTests` 5件（条件 B・C・D・E を固定）を含む対象53件・失敗0（Mac、AudioDrift 除外）。DebugApp ビルド成功。アプリ層の配線は手動チェックリスト (23)〜(26) を台帳へ追加（未実施）。
+>
+> **実装記録**: docs/IMPLEMENTATION_LOG.md の節「FE-R30-130-02」（棚卸しの対象／対象外と根拠、条件 A〜F への対応、#130 との統合方針を含む）。ARCHITECTURE.md の構成・データフローも追随済み。
+
+**最終統合と Round 42 処分（FE-R41-135-01〜03、PR #135 レビュー）。** main（`948d9c2`、監査チェーン #130〜#133 マージ済み）を本ブランチへ取り込んだ（merge `3fc0b0c`。競合は `ProjectView.swift` 3件と本台帳: init は編集スタンプの捕捉と main 側の初期値（選択シーンの丸め・レイアウト復元）を併せて保持し、非同期コミット2件のガードは両方の確認を併記する形で解消したうえで、下記の一本化で整理した。台帳は両節を保持）。統合で入った PR #131 の `onFilePathCommitted`（書き込み成立時点の未保存記録）と PR #133 の `CharacterPickerRowView` を含む形で、監査指摘3件を処分した。
+
+- **FE-R41-135-01（P1、ファイル参照行へガードが届いていない）**: `PropertyInspectorView` の `.filePath` 分岐が `editProjectGuard` を渡しておらず、`FilePathRowView.applyChange` が `onFilePathChanged` と `descriptor.setStringValue` を無条件に実行していた（実コードで照合済み）。処分: `FilePathRowView` へ `editProjectGuard` を追加して分岐から転送し、`applyChange` の入口で `editWriteAllowed(recorder: nil, projectGuard:)` により帰属を照合する。陳腐化した確定（フォーカス喪失に伴う遅延確定を含む）は、通知・記述子への書き込み・`onFilePathCommitted` のいずれも行わない。成立通知は、照合を通って実際に書き込めた場合に限り発火する（従来どおり `setStringValue` の成否に従属）。`FilePathRowView` の構築箇所はこの分岐のみであることを確認した。エフェクトインスペクタ構成（ガード nil）では従来どおり照合なし。
+- **FE-R41-135-02（P1、スライダのセッション開始・書き込みに帰属照合が無い）**: `EditDragSession.writeAllowed` がガードを受け取らず、`sliderEditingChanged(true)` の開始にも照合が無かった（実コードで照合済み。数値・整数・アニメーション・移動量の各行と、再生速度テキスト確定 `commitPlaybackRateText` の開始が対象）。処分: `EditDragSession.begin(using:projectGuard:)` と `writeAllowed(recorder:projectGuard:)` へガード引数を追加した（既定 nil で、プレビュードラッグ等の既存呼び出しは不変）。開始側は、所有中の再入（FE-R28-129-01）を維持したうえで、陳腐化していればセッション自体を開かず開始拒否として保持する — 開始を許すと旧ビューが切り替え後の Recorder から新しいトークンを取得し得るため。書き込み側は、ドラッグ途中で切り替わった場合に所有中セッションへの継続書き込みも断つ。対象の全呼び出し箇所（各行のスライダ開始・書き込み計10か所）へ `editProjectGuard` を渡した。再生速度の基点捕捉（`capturePlaybackRateBaselineIfSessionAccepted`）はトークンの有無で門をかけているため、開始拒否時は捕捉も行われない（変更不要を確認）。
+- **FE-R41-135-03（P2、色分岐がガードを使っていない）**: `PropertyInspectorView` の `.color` 分岐は Binding setter が `descriptor.setColorValue` を直接実行していた（実コードで照合済み）。処分: setter の入口で `editWriteAllowed(recorder: nil, projectGuard: editProjectGuard)` により帰属だけを確認する。色は記録対象外のままで、記録の仕様には触れていない。
+
+**帰属確認の一本化（監査の必須条件）。** PR #130 の `ProjectView.isCapturedProjectCurrent`（`workspace.project === captured` の同一性比較）を廃止し、非同期経路の確認を本単位の世代照合 `isProjectCurrent` へ一本化した。判断の根拠（実コードで確認）: (1) `workspace.project` の差し替えは `WorkspaceState.newProject()` と `load(url:)` の成功時に限られ、どちらも差し替えの直前に `editAttribution.advance()` を呼ぶ。読み込み失敗時はどちらも進まない。(2) 名前を付けて保存（FE-R32-131-04）は同じ Project 実体をその場で書き換えるため、同一性・世代のどちらの確認も現行のままになる（正しい）。(3) スタンプは `ContentView` が `ProjectView` の生成時に表示中プロジェクトに対して発行するため、このビューに関する限り「世代が現行」と「捕捉した実体が現行プロジェクト」は同じ答えになる。役割の差は、同一性が「捕捉した実体そのものか」を実体の寿命に依存して問い、世代が「差し替えが起きたか」を実体に依存せずに問う点にある。世代へ寄せた理由は、判定が Core の純粋な型として回帰テストで固定できることと、プロジェクト実体を捕捉しないコールバック（インスペクタの各行）にも同じ仕組みを使えること。置き換えた利用箇所: `addMediaFiles` と `applyFileChange`（統合時に併記した二重確認を世代側の1本へ）、プレビューワーカーの完了通知3件（onImage / onRenderFailed / onModelFailed）と `refreshPreviewModel` の入口（従来は同一性のみだった箇所へ世代照合を適用）。ARCHITECTURE.md の FE-R16-002 の記述も追随させた。
+
+**CharacterPickerRowView の保護（統合条件）。** PR #133 の参照変更 Binding は、切り替え後に遅れて届いた選択で旧アイテムの参照を書き換え、現行プロジェクト側へ編集確定（未保存フラグの個別通知を含む）を通知し得る形だった。構築箇所は `ProjectView.itemDetail` の1か所で、そこでは `editGuard` がそのまま渡せるため、対象外とはせず保護した: 行へ `editProjectGuard` を追加し、Binding setter の入口で `editWriteAllowed(recorder: nil, projectGuard:)` により帰属だけを確認する（参照変更は Undo 記録の対象外であり、記録の仕様には触れていない。色行と同じ形）。陳腐化した選択は書き換えも通知も行わない。
+
+**統合後の通し再点検（編集の入口・記録・Undo・未保存フラグの連鎖）。** 統合後の実コードで全経路を再確認した。インスペクタの各行（数値・整数・テキスト・複数行・列挙・アニメーション値・真偽トグル・種別メニュー）は入口確認と記録ヘルパーの双方で照合し、スライダのセッション開始・書き込みも本処分で照合対象になった。ファイル参照と色とキャラクター選択は記録対象外のまま入口の帰属確認だけを行う。ワークスペース操作の配送は `executeWorkspaceAction` の入口照合（統合後も存続）で一括する。プレビューのドラッグ（移動・拡大率・回転角）はトークン契約の内側にある: 切り替え時にセッションは破棄され、失効トークンは `EditRecorder.acceptsValueChange` が入口・記録の双方で拒否するため（FE-R21-126-01 の契約 (c)、Core テストで固定）、陳腐化したドラッグはモデル変更も記録も行わない。ドラッグの開始自体は表示中ビューへの同期的なジェスチャであり、行コールバックのような遅延配送の経路を持たないため、開始側への世代照合は追加していない。タイムラインドラッグは従来どおりトークン／veto 契約の内側。キャラクター編集シートはウィンドウモーダルで表示中は切り替えコマンド自体が配送されず、本単位の棚卸し（シート類）の対象外根拠が統合後も成り立つ。セリフ入力行のキャラクター名は新規アイテム作成のためのローカルな合成状態であり、既存アイテムの参照への書き込みではない（送信は ProjectView の照合済み追加経路を通る）ため、ピッカーとは扱いを分けた。エフェクトインスペクタ構成（記録先なし・ガードなし）は従来どおり対象外。
+
+**手動検証チェックリスト（追加分、未実施）**: (27) ファイル参照の入力欄で編集中にプロジェクトを切り替え、旧行の確定が遅れて届いても、新プロジェクトのモデル・未保存フラグが変わらないこと。(28) スライダのドラッグ開始直前・ドラッグ途中にプロジェクトを切り替えても、旧行が新しいセッションを開始せず、値が変わらないこと。(29) 色の確定とキャラクター選択についても同様に、切り替え後の遅延発火で現行プロジェクトが変わらないこと（いずれも再現できた場合のみ。コード形状での固定が主）。
+
+**検証。** Mac（同期先 ~/ymm4-work/fe-r30-130-02/YMM4Mac）で実施。`Apps/DebugApp` の `swift build` 成功。対象を絞った `swift test`（ルートパッケージ、`--skip AudioDrift`、フィルタ `ProjectEditAttribution|EditRecorder|EditCoordinator|UndoHistory|ListAddRemove|TimelineEditSnapshot|CharacterReference|YmmpCodec`）で全合格・失敗0: `ProjectEditAttributionTests` 5件、`EditRecorderTests` 8件、`EditCoordinatorTests` 15件、`UndoHistoryTests` 10件、`ListAddRemoveCommandTests` 9件、`TimelineEditSnapshotTests` 6件、`CharacterReferenceTests` 15件、`YmmpCodecTests` 27件、計95件。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
 #### FE-UNIT5 — ダイアログ群の検査・修正（フロントエンド監査 FE-R1-017 / 025 / 026、F-C3、FE-R1-016 のポップオーバー部）
 
 **何をしたか。** アプリ層（Apps/DebugApp）の設定ダイアログ・シート・設定画面・アプリメニュー・ツールバーを走査し、コントロール単位で「配線済み／未接続／値が死んでいる」を一覧化したうえで、監査の原則（偽のコントロールを置かない: 能力が実在すれば配線し、無ければ無効化して理由が分かる形にする）で処分した。起点は台帳 FE-R1-017 / 025 / 026 と FINDINGS-MUSE の F-C3。行番号は監査時点から変わっているため、全件を現行コード（main 5f9cd5d）で再検証した。

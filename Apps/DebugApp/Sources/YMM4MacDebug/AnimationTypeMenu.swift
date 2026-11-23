@@ -19,6 +19,9 @@ struct AnimationTypeMenuButton: View {
     /// Undo 記録（FE-UNDO-WIRING）。nil の場合は無記録。
     var editRecorder: EditRecorder? = nil
     var editTarget: EditTargetKey? = nil
+    /// 編集コールバックのプロジェクト帰属（FE-R30-130-02）。
+    /// nil の場合は照合しない。
+    var editProjectGuard: ProjectEditGuard? = nil
 
     var body: some View {
         Menu {
@@ -69,22 +72,26 @@ struct AnimationTypeMenuButton: View {
         Button {
             // 他人のセッションが有効な間は離散編集を行わない
             // （FE-R20-126-03。入口で拒否し、モデルを変更しない）。
-            if let editRecorder, !editRecorder.canRecordValueChange() {
-                return
-            }
+            // プロジェクト帰属も同じ入口で照合する（FE-R30-130-02。
+            // 他行と共通の入口確認／記録ヘルパーへ寄せた）。
+            guard editWriteAllowed(
+                recorder: editRecorder, projectGuard: editProjectGuard)
+            else { return }
             let oldState = descriptor.animationValue?.recordedState
             descriptor.setAnimationType(type)
             // 種別変更は値列の再構成と一体の操作であり不可逆なため、
             // 記録は種別だけでなく変更前後の状態（種別＋値列）を
             // 一体として保持し、Undo/Redo の適用時は変換を再実行
             // せず記録した状態をそのまま書き戻す（FE-R23-127-01）。
-            if let editRecorder, let editTarget, let oldState,
+            if let editTarget, let oldState,
                let newState = descriptor.animationValue?.recordedState {
-                editRecorder.recordValueChange(
+                recordDescriptorValueChange(
+                    recorder: editRecorder,
                     target: EditTargetKey(
                         object: editTarget.object, key: editTarget.key + "#type"),
                     oldValue: oldState, newValue: newState,
-                    apply: { descriptor.restoreAnimationRecordedState($0) })
+                    apply: { descriptor.restoreAnimationRecordedState($0) },
+                    projectGuard: editProjectGuard)
             }
             onEdited()
         } label: {

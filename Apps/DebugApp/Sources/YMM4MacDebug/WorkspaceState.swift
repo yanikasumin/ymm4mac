@@ -56,6 +56,12 @@ final class WorkspaceState: ObservableObject {
     /// ここで保持し、プロジェクトの差し替えと履歴のリセットを同じ
     /// 順序で扱う（FE-UNDO-WIRING）。
     let editRecorder = EditRecorder()
+    /// 編集イベントのプロジェクト帰属（世代）の所有（FE-R30-130-02）。
+    /// プロジェクトの差し替え（newProject / load の成功時）で世代を進め、
+    /// それ以前に捕捉されたスタンプを持つ編集コールバックを陳腐化させる。
+    /// ビュー側は生成時に現行スタンプを捕捉し、効果を及ぼす直前に
+    /// 照合する（ProjectView / PropertyEditorRows の ProjectEditGuard）。
+    let editAttribution = ProjectEditAttribution()
     /// 履歴の状態が変わるたびに増える版数。ツールバー／メニューの
     /// Undo・Redo の有効/無効を再評価させるための契機。
     @Published private(set) var editHistoryRevision = 0
@@ -168,6 +174,9 @@ final class WorkspaceState: ObservableObject {
         guard confirmDiscardUnsavedChanges() else { return }
         // プロジェクトの差し替え前に、未確定トランザクションを
         // 破棄してから履歴を消す（順序の統一。FE-UNDO-WIRING）。
+        // 併せて編集帰属の世代を進め、旧プロジェクト向けに捕捉された
+        // 編集コールバックを陳腐化させる（FE-R30-130-02）。
+        editAttribution.advance()
         editRecorder.resetForProjectSwitch()
         project = Self.makeNewProject()
         diagnostics = YmmpLoadDiagnostics()
@@ -187,6 +196,8 @@ final class WorkspaceState: ObservableObject {
             let (loaded, loadedDiagnostics) = try YmmpCodec.load(fromFile: url.path)
             // 読み込みが成功した場合だけ、差し替え前に履歴を
             // リセットする（失敗時は旧プロジェクトと履歴を保つ）。
+            // 編集帰属の世代も成功時にだけ進める（FE-R30-130-02）。
+            editAttribution.advance()
             editRecorder.resetForProjectSwitch()
             project = loaded
             diagnostics = loadedDiagnostics

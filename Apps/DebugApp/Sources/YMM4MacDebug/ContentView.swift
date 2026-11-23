@@ -56,7 +56,12 @@ struct ContentView: View {
             ProjectView(
                 project: workspace.project,
                 diagnostics: workspace.diagnostics,
-                sourceURL: workspace.sourceURL
+                sourceURL: workspace.sourceURL,
+                // 編集帰属のスタンプはこのビューの世代のものとして捕捉する。
+                // プロジェクトが差し替わると .id の変化でこのビュー自体も
+                // 作り直され、新しい世代のスタンプで再捕捉される
+                // （FE-R30-130-02）。
+                editStamp: workspace.editAttribution.currentStamp()
             )
             .id(workspace.loadSequence)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
