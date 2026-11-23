@@ -38,6 +38,9 @@ let package = Package(
             dependencies: [
                 "PreviewCore",
                 .product(name: "YMM4Core", package: "YMM4Mac"),
+                // 素材失敗の表示と所有の一本化の検証で、書き出し側
+                // （TimelineExporter）と共有基盤を直接参照する。
+                .product(name: "YMM4GPU", package: "YMM4Mac"),
             ]
         ),
     ]

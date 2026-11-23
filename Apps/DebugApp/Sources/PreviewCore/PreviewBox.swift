@@ -19,6 +19,11 @@ public final class PreviewBox: PreviewRenderSession {
     }
 
     public let key: SessionKey
+    /// この描画セッションが使うデコーダ選択の基盤（Issue #70
+    /// 段階4）。アプリはワークスペースの基盤を渡し、失敗状態を
+    /// アプリセッション単位で一本化する。未指定ならこのセッション
+    /// 専用の基盤を作る（単独利用・自動テスト）。
+    public let mediaSupport: FFmpegMediaSupport
     /// Metal 初期化に失敗した場合の、利用者向けの理由文。成功時は nil。
     /// プレビューの入口（ProjectView）はこれを表示して、失敗が無言に
     /// ならないようにする（Issue #50）。
@@ -32,8 +37,12 @@ public final class PreviewBox: PreviewRenderSession {
     private let composer: TimelineComposer?
     private var isDisposed = false
 
-    public init(key: SessionKey, timeline: Timeline, timelines: [Timeline]? = nil, baseDirectory: URL?) {
+    public init(
+        key: SessionKey, timeline: Timeline, timelines: [Timeline]? = nil,
+        baseDirectory: URL?, mediaSupport: FFmpegMediaSupport? = nil
+    ) {
         self.key = key
+        self.mediaSupport = mediaSupport ?? FFmpegMediaSupport()
         let devices: MetalGraphicsDevices
         do {
             devices = try MetalGraphicsDevices()
@@ -63,9 +72,11 @@ public final class PreviewBox: PreviewRenderSession {
         // 内部合成器（シーン・合成グループ）で同じインスタンスを共有し、
         // 内部の子にも同じく効かせる（MAC-0028）。
         let effectProvider = MetalEffectPairProvider(devices: devices)
-        // デコーダ選択の基盤（Issue #70 段階3）: プレビューの映像・
-        // 口パク包絡で1つを共有する。書き出し側も同じ規則で作る。
-        let mediaSupport = FFmpegMediaSupport()
+        // デコーダ選択の基盤（Issue #70 段階3・4）: プレビューの
+        // 映像・口パク包絡で1つを共有する。アプリではワーク
+        // スペースの基盤が渡され、書き出し・長さ取得とも同じ
+        // 台帳を参照する。
+        let mediaSupport = self.mediaSupport
         let provider = MetalSourceProvider(
             devices: devices, baseDirectory: baseDirectory,
             sceneResolver: { id in allTimelines.first { $0.id == id } },

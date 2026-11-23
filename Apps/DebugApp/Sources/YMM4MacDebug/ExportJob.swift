@@ -44,11 +44,14 @@ final class ExportJob: @unchecked Sendable {
     private let request: ExportRequest
     private let cancellation: TimelineExportCancellation
     private let state: ExportUIState
+    /// ワークスペースの共有基盤（Issue #70 段階4）。書き出しの
+    /// 素材失敗判定はプレビュー・長さ取得と同じ台帳を参照する。
+    private let mediaSupport: FFmpegMediaSupport
 
     init(
         timeline: Timeline, timelines: [Timeline], baseDirectory: URL,
         request: ExportRequest, cancellation: TimelineExportCancellation,
-        state: ExportUIState
+        state: ExportUIState, mediaSupport: FFmpegMediaSupport
     ) {
         self.timeline = timeline
         self.timelines = timelines
@@ -56,13 +59,15 @@ final class ExportJob: @unchecked Sendable {
         self.request = request
         self.cancellation = cancellation
         self.state = state
+        self.mediaSupport = mediaSupport
     }
 
     func run() {
         let exporter: TimelineExporter
         do {
             exporter = try TimelineExporter(
-                timeline: timeline, timelines: timelines, baseDirectory: baseDirectory
+                timeline: timeline, timelines: timelines, baseDirectory: baseDirectory,
+                mediaSupport: mediaSupport
             )
         } catch let error as MetalInitializationError {
             // 初期化失敗の理由をそのまま表示する（Issue #50）。

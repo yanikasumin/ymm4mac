@@ -95,9 +95,16 @@ public final class PreviewRenderWorker: @unchecked Sendable {
     private let queue = DispatchQueue(
         label: "ymm4.preview.render", qos: .userInitiated
     )
-    private let makeSession: (
-        PreviewBox.SessionKey, [Timeline], Timeline, URL?
-    ) -> any PreviewRenderSession
+    private let makeSessionOverride: (
+        (PreviewBox.SessionKey, [Timeline], Timeline, URL?)
+            -> any PreviewRenderSession
+    )?
+    /// 既定のセッション生成で PreviewBox へ渡す共有基盤
+    /// （Issue #70 段階4）。アプリがワークスペースの基盤を差し、
+    /// プレビューがアプリセッションと同じ台帳を参照するように
+    /// する。セッション生成より前に差すこと。makeSession を
+    /// 差し替えた場合は生成側が担うため使われない。
+    public var mediaSupport: FFmpegMediaSupport?
 
     // MARK: - ロック保護の状態（描画の実行中は保持しない）
 
@@ -119,19 +126,28 @@ public final class PreviewRenderWorker: @unchecked Sendable {
     private var loopActive = false
     private var statsValue = Stats()
 
-    /// セッション生成の差し替え点。既定は PreviewBox を作る。
+    /// セッション生成の差し替え点。既定は PreviewBox を作る
+    /// （`mediaSupport` が差されていればそれを渡す）。
     /// 試験では描画時間を制御できる偽セッションを差し込む。
     public init(
-        makeSession: @escaping (
+        makeSession: ((
             PreviewBox.SessionKey, [Timeline], Timeline, URL?
-        ) -> any PreviewRenderSession = { key, timelines, timeline, baseDirectory in
-            PreviewBox(
-                key: key, timeline: timeline, timelines: timelines,
-                baseDirectory: baseDirectory
-            )
-        }
+        ) -> any PreviewRenderSession)? = nil
     ) {
-        self.makeSession = makeSession
+        self.makeSessionOverride = makeSession
+    }
+
+    private func createSession(
+        key: PreviewBox.SessionKey, timelines: [Timeline],
+        timeline: Timeline, baseDirectory: URL?
+    ) -> any PreviewRenderSession {
+        if let makeSessionOverride {
+            return makeSessionOverride(key, timelines, timeline, baseDirectory)
+        }
+        return PreviewBox(
+            key: key, timeline: timeline, timelines: timelines,
+            baseDirectory: baseDirectory, mediaSupport: mediaSupport
+        )
     }
 
     public var stats: Stats {
@@ -154,8 +170,9 @@ public final class PreviewRenderWorker: @unchecked Sendable {
         baseDirectory: URL?
     ) {
         queue.async { [self] in
-            let newSession = makeSession(
-                identity.key, timelines, timeline, baseDirectory
+            let newSession = createSession(
+                key: identity.key, timelines: timelines,
+                timeline: timeline, baseDirectory: baseDirectory
             )
             if let failure = newSession.initializationFailure {
                 newSession.dispose()

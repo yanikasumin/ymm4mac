@@ -213,7 +213,8 @@
           EnvelopeFollower.swift エンベロープフォロワ（再構成）とリングバッファ
         Media/                 FFmpeg デコード供給（Issue #70。段階1=基盤、
                                段階2=映像デコードセッション、段階3=音声
-                               供給と Factory 接続）
+                               供給と Factory 接続、段階4=停止手順の是正・
+                               所有の一本化・失敗表示と書き出し判定）
           ProcessOutputRunning.swift 子プロセスの一括実行（出力全文の回収。
                                バージョン確認とプローブ用。書き出し側の
                                ExportProcessRunning とは別契約）
@@ -231,7 +232,9 @@
           FFmpegVideoProcess.swift デコードプロセス1個の抽象・引数生成
                                （-copyts 常時、showinfo、passthrough、
                                TS は出力シーク）と実体（標準エラーの
-                               継続回収と時刻項目の対応付け）
+                               継続回収と時刻項目の対応付け。停止は
+                               読み側を閉じてから SIGTERM。パイプ詰まり
+                               時は SIGTERM が処理されないため。段階4）
           FFmpegVideoDecodeSession.swift 再生位置ごとのデコードセッション
                                （PTS 基準のフレーム選択、読み進め／再生成
                                の判断、世代による破棄）と同時実行数の
@@ -249,7 +252,9 @@
                                論理0へ正規化、終端の証拠照合と台帳駆動）
           FFmpegPCMProviderFactory.swift プローブに基づく音声供給の
                                生成（トラック選択、初回読み取りの試行、
-                               失敗の台帳記録）
+                               失敗の台帳記録。記録は音声の復号自体の
+                               失敗と役割非依存の事実だけに限り、音声
+                               ストリームの不在は記録しない。段階4）
       Sources/YMM4GPU/         GPU 実行層（Metal。全ソース #if os(macOS)、Linux では空）
         Graphics/
           MetalGraphicsDevices.swift MetalGraphicsDevices（デバイス共有・
@@ -299,7 +304,11 @@
             FFmpegMediaSupport.swift FFmpeg 供給系の共有基盤（バイナリ
                                解決・利用可否の台帳・映像管理者を束ね、
                                音声の合成 Factory と映像の合成供給を
-                               生成。プレビューと書き出しで共有。段階3）
+                               生成。所有はアプリセッション単位で、
+                               ワークスペースが1つを保持し全生成経路へ
+                               渡す。プロジェクト差し替え時は
+                               resetForProjectSwitch で状態を持ち越さ
+                               ない。段階3・4）
             MetalSceneSource.swift MetalSceneSource（シーン入れ子）
             MetalCompositeSource.swift MetalCompositeSource（合成グループ。
                                自前文脈と内部 TimelineComposer で子を
@@ -373,7 +382,13 @@
                                供給。対象タイムラインと共有のエフェクト
                                供給元を MetalSourceProvider へ渡す。MAC-0028）
           TimelineExporter.swift TimelineExporter（映像・音声供給と
-                               ExportSession の組み立て。MAC-0026）
+                               ExportSession の組み立て。共有基盤を受け
+                               取り、素材の失敗判定を前後に挟む。
+                               MAC-0026、Issue #70 段階4）
+          ExportMaterialCheck.swift 書き出しに必要な素材の収集
+                               （対象＋シーン経由のタイムライン）と、
+                               台帳に基づく失敗の仕分け（中止側／
+                               途中失敗の警告側）。段階4
         Playback/              実時間再生（音声マスタークロック。MAC-0042）
           PlaybackAudioSource.swift 再生用の音声供給（本家の供給プロバイダの
                                再現。ミキサーを 2 秒リングへ 1 秒窓で先読みし、
@@ -391,7 +406,9 @@
           YMM4MacDebugApp.swift アプリ入口
           ContentView.swift    ルート画面（プロジェクト読み込みと検証サンプル）
           WorkspaceState.swift 新規プロジェクト等の作業状態（Undo 履歴の
-                               所有も担う。プロジェクトごとに1つ）
+                               所有も担う。プロジェクトごとに1つ。
+                               素材の利用可否の基盤もアプリセッション
+                               単位で所有する。Issue #70 段階4）
           ProjectView.swift    製品 UI の土台（プレビュー・運送系・タイムライン・
                                ステータスバー・メニュー）
           PreviewBox.swift     プレビュー合成の表示
@@ -442,7 +459,7 @@
 - 保存: `YmmpCodec.encode` がモデルを追加フィールドごと JSON 化（1行）→ 一時ファイルへ書き出し → 再読込で検証 → 本ファイルへコピー。
 - アイテムの複製は JSON 往復（本家 GetClone と同じ経路）で、`BaseItem.cloned()` が担う。分割はこの複製を左右に作ってから行う。
 - 描画（実行部まで）: `TimelineComposer.update` が `ItemPicker.pickItems` でフレーム時点の対象アイテムを選定し、資源管理（範囲外の破棄・不足分の生成）と親エフェクトの再構築（顔・声解決→グループ解決）を行う → FrameBuffer 以外の各 `EffectedItemSource` が Source を更新し、`EffectedOutput` の連鎖（処理器の位置基準の再利用・差し替え）＋アイテム変換で DrawDescription を確定 → `DrawOrdering.ordered` が3キーで順序付け → `DrawSegmentBuilder` のセグメント列に従い、抽象描画先（RenderTarget）へ合成する。FrameBuffer アイテムでは描画先を閉じて Source へ渡し、新しい描画先で合成を続ける。
-- 描画（GPU 実行）: 描画先・DrawingEffect・基本 Source の実物は `Sources/YMM4GPU/`（Metal）。`MetalGraphicsDevices` がデバイスと ImageReference の登録表を所有し、`MetalGraphicsContext`（消費者ごとに生成）が描画先を供給する。DrawingEffect は中間テクスチャを作らず、入力実体へ変換（ズーム×ワールド×透視）と不透明度を記録した実体を出力として登録する（遅延評価）。描画先は画面サイズのテクスチャを実体とし、記録した描画を close() で同期実行する。RenderTarget の close() は throws であり（MAC-0021）、テクスチャ生成失敗やコマンドバッファの実行エラーは MetalRenderError として呼び出し側へ伝播し、失敗した描画先は出力として公開されない（最終合成の失敗時は旧出力が保持される）。Source の実物は画像（ImageIO デコード）、図形（SDF 描画）、テキストと字幕（CoreText でラスタライズ）、動画（AVAssetImageGenerator による時刻指定デコード）、シーン（内側 TimelineComposer の入れ子合成）、フレームバッファ（蓄積の実体化）、エフェクト（EffectItem。本家 EffectSource 相当。FrameBuffer 実装の共通部を基底クラスで共有しつつ、B-1 の特殊性＝基底へ FrameBufferItem として null を渡すため ClearBackground=false・Flood は不透明な黒・切り抜き境界は画面サイズ、を持つ専用 Source。蓄積画像へ ShapeParameter の図形をマスクとして適用し、アイテム自身の映像エフェクト列がマスク範囲にだけ効く。MAC-0035）、立ち絵（境界型 MetalTachieRenderer への委譲）、合成グループ（MetalCompositeSource が自前文脈と内部 TimelineComposer で子をタイムライン絶対時刻で中間画像へ合成。中心は CompositeCenter が ImageCenter のとき内容境界の中心、それ以外は (0,0)。グループの GroupEffects は子へ流れず、グループ自身の VideoEffects が合成結果全体へ一度だけ適用される。MAC-0027）、画面遷移（MetalTransitionSource が自前文脈と Before / After の内部 TimelineComposer（TransitionItemPicker）で遷移前後の画面を合成し、各側へ Before/AfterVideoEffects を適用してから内蔵ブレンド8種で合成する。MAC-0036）で、未対応種別は透明な空 Source になる。描画先は描画内容の境界を追跡し、MetalImage は境界とテクスチャ平面範囲（texturePlaneRect / planeOffset）を分けて持つ。動画の素材時刻は PlaybackRateMap で求め、素材を開いた時点で実 Duration が item.contentLength へ反映される。シーン解決は PreviewBox / ProjectView がプロジェクト全タイムラインを解決子として渡す。デコーダの選択は Factory 層へ集約した（Issue #70 段階3）: 共有基盤 `FFmpegMediaSupport`（バイナリ解決・利用可否の台帳・映像デコード管理者）が音声の合成 Factory（`CompositePCMProviderFactory`）と映像の合成供給（`CompositeVideoDecoderSupply`）を生成し、どちらも AVFoundation → FFmpeg の順に試して「実際に開けて初回読み取り／初回フレームの復号ができること」で選択を確定する（メタ情報だけ取れて復号できない素材は FFmpeg へ落ちる）。プレビュー（PreviewBox・ProjectView の再生エンジン）と書き出し（TimelineExporter が基盤を1つ作り映像・音声で共有）は同じ規則を使い、経路ごとに規則を分けない。AVFoundation が開けないコンテナ（MKV / WebM / TS 等）は FFmpeg 供給で開き、どちらでも開けない素材は従来どおり透明フォールバックになる。基盤（バイナリ解決・プローブ・素材ごとの利用可否の状態モデル、段階1）と映像デコードセッション（Core の `Media/`。PTS 基準のフレーム選択、TS は出力シーク、セッション管理と利用可否の駆動、段階2）、音声供給と選択統合（段階3）は実装済みであり、残るのは失敗の UI 表示（段階4）である。Metal エフェクト処理器への入力は、共通規則（TRANSFORM47 / Issue #47）として、変換・不透明度を持つ実体が来た場合は基底（MetalEffectProcessor）が実体化（変換後の外接矩形への焼き込み＋不透明度の全成分乗算）してから各処理器へ渡し、発動は MetalGraphicsDevices の診断カウンタで数えられる（現行の Source・処理器・描画先はいずれもプレーンな実体しか出さないため、通常の合成では発動しない。実プロジェクト2件での測定でも 0 回）。エフェクト供給元は外側の合成器と内部合成器（シーン・合成グループ）で同じ MetalEffectPairProvider インスタンスを共有し、内部の子にも GPU エフェクトが効く（MAC-0028。プレビュー・書き出しとも同じ配線で、書き出し側は対象タイムラインも供給元へ渡すため合成グループが書き出しでも合成される）。クリッピング（IsClippingWithObjectAbove）の実効マスクは `MetalAlphaMaskEffectFactory` をプレビュー・書き出し・シーン・複合グループの全生成経路で TimelineComposer へ注入して有効化した（MAC-0035）。本家は効果グラフの遅延評価により描画段でのマスク入力設定が最終描画へ反映されるが、こちらは入力が設定されるたびに出力実体を作り直して登録し直すことで同じ意味論を作る。直前の画像が無い場合に合成器が渡す白 Flood のトークンは、全面不透明なマスクによる AlphaMask が恒等変換であることから、本体画像をそのまま出力として登録して解決する。画像・動画のデコードテクスチャは上下反転せずに生成する（MAC-0028 で是正。従来は反転していた）。デバッグアプリのプレビュー欄はこの経路で合成し、最終テクスチャを CGImage として読み戻して表示する。デバッグアプリのプレビュー合成は PreviewRenderWorker が専用直列キュー上で PreviewBox を所有して行い（R6-02）、合成器が読むのは編集モデルのスナップショット（Project.makeExportSnapshot）だけである。メインキューは再生位置の通知と完成画像の表示だけを行い、合成の実行はメインキューでは行わない。描画段の失敗のうち例外を投げられない境界（AlphaMaskEffect.setInput）で発生したものは、描画セッションが所有する RenderDiagnosticsCollector へ型付きの出来事として集約され（R6-06）、内部合成器の生成者へも同じ収集先が伝播する。現在の失敗状態とセッション履歴は分けて扱い、表示側は現在の失敗をプレビュー付近へ、履歴を診断タブへ出す。
+- 描画（GPU 実行）: 描画先・DrawingEffect・基本 Source の実物は `Sources/YMM4GPU/`（Metal）。`MetalGraphicsDevices` がデバイスと ImageReference の登録表を所有し、`MetalGraphicsContext`（消費者ごとに生成）が描画先を供給する。DrawingEffect は中間テクスチャを作らず、入力実体へ変換（ズーム×ワールド×透視）と不透明度を記録した実体を出力として登録する（遅延評価）。描画先は画面サイズのテクスチャを実体とし、記録した描画を close() で同期実行する。RenderTarget の close() は throws であり（MAC-0021）、テクスチャ生成失敗やコマンドバッファの実行エラーは MetalRenderError として呼び出し側へ伝播し、失敗した描画先は出力として公開されない（最終合成の失敗時は旧出力が保持される）。Source の実物は画像（ImageIO デコード）、図形（SDF 描画）、テキストと字幕（CoreText でラスタライズ）、動画（AVAssetImageGenerator による時刻指定デコード）、シーン（内側 TimelineComposer の入れ子合成）、フレームバッファ（蓄積の実体化）、エフェクト（EffectItem。本家 EffectSource 相当。FrameBuffer 実装の共通部を基底クラスで共有しつつ、B-1 の特殊性＝基底へ FrameBufferItem として null を渡すため ClearBackground=false・Flood は不透明な黒・切り抜き境界は画面サイズ、を持つ専用 Source。蓄積画像へ ShapeParameter の図形をマスクとして適用し、アイテム自身の映像エフェクト列がマスク範囲にだけ効く。MAC-0035）、立ち絵（境界型 MetalTachieRenderer への委譲）、合成グループ（MetalCompositeSource が自前文脈と内部 TimelineComposer で子をタイムライン絶対時刻で中間画像へ合成。中心は CompositeCenter が ImageCenter のとき内容境界の中心、それ以外は (0,0)。グループの GroupEffects は子へ流れず、グループ自身の VideoEffects が合成結果全体へ一度だけ適用される。MAC-0027）、画面遷移（MetalTransitionSource が自前文脈と Before / After の内部 TimelineComposer（TransitionItemPicker）で遷移前後の画面を合成し、各側へ Before/AfterVideoEffects を適用してから内蔵ブレンド8種で合成する。MAC-0036）で、未対応種別は透明な空 Source になる。描画先は描画内容の境界を追跡し、MetalImage は境界とテクスチャ平面範囲（texturePlaneRect / planeOffset）を分けて持つ。動画の素材時刻は PlaybackRateMap で求め、素材を開いた時点で実 Duration が item.contentLength へ反映される。シーン解決は PreviewBox / ProjectView がプロジェクト全タイムラインを解決子として渡す。デコーダの選択は Factory 層へ集約した（Issue #70 段階3）: 共有基盤 `FFmpegMediaSupport`（バイナリ解決・利用可否の台帳・映像デコード管理者）が音声の合成 Factory（`CompositePCMProviderFactory`）と映像の合成供給（`CompositeVideoDecoderSupply`）を生成し、どちらも AVFoundation → FFmpeg の順に試して「実際に開けて初回読み取り／初回フレームの復号ができること」で選択を確定する（メタ情報だけ取れて復号できない素材は FFmpeg へ落ちる）。段階4で所有を一本化し、基盤はワークスペース（アプリセッション）が1つを保持してプレビュー・実時間再生・書き出し・長さ取得の全経路へ渡す。同じ台帳が失敗の UI 表示（プレビューの重ね表示とタイムラインの警告マーク。表示側の対応付けはアプリ側 PreviewCore の MediaAvailabilityPresentation）と書き出しの失敗判定（必要な素材が失敗状態なら書き出しを失敗として扱う）にも使われ、UI とデコーダが別々に失敗判定を持つ構造にしない。AVFoundation が開けないコンテナ（MKV / WebM / TS 等）は FFmpeg 供給で開き、どちらでも開けない素材は従来どおり透明フォールバックになる（ただし台帳に失敗が残り、表示と書き出し判定で可視化される）。基盤（バイナリ解決・プローブ・素材ごとの利用可否の状態モデル、段階1）と映像デコードセッション（Core の `Media/`。PTS 基準のフレーム選択、TS は出力シーク、セッション管理と利用可否の駆動、段階2）、音声供給と選択統合（段階3）、仕上げ（段階4）は実装済みである。Metal エフェクト処理器への入力は、共通規則（TRANSFORM47 / Issue #47）として、変換・不透明度を持つ実体が来た場合は基底（MetalEffectProcessor）が実体化（変換後の外接矩形への焼き込み＋不透明度の全成分乗算）してから各処理器へ渡し、発動は MetalGraphicsDevices の診断カウンタで数えられる（現行の Source・処理器・描画先はいずれもプレーンな実体しか出さないため、通常の合成では発動しない。実プロジェクト2件での測定でも 0 回）。エフェクト供給元は外側の合成器と内部合成器（シーン・合成グループ）で同じ MetalEffectPairProvider インスタンスを共有し、内部の子にも GPU エフェクトが効く（MAC-0028。プレビュー・書き出しとも同じ配線で、書き出し側は対象タイムラインも供給元へ渡すため合成グループが書き出しでも合成される）。クリッピング（IsClippingWithObjectAbove）の実効マスクは `MetalAlphaMaskEffectFactory` をプレビュー・書き出し・シーン・複合グループの全生成経路で TimelineComposer へ注入して有効化した（MAC-0035）。本家は効果グラフの遅延評価により描画段でのマスク入力設定が最終描画へ反映されるが、こちらは入力が設定されるたびに出力実体を作り直して登録し直すことで同じ意味論を作る。直前の画像が無い場合に合成器が渡す白 Flood のトークンは、全面不透明なマスクによる AlphaMask が恒等変換であることから、本体画像をそのまま出力として登録して解決する。画像・動画のデコードテクスチャは上下反転せずに生成する（MAC-0028 で是正。従来は反転していた）。デバッグアプリのプレビュー欄はこの経路で合成し、最終テクスチャを CGImage として読み戻して表示する。デバッグアプリのプレビュー合成は PreviewRenderWorker が専用直列キュー上で PreviewBox を所有して行い（R6-02）、合成器が読むのは編集モデルのスナップショット（Project.makeExportSnapshot）だけである。メインキューは再生位置の通知と完成画像の表示だけを行い、合成の実行はメインキューでは行わない。描画段の失敗のうち例外を投げられない境界（AlphaMaskEffect.setInput）で発生したものは、描画セッションが所有する RenderDiagnosticsCollector へ型付きの出来事として集約され（R6-06）、内部合成器の生成者へも同じ収集先が伝播する。現在の失敗状態とセッション履歴は分けて扱い、表示側は現在の失敗をプレビュー付近へ、履歴を診断タブへ出す。
 - VoiceItem の実効値: 本家の IVideoItem プロパティは読み取りのたびに JimakuVisibility と Character 設定で解決される動的 getter であるため、描画パイプラインはアイテムの保持プロパティを直接読まず、`VideoItemProperties` の実効値アクセサ（`effectiveX` 等、VoiceItem のときだけ解決し他は保持値を返す）を通る。EffectedItemSource（変形・フェード・クリッピング）、TimelineSource（RenderScale・合成時の読み取り）、DrawOrdering（IsAlwaysOnTop・IsZOrderEnabled）が対象。字幕の表示可否と外観は `VoiceItem.jimakuIsVisible` / `jimakuAppearance` が担い、MetalJimakuSource はそれを使うだけにする。
 - 音声: `TimelineAudioMixer`（AudioStream）が読み取り範囲と交差するアイテムのリソースだけを開き、各アイテムの `EffectedAudioItemSource`（素材ストリーム → 本家のチェーン順序の処理器連鎖 → VolumePan）が供給するサンプルへレイヤー音量を適用して float 加算する。音声グループに完全に所有される子は `AudioGroupResolver` の算出に基づきトップレベルへ直接加算せず、`GroupAudioBusSource`（バスミックス → グループエフェクト → Resampler）経由でのみ加算される。素材のデコード実体は合成 PCM 供給工場（Issue #70 段階3。AVFoundation → FFmpeg）が開く供給が担い、AVFoundation 側は `AVFoundationStreamingPCMProvider`（MAC-0026）が AVAssetReader で float32 / 2ch を逐次デコードし、FFmpeg 側は Core の `FFmpegPCMProvider` が ffmpeg プロセスの前方ストリーム＋リングバッファで同じ契約を満たす（失敗時は無音。書き出しへの接続も MAC-0026 で実装済み。供給のストリーミング化は STREAM54 で、従来は全体を読み切る方式だった）。ミックス結果の再生への接続はまだ無い。位置精度は MAC-0016 で QA 済み（位置カウンタの累積ドリフトは全チェーンで 0 サンプル。`InMemoryPCMProvider` の seek は二重量子化を避けるため最も近いフレーム境界へ丸める）。Resampler の生成芯は MAC-0024 で線形補間から帯域制限補間（窓関数 sinc）へ差し替え、MAC-0037 で正式仕様（Kaiser 窓 β=8.96・片側96零交差・193タップ）へ固定した。長さ・シーク・位置の変換式は無変更で位置写像は不変、DC は厳密に保存される。正式合格値（48k→44.1k で阻止帯域 [23.2k–24kHz] の最悪値 −80 dB 以下、通過帯域 20kHz までの平坦さ ±0.1 dB 以内）を正式テスト（AudioResamplerQualityTests）が合否判定し、最終形の実測は阻止帯域の最悪値 −94.54 dB・平坦さ 0.000031 dB 以内。詳細は台帳 MAC-0037 と解析側 AUDIO-FIDELITY-PLAN §3.1 を参照。
 - 映像エフェクト定義層: `Effects/` の定義型が $type 名と Animation 型パラメータを保持し、変換型の処理器が MAC-0010 の連鎖契約で DrawDescription を書き換える。登録は95種（変換群22種＋GPU 処理系73種、MAC-0022）で本家内蔵分は定義層が揃った。GPU 処理系の処理器は、第1段10種（色変換系8種＋GaussianBlur＋Mosaic、MAC-0023、`Sources/YMM4GPU/Effects/` の MetalColorEffectProcessors.swift / MetalBlurMosaicProcessors.swift）と第2段31種（幾何変換・ぼかし／マスク・影／塗り・ワープ・イン／アウト・ランダム／反復、MAC-0028、同 Effects/ の家族別7ファイル）の計41種が Metal 実処理器を持ち、Mac 実機で画素検証済み（解析値との照合）で統合済みである。残り32種は暫定の素通し（GPUEffectPassthroughProcessor）のため描画にはまだ反映されない。MetalEffectPairProvider が TypedEffectPairProvider を内包し、対象41種だけを Metal 処理器つきの定義へ差し替えて供給する。全 Metal 処理器共通の前提として、入力画像が恒等変換でなく不透明度≠1 の場合は素通しになる（DrawDescription を書き換える処理器のフックは素通し経路でも通る）。保持形式は生保持のまま（モデル層は全箇所 `PreservedObject`、保存経路は無変更）で、接続は消費側で行う: `TimelineComposer` の既定の EffectPairProvider である `TypedEffectPairProvider` が、合成時に保持列から型付き定義を一時的なビューとして復元し、`EffectedItemSource` へ供給する（対象は VisualItem 系 VideoEffects／VoiceItem の JimakuVideoEffects／GroupItem の VideoEffects／TachieFaceItem・VoiceItem の TachieFaceEffects。SceneItem の Before・AfterVideoEffects は対象外。TransitionItem の Before・AfterVideoEffects は MAC-0036 で `transitionEffectPairs` として別経路から供給される）。キーフレーム文脈は定義生成時と所有アイテムの KeyFrames 変更時にだけ再伝播され、定義インスタンスは作り直されない。VoiceItem の字幕エフェクトは、キャラクターが解決済みの場合に限り、保持列ではなく MAC-0014 の `resolvedVideoEffects`（JimakuVisibility とキャラクター設定による解決列）が供給列になる。
@@ -450,7 +467,7 @@
 
 - ユーザー辞書（TEXT60 の設定層）: `UserDictionaryStore`（YMM4Core）が Application Support/YMM4Mac/UserDictionary.json を所有し、メモリ上の辞書と版数（generation）を保持する。保存は専用の直列キュー1本へ統合され、`update` はメモリを即時差し替え、永続化だけを 0.3 秒の静穏期間で集約する。プレビュー経路のテキスト・字幕 Source（MetalTextSource / MetalJimakuSource）は共有ストアの最新を読み、版数をキャッシュキーに含める。書き出し経路は、ジョブ開始時に `UserDictionaryStore.snapshot()` で辞書と版数の不変な組を取得し、`MetalExportVideoProvider` → `MetalSourceProvider`（子供給元へも伝播）→ 各 Source へ渡すため、ジョブ中と他ジョブの編集の影響を受けない。
 
-**製品 UI は土台まで実装済みで、形の完成（本家レイアウトへの一致、スタブの解消）は未完。動画・音声デコードは AVFoundation の範囲に加え、Issue #70 の FFmpeg 供給（基盤=段階1、映像セッション=段階2、音声供給と Factory 選択統合=段階3）で MKV / WebM / TS 等にも対応し、残るのは失敗の UI 表示（段階4）。音声はパイプラインの芯と QA、リサンプラの高品質化（MAC-0024）、デコード実体と書き出し接続（MAC-0026）に加え、VoiceItem の音声供給（MAC-0040、`Sources/YMM4GPU/Export/VoiceAudioProvider.swift` の `VoicePCMProviderResolver` が VoiceCache の Brotli 解凍とカスタム音声ファイルを通常のデコード経路へ接続）までで、ユーザー音声エフェクト・再生接続が未実装。書き出しは芯に加えて実接続と実エンコード検証まで完了。映像エフェクトは定義層と変換型処理器に加え、合成チェーンへの接続（消費側の型付き復元）と VoiceItem の字幕エフェクト解決の接続まで済み、GPU 処理系は定義層（73種）に加え、処理器は第1段10種＋第2段31種＝41種が Mac 検証済みで統合済み、残り32種は素通し（未実装）。内部合成（シーン・合成グループ）へのエフェクト供給元伝播と書き出しへのタイムライン受け渡しも MAC-0028 で接続済み。** 詳細は実装台帳 MAC-0001〜MAC-0037。
+**製品 UI は土台まで実装済みで、形の完成（本家レイアウトへの一致、スタブの解消）は未完。動画・音声デコードは AVFoundation の範囲に加え、Issue #70 の FFmpeg 供給（基盤=段階1、映像セッション=段階2、音声供給と Factory 選択統合=段階3、仕上げ=段階4: 停止手順の是正・所有の一本化・失敗表示と書き出し判定）で MKV / WebM / TS 等にも対応し、開けない素材は失敗として可視化される。音声はパイプラインの芯と QA、リサンプラの高品質化（MAC-0024）、デコード実体と書き出し接続（MAC-0026）に加え、VoiceItem の音声供給（MAC-0040、`Sources/YMM4GPU/Export/VoiceAudioProvider.swift` の `VoicePCMProviderResolver` が VoiceCache の Brotli 解凍とカスタム音声ファイルを通常のデコード経路へ接続）までで、ユーザー音声エフェクト・再生接続が未実装。書き出しは芯に加えて実接続と実エンコード検証まで完了。映像エフェクトは定義層と変換型処理器に加え、合成チェーンへの接続（消費側の型付き復元）と VoiceItem の字幕エフェクト解決の接続まで済み、GPU 処理系は定義層（73種）に加え、処理器は第1段10種＋第2段31種＝41種が Mac 検証済みで統合済み、残り32種は素通し（未実装）。内部合成（シーン・合成グループ）へのエフェクト供給元伝播と書き出しへのタイムライン受け渡しも MAC-0028 で接続済み。** 詳細は実装台帳 MAC-0001〜MAC-0037。
 
 ## 実装後の書き方
 

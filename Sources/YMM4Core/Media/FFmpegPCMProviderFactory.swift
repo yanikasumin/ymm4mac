@@ -9,6 +9,10 @@ import Foundation
 /// 返し、失敗を `MediaAvailabilityRegistry` へ記録する（Factory 層の
 /// 選択判定は「実際に開けて初回読み取りができること」が基準という
 /// 段階1〜3の設計に従う）。
+/// 記録の役割分担（段階4）: 台帳は映像・音声の両経路で共有される
+/// ため、本工場が記録するのは音声の復号自体の失敗と、役割に
+/// 依存しない事実（ファイルなし・FFmpeg なし・プローブ不能）だけ
+/// とする。音声ストリームの不在は失敗として記録しない。
 ///
 /// ストリーム選択は AVFoundation 側と同じ規則: `audioTrackIndex` が
 /// 範囲外なら先頭の音声ストリームを使う。提示開始位置と長さは
@@ -72,7 +76,9 @@ public final class FFmpegPCMProviderFactory: PCMProviderFactory, @unchecked Send
             return nil
         }
 
-        registry?.beginLoading(for: key)
+        // プローブは読み取りだけの照会であり、ここでは状態を
+        // 変えない。読み込み中への遷移は、音声ストリームの存在が
+        // 確認できてから行う（下記）。
         let probe: MediaProbeResult
         do {
             probe = try prober.probe(path: resolvedPath, ffprobePath: ffprobe.path)
@@ -90,14 +96,12 @@ public final class FFmpegPCMProviderFactory: PCMProviderFactory, @unchecked Send
 
         let audioStreams = probe.audioStreams
         guard !audioStreams.isEmpty else {
-            registry?.markFailed(
-                for: key,
-                failure: MediaAvailabilityFailure(
-                    kind: .unsupportedOrDecodeFailed,
-                    detail: "音声ストリームがありません",
-                    occurredAt: Date()
-                )
-            )
+            // 音声ストリームが無いことは復号の失敗ではない。
+            // 映像だけの素材は正当な素材であり、台帳は段階4で
+            // 映像・音声の両経路が共有するため、ここで失敗を
+            // 記録すると映像側の利用可否まで汚染される。
+            // AVFoundation 側もトラックが無ければ記録せず nil を
+            // 返す。状態は変更せず nil を返す。
             return nil
         }
         let stream = audioStreams.indices.contains(audioTrackIndex)
@@ -114,6 +118,7 @@ public final class FFmpegPCMProviderFactory: PCMProviderFactory, @unchecked Send
             )
             return nil
         }
+        registry?.beginLoading(for: key)
 
         let presentationStart = stream.startTimeSeconds ?? probe.startTimeSeconds
         let duration = stream.durationSeconds ?? probe.duration?.seconds

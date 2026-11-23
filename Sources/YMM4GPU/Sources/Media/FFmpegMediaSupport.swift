@@ -10,6 +10,12 @@ import YMM4Core
 /// Factory と映像供給を取り出すことで、デコーダ選択規則を分けない。
 /// 映像の管理者は初回利用時に遅延生成する（タイマーを張るため、
 /// 音声だけの利用で作らない）。
+///
+/// 所有はアプリのセッション単位（Issue #70 段階4）: アプリは
+/// ワークスペースが基盤を1つ保持し、プレビュー・再生・書き出し・
+/// 長さ取得の全経路へ同じインスタンスを渡す。プロジェクトの
+/// 差し替えでは `resetForProjectSwitch()` で状態を持ち越さない。
+/// 単独利用（自動テスト等）では生成経路ごとに作ってよい。
 public final class FFmpegMediaSupport: @unchecked Sendable {
     public let resolution: FFmpegBinaryResolution
     public let registry: MediaAvailabilityRegistry
@@ -40,6 +46,23 @@ public final class FFmpegMediaSupport: @unchecked Sendable {
             }
         }
         return videoManagerStorage
+    }
+
+    /// プロジェクトの差し替え時のリセット。映像の管理者が生成済み
+    /// なら終了させて捨て（次回利用時に新しいプロジェクト用へ
+    /// 作り直す）、台帳を空にする。旧プロジェクトのセッションと
+    /// 失敗記録を新しいプロジェクトへ持ち越さないための境界。
+    /// 終了済みの管理者へ供給を求めた側は superseded で終わる
+    /// （枠ゲートの無効化時の契約）ため、表示側の作り直しと競合
+    /// しても詰まらない。
+    public func resetForProjectSwitch() {
+        lock.lock()
+        let manager = videoManagerStorage
+        videoManagerStorage = nil
+        videoManagerResolved = false
+        lock.unlock()
+        manager?.shutdown()
+        registry.removeAll()
     }
 
     /// 音声の合成 Factory（AVFoundation → FFmpeg）を作る。

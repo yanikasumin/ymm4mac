@@ -1,4 +1,5 @@
 import AppKit
+import PreviewCore
 import SwiftUI
 import YMM4Core
 
@@ -74,6 +75,11 @@ struct TimelineStripView: View {
     /// 外部（Undo/Redo の適用等）からの再評価の契機。body で読む
     /// ことで、モデルが帯の外で変わった場合に描画へ追随させる。
     var displayRevision: Int = 0
+    /// 素材の利用可否の通知（Issue #70 段階4）。失敗した素材を
+    /// 使うアイテムへ警告マークを付けるための、アイテム同一性→
+    /// 通知の対応。正本はワークスペースの台帳で、ここは写し。
+    var materialNotices:
+        [ObjectIdentifier: MediaAvailabilityPresentation.Notice] = [:]
 
     /// スクロール位置の写し（NSScrollView が所有者で、これは報告用）。
     /// 縦グリッドの間引き・仮想化の範囲・追加位置のレイヤー決定に使う。
@@ -342,6 +348,20 @@ struct TimelineStripView: View {
                     .foregroundStyle(.white)
                     .frame(width: max(width - 4, 0), alignment: .trailing)
                     .offset(y: 6)
+            }
+
+            // 素材の読み込み失敗の警告（Issue #70 段階4）。右下に
+            // 付け、詳細（ファイル名と案内）はツールチップで出す。
+            // 読み込み中は警告を付けない（暫定長で表示される）。
+            if let notice = materialNotices[ObjectIdentifier(item)],
+               notice.state.isFailed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .shadow(color: .black.opacity(0.45), radius: 1, x: 0, y: 0)
+                    .frame(width: max(width - 4, 0), alignment: .trailing)
+                    .offset(y: rowHeight - 13)
+                    .help("\(notice.fileName): \(notice.message)")
             }
         }
         .frame(width: width, height: rowHeight, alignment: .topLeading)
