@@ -150,6 +150,32 @@ final class ContentSeparationsTests: XCTestCase {
         XCTAssertEqual(head, [.zero, .zero, .zero])
     }
 
+    /// FE-R44-136-01 の受け入れ条件: 境界番号が 2^53 に達する
+    /// 入力（オフセット 2^53 ティック、素材長 1 ティック、平坦な
+    /// 非定数 100%）でも列挙が有限で終了する。境界番号を Double
+    /// で保持していた旧実装では +1 が失われ（2^53 + 1 == 2^53）、
+    /// 同じ境界を無期限に返した。本家は境界番号を long で保持
+    /// する。境界は1フレームの消費幅（約33万ティック）ぶん現れる。
+    func testCrossingsTerminateAtHugeOffsetBeyondDoublePrecision() {
+        let crossings = Array(flatMap(100).enumerateContentBoundaryCrossings(
+            itemLength: 1, fps: 30,
+            contentOffset: TimeSpanValue(ticks: 9_007_199_254_740_992),
+            contentLength: TimeSpanValue(ticks: 1)))
+        XCTAssertFalse(crossings.isEmpty)
+        XCTAssertLessThan(crossings.count, 1_000_000)
+    }
+
+    /// FE-R44-136-01: 逆行でも同規模のオフセットで列挙が
+    /// 終了する（境界番号の後退が保証される）。
+    func testCrossingsBackwardTerminateAtHugeOffsetBeyondDoublePrecision() {
+        let crossings = Array(flatMap(-100).enumerateContentBoundaryCrossings(
+            itemLength: 1, fps: 30,
+            contentOffset: TimeSpanValue(ticks: 9_007_199_254_740_992),
+            contentLength: TimeSpanValue(ticks: 1)))
+        XCTAssertFalse(crossings.isEmpty)
+        XCTAssertLessThan(crossings.count, 1_000_000)
+    }
+
     // MARK: - (a) 基底形（BaseItem）
 
     /// 基底の定数形は本家どおり、先頭値（% の数値そのもの）を

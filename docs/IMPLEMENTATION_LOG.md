@@ -2328,6 +2328,12 @@ PR #129（FE-R15-EDITEND）で編集終了時調整の分岐 (1)（素材本来�
 
 検証（処分後）: Mac で対象テスト全合格 — `ContentSeparationsTests` 34件（新規回帰4件を含む）、`MediaItemLengthTests` 48件、`PlaybackRateEditSessionTests` 10件、`YmmpCodecTests` 27件（main 取り込み後の件数）、`EditRecorderTests` 8件、計127件・失敗0。DebugApp の `swift build` 成功。AudioDriftTests は実行していない。
 
+**監査指摘の処分（PR #136 再レビュー、Round 44）。**
+
+- **FE-R44-136-01（P2）**: FE-R43-136-01 で1件ずつ返す方式へ書き換えた `BoundaryCrossingIterator` が、境界番号 `nextMultiple` を Double で保持し横切のたびに ±1 していた。絶対値が 2^53 以上では加減が失われ（2^53 + 1 == 2^53）、同じ境界を無期限に返して有限入力でも列挙が終了しない。本家 `PlaybackRateMap.cs:358-369` は境界番号 k を long で保持する。境界番号を Int64 へ変更し、前進・後退を `addingReportingOverflow` で保証した（桁あふれ時はその区間の残り境界なしとして扱う）。初期値の導出は本家どおり商（Double 演算）を切り捨て／切り上げしてから1つ進める形のまま、Int64 への変換には `Int64(exactly:)` を使い、範囲外・非有限ではトラップせず列挙自体を終える（`isExhausted`）。本家は変換の飽和・未定義動作に依存する範囲であり、Mac 側の安全措置として記録する（実用上の入力では到達しない）。境界時刻の算出は整数乗算を導入せず、境界番号を Double へ変換してから素材長を掛ける形とした。本家は `k * contentTicks` を long 演算するが、Mac 側は消費位置（previous / current）自体を Double で保持しており、整数乗算を導入すると境界番号と素材ティックの双方が大きい場合に積が Int64 へ収まらない。変換後の乗算なら桁あふれは生じず、境界位置の精度は Double の消費位置で既に決まっているため、整数乗算の導入は不要と判断した。回帰テスト: 監査の再現入力（アイテム長 1 フレーム・30fps・平坦な非定数 100%・オフセット 2^53 ティック・素材長 1 ティック）で列挙が有限で終了すること（`testCrossingsTerminateAtHugeOffsetBeyondDoublePrecision`）、逆行でも同規模のオフセットで終了すること（`testCrossingsBackwardTerminateAtHugeOffsetBeyondDoublePrecision`）。既存の前進・逆行・複数境界の横切テストは無変更で合格。
+
+検証（処分後）: Mac で対象テスト全合格 — `ContentSeparationsTests` 36件（新規回帰2件を含む）、`MediaItemLengthTests` 48件、`PlaybackRateEditSessionTests` 10件、`YmmpCodecTests` 27件、`EditRecorderTests` 8件、計129件・失敗0。DebugApp の `swift build` 成功。AudioDriftTests は実行していない。
+
 ##### PR 本文の下書き（FE-CONTENTSEP）
 
 ## 概要

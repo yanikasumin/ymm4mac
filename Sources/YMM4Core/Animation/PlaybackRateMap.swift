@@ -280,11 +280,17 @@ private struct BoundaryCrossingIterator: IteratorProtocol {
     private var previous: Double
     /// 処理中の区間の終了側の消費位置。
     private var current: Double = 0
-    /// 処理中の区間内で次に返す境界の倍数。区間へ入るたびに
-    /// 横断方向に応じて初期化し、境界を1件返すたびに進める。
-    /// 区間内に残りの境界が無ければ nil。
-    private var nextMultiple: Double?
+    /// 処理中の区間内で次に返す境界の倍数。本家が境界番号 k を
+    /// long で保持するのと同じく Int64 で保持する（FE-R44-136-01）。
+    /// Double で保持すると、絶対値が 2^53 以上で ±1 の加減が
+    /// 失われ、同じ境界を無期限に返して列挙が終了しなくなる。
+    /// 区間へ入るたびに横断方向に応じて初期化し、境界を1件
+    /// 返すたびに進める。区間内に残りの境界が無ければ nil。
+    private var nextMultiple: Int64?
     private var isInFrame = false
+    /// 境界番号の初期値を Int64 へ変換できなかった（範囲外・
+    /// 非有限）ため、列挙を打ち切る状態。変換でトラップはしない。
+    private var isExhausted = false
 
     init(
         start: Double,
@@ -303,24 +309,32 @@ private struct BoundaryCrossingIterator: IteratorProtocol {
 
     mutating func next() -> TimeSpanValue? {
         while true {
+            if isExhausted { return nil }
             if !isInFrame {
                 guard frame < frameCount else { return nil }
                 frame += 1
                 current = start + cumulativeTicks[frame]
                 if current > previous {
-                    nextMultiple = (previous / contentSpan).rounded(.down) + 1
+                    nextMultiple = initialMultiple(after: previous, step: 1)
                 } else if current < previous {
-                    nextMultiple = (previous / contentSpan).rounded(.up) - 1
+                    nextMultiple = initialMultiple(after: previous, step: -1)
                 } else {
                     nextMultiple = nil
                 }
                 isInFrame = true
             }
             if let multiple = nextMultiple {
-                let boundary = multiple * contentSpan
+                // 境界位置は Double へ変換してから素材長を掛ける。
+                // 本家は k * contentTicks を long 演算するが、Mac 側は
+                // 消費位置そのものを Double で保持しており、整数乗算を
+                // 導入すると k と素材ティックの双方が大きい場合に
+                // Int64 へ収まらない。変換後の乗算なら桁あふれは
+                // 生じず、境界番号自体の前進は Int64 で保証される。
+                let boundary = Double(multiple) * contentSpan
                 let isForward = current > previous
                 if isForward ? boundary <= current : boundary >= current {
-                    nextMultiple = isForward ? multiple + 1 : multiple - 1
+                    let advanced = multiple.addingReportingOverflow(isForward ? 1 : -1)
+                    nextMultiple = advanced.overflow ? nil : advanced.partialValue
                     return crossingTime(
                         frame: frame, previous: previous, current: current,
                         boundary: boundary
@@ -331,6 +345,28 @@ private struct BoundaryCrossingIterator: IteratorProtocol {
             previous = current
             isInFrame = false
         }
+    }
+
+    /// 区間へ入る際の最初の境界番号。本家どおり商を切り捨て／
+    /// 切り上げしてから進行方向へ1つ進める。商の導出は Double
+    /// 演算のままだが、Int64 への変換が範囲外・非有限で失敗した
+    /// 場合は、境界番号を表現できないためトラップせず列挙を
+    /// 終える（Mac 側の安全措置。本家は変換の飽和・未定義動作に
+    /// 依存する範囲であり、実用上の入力では到達しない）。
+    private mutating func initialMultiple(after position: Double, step: Int64) -> Int64? {
+        let quotient = step > 0
+            ? (position / contentSpan).rounded(.down)
+            : (position / contentSpan).rounded(.up)
+        guard let base = Int64(exactly: quotient) else {
+            isExhausted = true
+            return nil
+        }
+        let advanced = base.addingReportingOverflow(step)
+        if advanced.overflow {
+            isExhausted = true
+            return nil
+        }
+        return advanced.partialValue
     }
 
     /// 境界を横切る時刻。フレーム内位置は線形補間で、本家の
