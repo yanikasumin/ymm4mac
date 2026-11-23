@@ -2304,6 +2304,68 @@ PR #126 の Round 21 新規指摘「失効したセッショントークンが�
 
 検証（Round 21）: Mac（~/ymm4-work/fe-undo-wiring/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象テストは Editing 関連12スイート計202件・失敗0（内訳: `EditRecorderTests` 8件（新規3件）・`TimelineEditSnapshotTests` 6件・`EditCoordinatorTests` 15件・`UndoHistoryTests` 10件・`ListAddRemoveCommandTests` 9件・`TimelineEditingTests` 26件・`TimelineEditingLengthTests` 34件・`PropertyMetadataTests` 22件・`EffectPropertyMetadataTests` 17件・`MediaItemLengthTests` 24件・`AnimationSliderSpecTests` 14件・`AnimationSliderScaleTests` 17件）。全スイートは回していない。AudioDriftTests は実行していない（音声クロック・リサンプリング中核の変更を含まない）。
 
+#### FE-CONTENTSEP — コンテンツ区切り（ContentSeparations）の供給新設と編集終了時調整の分岐 (2) の配線（IMPLEMENTED、Mac 検証済み）
+
+PR #129（FE-R15-EDITEND）で編集終了時調整の分岐 (1)（素材本来の長さが変わった場合の決め直し）と分岐 (3)（定数倍率の比率再計算）、および優先判定を Core の `finishPlaybackRateEdit` へ一元化する骨格まで実装し、分岐 (2) は区切り（ContentSeparations）の供給待ちとして本単位へ移管された。本単位では不足部品3点（(a) 区切りの計算、(b) 境界の横切列挙、(c) 編集開始時の捕捉）を新設し、分岐 (2) を配線した。FE-R15-006 の残件（エコー設定変更時の長さ追随）は分岐 (2) そのものであるため、併せて実装し FE-R15-006 を完了させた。新しい I/O は無い（区切りはファイル解析でも保存データでもなく、アイテムの現在値から都度計算される値）。
+
+- **本家根拠**（逆コンパイル済みソースで確認）: 基底形は `BaseItem.cs:192-213` の `ContentSeparations`（非定数時は `ContentLength > 0` の場合に `PlaybackRateMap.FindContentExhaustedTime` の結果のみ、定数時は `-ContentOffset + ContentLength * PlaybackRate2.GetFirstValue()` の単一値）。上書き形は `VideoItem.cs:264-324` / `AudioItem.cs:264-327` で両者同一の式（入口ガードは尾込みの `ContentLength` プロパティ＝`VideoItem.cs:243-260` の取得経路、本体は尾なしの生フィールドを読む。非定数時はループなら `EnumerateContentBoundaryCrossings`、非ループなら `FindContentExhaustedTime`、その後にエコーの追加時間を加えた区切り。定数時は速度 0 で空、`(素材長 × (i+1) − オフセット) / |速度| × 100` を繰り返し回数だけ（ループ時は無制限）生み、その後に `GetEchoLength / |速度| × 100` を加えた区切り）。境界列挙は `PlaybackRateMap.cs` の `EnumerateContentBoundaryCrossings`（開始位置は先頭レートの符号で決まり、フレーム区間ごとに素材長の整数倍を線形補間＋ティック切り捨てで横切時刻化する。前進・後退の両方向）。編集終了時調整は `ItemEditorViewModel.cs:25-76` の `EditingValue`（`isLengthOnSeparator` は構築時＝編集開始時に `timeline.VideoInfo.FPS` で捕捉され、区切りフレームが `Length + 1` 以下の間だけ走査して `|frame − Length| ≤ 1` を判定。`EndEdit` は (1) `OriginalContentLength` の変化→`ResetLength(resetContentOffset: true)`、(2) `ContentLength` の変化＋区切り上の終端→`ResetLength()`、(3) 定数倍率の変化→比率再計算、の else-if 連鎖）。フレーム換算は `FrameTime.cs:7-10` の `TimeToFrame`（AwayFromZero で、Mac の `FrameTime.frame(from:fps:)` と一致）。
+- **(a) 区切りの計算**: `Sources/YMM4Core/Editing/ContentSeparations.swift` を新設した。公開入口は `BaseItem.contentSeparations`（宣言は `Items/BaseItem.swift`。本体 `baseContentSeparations`）、動画・音声は `VideoItem` / `AudioItem` が override し、共通本体 `mediaContentSeparations(isLooped:echoIsEnabled:echoInterval:echoAttenuation:)` へ委譲する。列挙は `AnySequence` の遅延列挙とし、入力はプロパティ取得時点の現在値で固定する（本家は列挙時点のライブ参照だが、消費側は即時列挙のみであり差は出ない）。ループ時の定数形は無限に続くため、消費側は必要な範囲で打ち切る前提である。
+  - 基底の定数形は、本家どおり先頭値（% の数値そのもの。100% なら 100）を素材長へ掛ける。動画・音声形（|速度| で割り戻す）とは次元が異なるが、本家の実コードがそうなっているため意図的にそのまま写し、回帰テストで固定した（−1 秒 + 2 秒 × 100 = 199 秒）。
+  - ティックへの実数倍の丸めは Mac 側の慣例（AwayFromZero）に統一した。本家（.NET の TimeSpan 実数倍）との差は 1 ティック未満で、フレーム単位の判定には影響しない。
+- **(b) 境界の横切列挙**: `PlaybackRateMap.enumerateContentBoundaryCrossings(itemLength:fps:contentOffset:contentLength:)` を追加した（遅延列挙イテレータ `BoundaryCrossingIterator` がフレーム区間ごとに横切をまとめて求める）。横切時刻は本家どおりフレーム内の線形補間＋切り捨てであり、`findContentExhaustedTime` の二次求解とは別方式（本家もこの列挙では線形補間を使う）。境界の倍数は double で保持し、ティックの Int64 乗算による溢れを避けた。注意: 境界がアイテム末端にちょうど一致する場合、累積 double の誤差で検出フレームが前後し得る（補間時刻は変わらない）。本家の累積も同じ double 演算であり、テストは末端一致を避けた形で固定した。
+- **(c) 編集開始時の捕捉と分岐 (2) の配線**: `PlaybackRateEditBaseline` に `isLengthEndOnSeparator` を追加した（直接構築する場合の既定は false＝分岐 (2) を発火させない側）。`capturePlaybackRateEditBaseline` が `isLengthEndOnContentSeparator(fps:)` で捕捉する。FPS は本家の `timeline.VideoInfo.FPS` の代わりにアイテムへ注入済みの `videoFPS` を使う（`contentLengthAppliedPlaybackRate` と同じ前提）。`finishPlaybackRateEdit` の優先構造は変えず、分岐 (1) のガードの後・分岐 (3) の前に分岐 (2) を挿入した: 素材長が基点から変わり、かつ基点の終端判定が真の場合に `resetLength(fps:)`（オフセット付け替えなし）を行い、実際に変わった場合のみ true を返す（分岐 (3) と同じ戻り値の契約）。Undo との原子性は PR #129 のセッション仕組みのままで、調整は同じセッションへ記録される（受け入れ試験10で固定）。帰結として、エコー有効中の速度変更では素材長が尾の再計算で変わるため分岐 (2) が分岐 (3) に優先する（本家の else-if 連鎖どおり。従来は分岐 (3) のみで比率換算していたため、結果が変わるのは意図的な忠実化）。
+- **エコー設定変更時の長さ追随（FE-R15-006 の完了範囲）**: `refreshContentLengthAfterEchoSettingsChange(isLooped:previousEchoIsEnabled:previousEchoInterval:previousEchoAttenuation:)` を `Editing/MediaItemLength.swift` に新設し、動画・音声のエコープロパティ3件の didSet を `refreshContentLengthForEchoSettings` の直接呼び出しから付け替えた。書き込みごとに「変更前の終端判定 → 素材長の再計算 → 素材長が変わり、かつ終端が区切り上にあれば `resetLength(fps: videoFPS)`」を適用する。終端判定は変更前の状態で行う必要があるため、区切りは didSet の `oldValue` を使って変更前のエコー値で再構成する（一時的な捕捉状態は持たない）。これは本家のセッション形（BeginEdit で捕捉し EndEdit で適用）を、編集セッションの存在しないモデル層の書き込みへ適応した Mac 側の形である。素材情報の記録（分岐 (1) の管轄）と再生速度の書き込み（分岐 (3) の管轄）の経路は従来どおり再計算のみで、追随はさせない。デコード時の代入は素材長がゼロの間は追随が発火せず、読み込み→保存の往復保全に影響しない（YmmpCodecTests 25件で確認）。FE-R15-006 はこれで完了とする。エコー設定のインスペクタ記述子の追加は本単位の範囲外として残す（現状はモデル＋保存のみ）。
+- **意図的な差異・範囲外**: (1) 本家では `SceneItem`（SceneItem.cs:67）と `VoiceItem`（VoiceItem.cs:365）にも独自の上書き形があるが、本単位の範囲は基底＋動画・音声のみとし、両者は Mac 側では基底形を使う（差異として記録する）。(2) タイムラインのコンテンツ区切りへのスナップは同じ供給を使う設計（監査の指定）であり、Core の列挙 API（`contentSeparations` / `enumerateContentBoundaryCrossings`、アイテム時間軸の時刻列・遅延列挙）はスナップから使える形に整えた。`TimelineInteractionView` の `extraSnapPoints` への接続（スナップ UI の実装自体）は本単位の範囲外として分離する。(3) アプリ層の変更は無いため手動検証項目は追加しない。実機での目視確認（エコー有効化で長さが素材終端へ追随すること、トリム済みでは追随しないこと）は次回のフロントエンド目視確認に委ねる。
+- **既存テストの更新**: `MediaItemLengthTests.testEchoEnableAfterRecordRefreshesContentLengthOnly` は「分岐 (2) 未実装」を前提に長さ不変を固定していたため、追随後の前提へ書き換えた（`testEchoEnableAfterRecordFollowsLength`。エコー有効化で 300 → 318 フレーム）。
+
+検証: Mac（~/ymm4-work/fe-contentsep/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象を絞った `swift test` で全合格 — `ContentSeparationsTests` 30件（新規。区切りの基底形・動画形・音声形、境界列挙の前進・後退・オフセット・複数横切・遅延性、終端判定の ±1 フレーム許容、分岐 (2) の発火／不発火／分岐 (1) 優先、エコー追随の発火／不発火）、`MediaItemLengthTests` 48件、`PlaybackRateEditSessionTests` 10件（新規の受け入れ試験10を含む）、`YmmpCodecTests` 25件、`EditRecorderTests` 8件、計121件・失敗0。全スイートは回していない。AudioDriftTests は実行していない（本単位は音声クロック・リサンプリング中核の変更を含まない）。
+
+**監査指摘の処分（PR #136 レビュー、Round 43）と main 統合。** main（68060d3、PR #135 まで）を取り込み、競合は docs/ARCHITECTURE.md と本台帳のみ（ARCHITECTURE は本節側のメディア追加・差し替えの記述へ main 側の非同期確定の世代照合の注記を合成し、保存の記述は main 側の詳細版を採用。本台帳は両節を保持）。
+
+- **FE-R43-136-01（P1）**: `BoundaryCrossingIterator` がフレーム区間内の横切を配列へ一括生成していた（旧 (b) の記述の「まとめて求める」形）。本家 `PlaybackRateMap.cs` が発見のたびに yield return する形へ合わせ、現在のフレーム・横断方向・次の境界番号をイテレータの状態として保持し、`next()` ごとに1件ずつ返す方式へ書き換えた。API と補間数式は不変で、列挙される値の列も従来と同一（既存の横切テスト全件が無変更で合格）。回帰テスト: 部分列挙が全列挙の先頭と一致すること（`testCrossingsPrefixMatchesFullEnumerationHead`）、1フレームで約3.3億回横切る条件でも prefix(3) が全境界を展開せずに完了すること（`testCrossingsPrefixOneWithHugeBoundariesPerFrame`）。
+- **FE-R43-136-02（P2）**: 非定数形が生成済みの `AnyIterator` を `AnySequence` のクロージャで共有していたため、同一 Sequence の再列挙で本体の結果が失われた（2回目はエコー分のみ／空）。本体イテレータの構築をクロージャ内部へ移し、列挙のたびに新しく生成する形へ是正した（本家の IEnumerable の列挙ごとの独立性と一致）。他の列挙経路を点検し、定数形（クロージャ内で毎回生成）・基底形（配列）・`enumerateContentBoundaryCrossings`（クロージャ内で毎回生成）には同種の共有が無いことを確認した。回帰テスト: 非定数・非ループ／ループ／エコー有効と定数形で、同一 Sequence の2回列挙が同じ結果になること（`testMediaSeparationsReEnumerationIsStable`）。
+- **FE-R43-136-03（P2）**: 動画・音声形の入口ガードが `contentLength > .zero` で、本家の `ContentLength == TimeSpan.Zero` でだけ止める条件より広く除外していた。尾は符号つきの先頭値で比例するため、逆再生＋エコーでは尾込み長が負になり得る（到達可能性は下流単位で実コード確認済み）。`!= .zero` へ是正した。基底形の非定数ガードは本家 `BaseItem.cs` も `> TimeSpan.Zero` であり、対象外として現状を維持する。回帰テスト: 素材 0.5 秒・速度 −100%・間隔 0.2 秒・減衰 40% で尾込み長が −0.7 秒になっても本体の区切り 0.5 秒が返ること（`testMediaSeparationsNegativeContentLengthStillYieldsBody`）。ゼロの場合は従来どおり空（既存テストで固定済み）。
+
+検証（処分後）: Mac で対象テスト全合格 — `ContentSeparationsTests` 34件（新規回帰4件を含む）、`MediaItemLengthTests` 48件、`PlaybackRateEditSessionTests` 10件、`YmmpCodecTests` 27件（main 取り込み後の件数）、`EditRecorderTests` 8件、計127件・失敗0。DebugApp の `swift build` 成功。AudioDriftTests は実行していない。
+
+**監査指摘の処分（PR #136 再レビュー、Round 44）。**
+
+- **FE-R44-136-01（P2）**: FE-R43-136-01 で1件ずつ返す方式へ書き換えた `BoundaryCrossingIterator` が、境界番号 `nextMultiple` を Double で保持し横切のたびに ±1 していた。絶対値が 2^53 以上では加減が失われ（2^53 + 1 == 2^53）、同じ境界を無期限に返して有限入力でも列挙が終了しない。本家 `PlaybackRateMap.cs:358-369` は境界番号 k を long で保持する。境界番号を Int64 へ変更し、前進・後退を `addingReportingOverflow` で保証した（桁あふれ時はその区間の残り境界なしとして扱う）。初期値の導出は本家どおり商（Double 演算）を切り捨て／切り上げしてから1つ進める形のまま、Int64 への変換には `Int64(exactly:)` を使い、範囲外・非有限ではトラップせず列挙自体を終える（`isExhausted`）。本家は変換の飽和・未定義動作に依存する範囲であり、Mac 側の安全措置として記録する（実用上の入力では到達しない）。境界時刻の算出は整数乗算を導入せず、境界番号を Double へ変換してから素材長を掛ける形とした。本家は `k * contentTicks` を long 演算するが、Mac 側は消費位置（previous / current）自体を Double で保持しており、整数乗算を導入すると境界番号と素材ティックの双方が大きい場合に積が Int64 へ収まらない。変換後の乗算なら桁あふれは生じず、境界位置の精度は Double の消費位置で既に決まっているため、整数乗算の導入は不要と判断した。回帰テスト: 監査の再現入力（アイテム長 1 フレーム・30fps・平坦な非定数 100%・オフセット 2^53 ティック・素材長 1 ティック）で列挙が有限で終了すること（`testCrossingsTerminateAtHugeOffsetBeyondDoublePrecision`）、逆行でも同規模のオフセットで終了すること（`testCrossingsBackwardTerminateAtHugeOffsetBeyondDoublePrecision`）。既存の前進・逆行・複数境界の横切テストは無変更で合格。
+
+検証（処分後）: Mac で対象テスト全合格 — `ContentSeparationsTests` 36件（新規回帰2件を含む）、`MediaItemLengthTests` 48件、`PlaybackRateEditSessionTests` 10件、`YmmpCodecTests` 27件、`EditRecorderTests` 8件、計129件・失敗0。DebugApp の `swift build` 成功。AudioDriftTests は実行していない。
+
+##### PR 本文の下書き（FE-CONTENTSEP）
+
+## 概要
+コンテンツの区切り（ContentSeparations）の供給を Core に新設し、編集終了時調整の分岐 (2) を配線する。FE-R15-006 の残件（エコー設定変更時の長さ追随）も分岐 (2) のモデル層形として実装し、FE-R15-006 を完了させる。分岐 (1)(3) と基点・適用層の既存契約は変更していない（変えたのは分岐 (2) の本体と供給の新設のみ）。
+
+## 本家根拠
+- `BaseItem.cs:192-213`（ContentSeparations 基底形）
+- `VideoItem.cs:264-324` / `AudioItem.cs:264-327`（上書き形。入口ガードは尾込みの ContentLength、本体は尾なしの生フィールド）
+- `PlaybackRateMap.cs`（EnumerateContentBoundaryCrossings。フレーム内線形補間＋切り捨て）
+- `ItemEditorViewModel.cs:25-76`（EditingValue の isLengthOnSeparator 捕捉と EndEdit の3分岐の else-if 連鎖）
+- `FrameTime.cs:7-10`（TimeToFrame、AwayFromZero）
+
+## 変更シンボル
+- 新設 `Sources/YMM4Core/Editing/ContentSeparations.swift`: `BaseItem.baseContentSeparations()` / `mediaContentSeparations(isLooped:echoIsEnabled:echoInterval:echoAttenuation:)` / `isLengthEndOnContentSeparator(fps:)`
+- `BaseItem.contentSeparations`（新設。`VideoItem` / `AudioItem` で override）
+- `PlaybackRateMap.enumerateContentBoundaryCrossings(itemLength:fps:contentOffset:contentLength:)`（新設、遅延列挙）
+- `PlaybackRateEditBaseline.isLengthEndOnSeparator`（追加。`capturePlaybackRateEditBaseline` が編集開始時に捕捉）
+- `finishPlaybackRateEdit(baseline:fps:)`: 分岐 (1) の後・分岐 (3) の前に分岐 (2)（素材長の変化＋基点の終端判定 → `resetLength`）を挿入
+- `refreshContentLengthAfterEchoSettingsChange`（新設。動画・音声のエコープロパティ didSet を付け替え）
+
+## 設計判断
+- 区切りの列挙は遅延（AnySequence）とする。ループ時の定数形は無限に続くため。入力はプロパティ取得時点の現在値で固定する。
+- 基底の定数形は本家どおり先頭値（% の数値そのもの）を掛ける形を意図的に再現した（動画・音声形とは次元が異なるが本家の実コードどおり）。
+- エコー追随は本家のセッション形をモデル層の書き込みへ適応した（変更前のエコー値は didSet の oldValue で再構成し、一時状態を持たない）。エコー設定のインスペクタ記述子は範囲外（モデル＋保存のみが現状）。
+- SceneItem / VoiceItem の独自の上書き形は本単位の範囲外とし、基底形を使う（差異として台帳に記録）。
+- タイムラインのスナップ UI への接続は範囲外とし、Core の列挙 API を使える形に整えるまでとした。
+
+## テスト
+Mac で対象を絞って実行し全合格: ContentSeparationsTests 30件（新規）・MediaItemLengthTests 48件・PlaybackRateEditSessionTests 10件（受け入れ試験10を追加）・YmmpCodecTests 25件・EditRecorderTests 8件、計121件・失敗0。DebugApp の swift build 成功。全スイートと AudioDriftTests は未実施（対象を絞る方針による）。既存の `testEchoEnableAfterRecordRefreshesContentLengthOnly` は未実装前提の固定だったため、追随後の前提へ更新した。
+
+## 実装記録
+docs/IMPLEMENTATION_LOG.md の FE-CONTENTSEP 節。docs/ARCHITECTURE.md の編集終了時調整・エコー再計算の記述を追随させた。
 #### FE-R30-130-02 — トークンなし離散編集イベントのプロジェクト帰属（フロントエンド監査 Round 30 の分離単位、IMPLEMENTED、Mac 検証済み）
 
 **問題。** PR #126 の Undo 接続では、連続編集（スライダ・ドラッグ）はセッション所有権トークン（`EditSessionToken`）で陳腐化を断てるが、トークンを持たない離散編集（テキスト確定・トグル・メニュー操作・ワークスペース操作の配送など）は、捕捉したモデルやアイテムへ直接作用するコールバックのままだった。SwiftUI のビューの破棄は非同期であり、フォーカス喪失に伴う確定や `pendingAction` の観測配送はプロジェクト切り替え後に遅れて届き得る。切り替え時には `WorkspaceState` が共有の `EditRecorder` の履歴を消去するため、旧プロジェクト向けの離散編集が遅れて発火すると、(a) 旧アイテムへのモデル変更（実害は小さい）と (b) 新プロジェクトの履歴への記録汚染（適用クロージャが旧アイテムを保持し、新プロジェクトで Undo すると旧モデルが書き換わる）が起こり得た。監査 Round 30 の切り分けどおり、`EditRecorder` 自体の仕様は正しく変更しない。不足はアプリ層の「イベント→プロジェクト帰属」の仕組み側にあり、本単位はそちらを新設する。なお FE-UNDO-WIRING の Round 21 処分で「トークンを持たない離散編集の遅延イベントはビューの破棄に依存しており、本処分では扱っていない」と記録した残件が本単位の対象である。

@@ -25,20 +25,51 @@ public final class VideoItem: VisualItem {
     /// ループするか。
     public var isLooped: Bool = false
     /// エコーを有効にするか。書き込み時に素材長（エコー尾込み）を
-    /// 現在の設定で計算し直す（FE-R15-006。本家は取得時に計算）。
+    /// 現在の設定で計算し直し、長さの終端が区切り上にあれば長さも
+    /// 追随させる（FE-R15-006。本家は取得時に計算し、追随は編集
+    /// 終了時調整の分岐 (2)）。
     public var echoIsEnabled: Bool = false {
-        didSet { refreshContentLengthForEchoSettings() }
+        didSet {
+            refreshContentLengthAfterEchoSettingsChange(
+                isLooped: isLooped,
+                previousEchoIsEnabled: oldValue,
+                previousEchoInterval: echoInterval,
+                previousEchoAttenuation: echoAttenuation)
+        }
     }
     /// エコーの間隔（秒）。
     public var echoInterval: Double = 0.1 {
-        didSet { refreshContentLengthForEchoSettings() }
+        didSet {
+            refreshContentLengthAfterEchoSettingsChange(
+                isLooped: isLooped,
+                previousEchoIsEnabled: echoIsEnabled,
+                previousEchoInterval: oldValue,
+                previousEchoAttenuation: echoAttenuation)
+        }
     }
     /// エコーの減衰（%）。
     public var echoAttenuation: Double = 40 {
-        didSet { refreshContentLengthForEchoSettings() }
+        didSet {
+            refreshContentLengthAfterEchoSettingsChange(
+                isLooped: isLooped,
+                previousEchoIsEnabled: echoIsEnabled,
+                previousEchoInterval: echoInterval,
+                previousEchoAttenuation: oldValue)
+        }
     }
     /// 音声エフェクト（生 JSON で保持）。
     public var audioEffects: [PreservedObject] = []
+
+    /// コンテンツの区切り位置。本家 `VideoItem.ContentSeparations`
+    /// の上書き形（音声アイテムと同一の式）。
+    public override var contentSeparations: AnySequence<TimeSpanValue> {
+        mediaContentSeparations(
+            isLooped: isLooped,
+            echoIsEnabled: echoIsEnabled,
+            echoInterval: echoInterval,
+            echoAttenuation: echoAttenuation
+        )
+    }
 
     public override func forEachAnimation(_ body: (inout Animation) -> Void) {
         super.forEachAnimation(body)

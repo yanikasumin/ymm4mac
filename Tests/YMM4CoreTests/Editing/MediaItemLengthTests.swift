@@ -305,9 +305,11 @@ final class MediaItemLengthTests: XCTestCase {
 
     /// エコーを後から有効にすると、記録済みの素材長へ現在の設定の
     /// 尾が付く。本家は ContentLength の取得時に計算するため即時に
-    /// 反映される。長さはここでは追随しない（追随は編集終了時調整
-    /// の分岐 (2) の役割で、区切りの供給が無いため未実装）。
-    func testEchoEnableAfterRecordRefreshesContentLengthOnly() {
+    /// 反映される。長さの終端が区切り上にある（ここでは素材の
+    /// 終端ちょうど）ため、分岐 (2) のモデル層形として長さも
+    /// 追随する（FE-CONTENTSEP で実装。従来は区切りの供給が無く、
+    /// 長さは変わらない前提で固定されていた）。
+    func testEchoEnableAfterRecordFollowsLength() {
         let item = AudioItem()
         item.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
         item.resetLength(fps: 30)
@@ -316,7 +318,8 @@ final class MediaItemLengthTests: XCTestCase {
         item.echoIsEnabled = true
         // 間隔 0.1 秒・減衰 40% → 繰り返し 6 回、尾 0.6 秒。
         XCTAssertEqual(item.contentLength, seconds(10.6))
-        XCTAssertEqual(item.length, 300)
+        // 10.6 秒 × 30 fps = 318 フレームへ追随する。
+        XCTAssertEqual(item.length, 318)
     }
 
     /// エコーの間隔・減衰を変えるたびに尾が再計算される。
