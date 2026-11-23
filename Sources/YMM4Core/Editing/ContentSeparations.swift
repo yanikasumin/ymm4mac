@@ -55,7 +55,12 @@ extension BaseItem {
         echoInterval: Double,
         echoAttenuation: Double
     ) -> AnySequence<TimeSpanValue> {
-        guard contentLength > .zero else { return AnySequence([]) }
+        // 入口は尾込みの素材長がゼロのときだけ止める（本家
+        // VideoItem.cs / AudioItem.cs は `ContentLength == TimeSpan.Zero`
+        // で yield break）。尾は符号つきの先頭値で比例するため、
+        // 逆再生＋エコーでは尾込み長が負になり得て、その場合も
+        // 本家は本体の区切りを返す（FE-R43-136-03）。
+        guard contentLength != .zero else { return AnySequence([]) }
         let rateMap = PlaybackRateMap(rate: playbackRate2)
         // エコーの追加時間（本家 `EchoEffect.AdditionalDuration`）。
         // 減衰率は本家どおり % から割合へ直して渡す。
@@ -85,28 +90,35 @@ extension BaseItem {
             }
         }
         // 非定数形。素材本体が無ければ横切も尽きる時刻も生まれず、
-        // エコーの区切りだけが残り得る。
+        // エコーの区切りだけが残り得る。本体側のイテレータは
+        // 列挙のたびに新しく生成する（生成済みのイテレータを
+        // クロージャで共有すると、再列挙で結果が失われる。
+        // 本家の IEnumerable は列挙ごとに独立。本家との意味論の
+        // 一致として FE-R43-136-02）。
         let rawContentLength = originalContentLength
-        let contentPart: AnyIterator<TimeSpanValue>
-        if rawContentLength <= .zero {
-            contentPart = AnyIterator { nil }
-        } else if isLooped {
-            contentPart = AnyIterator(
-                rateMap.enumerateContentBoundaryCrossings(
-                    itemLength: length, fps: videoFPS,
-                    contentOffset: contentOffset, contentLength: rawContentLength
-                ).makeIterator()
-            )
-        } else if let exhausted = rateMap.findContentExhaustedTime(
-            itemLength: length, fps: videoFPS,
-            contentOffset: contentOffset, contentLength: rawContentLength
-        ) {
-            contentPart = AnyIterator([exhausted].makeIterator())
-        } else {
-            contentPart = AnyIterator { nil }
-        }
+        let itemLength = length
+        let fps = videoFPS
+        let offset = contentOffset
         return AnySequence {
-            MediaNonConstantSeparationsIterator(
+            let contentPart: AnyIterator<TimeSpanValue>
+            if rawContentLength <= .zero {
+                contentPart = AnyIterator { nil }
+            } else if isLooped {
+                contentPart = AnyIterator(
+                    rateMap.enumerateContentBoundaryCrossings(
+                        itemLength: itemLength, fps: fps,
+                        contentOffset: offset, contentLength: rawContentLength
+                    ).makeIterator()
+                )
+            } else if let exhausted = rateMap.findContentExhaustedTime(
+                itemLength: itemLength, fps: fps,
+                contentOffset: offset, contentLength: rawContentLength
+            ) {
+                contentPart = AnyIterator([exhausted].makeIterator())
+            } else {
+                contentPart = AnyIterator { nil }
+            }
+            return MediaNonConstantSeparationsIterator(
                 contentIterator: contentPart,
                 echoIsEnabled: echoIsEnabled,
                 echoAdditionalDuration: echoAdditionalDuration

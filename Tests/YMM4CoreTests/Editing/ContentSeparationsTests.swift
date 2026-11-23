@@ -124,6 +124,32 @@ final class ContentSeparationsTests: XCTestCase {
         XCTAssertEqual(head[2].seconds, 3, accuracy: 0.001)
     }
 
+    /// FE-R43-136-01: 部分列挙の値は全列挙の先頭と一致する
+    /// （1フレーム内に複数の境界がある条件でも、境界は1件ずつ
+    /// 生成される）。
+    func testCrossingsPrefixMatchesFullEnumerationHead() {
+        let sequence = flatMap(100_000).enumerateContentBoundaryCrossings(
+            itemLength: 31, fps: 30,
+            contentOffset: .zero, contentLength: seconds(1))
+        let full = Array(sequence)
+        XCTAssertEqual(full.count, 1_033)
+        XCTAssertEqual(Array(sequence.prefix(10)), Array(full.prefix(10)))
+        XCTAssertEqual(Array(sequence.prefix(1)), Array(full.prefix(1)))
+    }
+
+    /// FE-R43-136-01 の受け入れ条件: 1フレーム内に膨大な境界が
+    /// ある条件（素材長 1 ティックを 100,000% で消費すると
+    /// 1フレームで約3.3億回横切る）でも、prefix(1) は全境界を
+    /// 配列へ展開せずに完了する。横切時刻はすべてティックへ
+    /// 切り捨てられてゼロになる。
+    func testCrossingsPrefixOneWithHugeBoundariesPerFrame() {
+        let sequence = flatMap(100_000).enumerateContentBoundaryCrossings(
+            itemLength: 30, fps: 30,
+            contentOffset: .zero, contentLength: TimeSpanValue(ticks: 1))
+        let head = Array(sequence.prefix(3))
+        XCTAssertEqual(head, [.zero, .zero, .zero])
+    }
+
     // MARK: - (a) 基底形（BaseItem）
 
     /// 基底の定数形は本家どおり、先頭値（% の数値そのもの）を
@@ -260,6 +286,69 @@ final class ContentSeparationsTests: XCTestCase {
         XCTAssertTrue(Array(item.contentSeparations).isEmpty)
         let video = VideoItem()
         XCTAssertTrue(Array(video.contentSeparations).isEmpty)
+    }
+
+    /// FE-R43-136-02 の受け入れ条件: 同一の Sequence を2回列挙
+    /// しても同じ結果になる（本家の IEnumerable は列挙ごとに
+    /// 独立した反復状態を生成する）。非定数形の非ループ・
+    /// ループ・エコー有効と、定数形を対象にする。
+    func testMediaSeparationsReEnumerationIsStable() {
+        // 非定数・非ループ。
+        let nonConstant = AudioItem()
+        setFlatNonConstantRate(nonConstant, 100)
+        nonConstant.recordMediaInfo(MediaFileInfo(duration: seconds(5)))
+        nonConstant.length = 300
+        let nonConstantSequence = nonConstant.contentSeparations
+        let nonConstantFirst = Array(nonConstantSequence)
+        XCTAssertEqual(nonConstantFirst.count, 1)
+        XCTAssertEqual(Array(nonConstantSequence), nonConstantFirst)
+
+        // 非定数・ループ。
+        let looped = AudioItem()
+        setFlatNonConstantRate(looped, 100)
+        looped.recordMediaInfo(MediaFileInfo(duration: seconds(5)))
+        looped.length = 330
+        looped.isLooped = true
+        let loopedSequence = looped.contentSeparations
+        let loopedFirst = Array(loopedSequence)
+        XCTAssertEqual(loopedFirst.count, 2)
+        XCTAssertEqual(Array(loopedSequence), loopedFirst)
+
+        // 非定数・エコー有効。
+        let echo = AudioItem()
+        setFlatNonConstantRate(echo, 100)
+        echo.recordMediaInfo(MediaFileInfo(duration: seconds(5)))
+        echo.length = 300
+        echo.echoIsEnabled = true
+        let echoSequence = echo.contentSeparations
+        let echoFirst = Array(echoSequence)
+        XCTAssertEqual(echoFirst.count, 2)
+        XCTAssertEqual(Array(echoSequence), echoFirst)
+
+        // 定数形。
+        let constant = AudioItem()
+        constant.echoIsEnabled = true
+        constant.recordMediaInfo(MediaFileInfo(duration: seconds(10)))
+        let constantSequence = constant.contentSeparations
+        XCTAssertEqual(Array(constantSequence), [seconds(10), seconds(10.6)])
+        XCTAssertEqual(Array(constantSequence), [seconds(10), seconds(10.6)])
+    }
+
+    /// FE-R43-136-03: 入口ガードは尾込みの素材長がゼロのとき
+    /// だけ止める。逆再生＋エコーで尾込み長が負になっても、
+    /// 本家どおり本体の区切りが返る（素材 0.5 秒、速度 −100%、
+    /// エコー間隔 0.2 秒・減衰 40% → 追加時間 1.2 秒が符号つき
+    /// で効き、尾込み長は −0.7 秒。本体は尾なしの 0.5 秒、
+    /// エコー分は符号つき比例で負になるため生まれない）。
+    func testMediaSeparationsNegativeContentLengthStillYieldsBody() {
+        let item = AudioItem()
+        item.echoIsEnabled = true
+        item.echoInterval = 0.2
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(0.5)))
+        XCTAssertEqual(item.contentLength, seconds(1.7))
+        item.playbackRate = -100
+        XCTAssertEqual(item.contentLength, seconds(-0.7))
+        XCTAssertEqual(Array(item.contentSeparations), [seconds(0.5)])
     }
 
     /// 動画アイテムも音声と同じ上書き形を使う。
