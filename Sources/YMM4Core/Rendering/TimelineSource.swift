@@ -127,6 +127,29 @@ public enum TimelineCompositionError: Error {
     }
 }
 
+/// アイテム1件分の合成出力の参照情報（FE-R1-023-A）。本家
+/// TimelineItemRects の材料に相当する。矩形そのものは画像境界の
+/// 問い合わせ（GPU 実行層の登録表）でしか引けないため、この層では
+/// 出力トークンと描画有無だけを値として公開し、境界の解決は
+/// 消費側（プレビューの PreviewBox）が担う。
+public struct TimelineItemOutput {
+    /// シーンのタイムライン内でのアイテムのインデックス。
+    public var itemIndex: Int
+    /// アイテムの合成出力トークン。合成出力が無い場合は nil。
+    /// 出力が0件のアイテムでも代替描画のトークンは存在するため、
+    /// 「描画されたアイテムか」は hasDrawnContent で判定すること。
+    public var output: ImageReference?
+    /// 実際に内容が描画されたか（出力0件の透明な代替描画のみの
+    /// 場合は false）。
+    public var hasDrawnContent: Bool
+
+    public init(itemIndex: Int, output: ImageReference?, hasDrawnContent: Bool) {
+        self.itemIndex = itemIndex
+        self.output = output
+        self.hasDrawnContent = hasDrawnContent
+    }
+}
+
 /// タイムライン全体の合成実行部。本家 TimelineSource に対応する。
 ///
 /// シーンとアイテム群を管理し、Update（時刻と用途）で1フレーム分の合成結果
@@ -157,6 +180,14 @@ public final class TimelineComposer {
     public let scene: TimelineScene
     /// 現在の合成結果。初回 Update の完了までは nil。
     public private(set) var output: ImageReference?
+    /// 直近の Update で描画されたアイテム別の出力（読み取り専用の
+    /// 公開クエリ。FE-R1-023-A）。並びは描画順（背面から前面。
+    /// DrawOrdering の順序そのもの）であり、当たり判定の前面優先は
+    /// この並びの後方から決まる。本家 TimelineItemRects と違い、
+    /// 矩形ではなく出力トークンを運ぶ（境界は GPU 実行層の登録表
+    /// でのみ引けるため）。Update が失敗した場合は前回の値が残る
+    /// ため、消費側は Update の成否と組で読むこと。
+    public private(set) var itemOutputs: [TimelineItemOutput] = []
 
     private let picker: any ItemPicker
     private let targetFactory: any RenderTargetFactory
@@ -279,7 +310,8 @@ public final class TimelineComposer {
                 planeSplitQuad: effected.getPlaneSplitQuad()
             ))
         }
-        let segments = segmentBuilder.buildSegments(from: DrawOrdering.ordered(drawResources))
+        let orderedResources = DrawOrdering.ordered(drawResources)
+        let segments = segmentBuilder.buildSegments(from: orderedResources)
 
         var target = targetFactory.makeTarget()
         currentTarget = target
@@ -399,8 +431,26 @@ public final class TimelineComposer {
         try target.close()
         output = target.image
 
-        // TimelineItemRects（当たり判定用データ）の再構築は、画像境界の
-        // 問い合わせ（GPU 実行層）が要るためこの層では行わない（台帳に記録）。
+        // 当たり判定用データの材料を、描画順のまま記録する
+        // （FE-R1-023-A）。本家は TransitionItem を TimelineItemRects
+        // から除外するため、こちらでも除外する。グループ子は本家
+        // では親 GroupItem へ帰属させて登録されるが、こちらでは
+        // 描画された子アイテム自身へ帰属させる（本家のグループは
+        // 子の描画を代表しない非合成グループでも帰属先になる点が
+        // 異なる。差異として台帳に記録）。境界（実描画矩形）の解決
+        // は画像境界の問い合わせ（GPU 実行層）が要るため消費側の
+        // 責務であり、この層では出力トークンまでを公開する。
+        itemOutputs = orderedResources.compactMap { resource in
+            guard !(resource.item is TransitionItem),
+                  let effected = resources[ObjectIdentifier(resource.item)],
+                  let itemIndex = timeline.items.firstIndex(where: { $0 === resource.item })
+            else { return nil }
+            return TimelineItemOutput(
+                itemIndex: itemIndex,
+                output: effected.output,
+                hasDrawnContent: effected.hasDrawnContent
+            )
+        }
 
         cacheClear()
     }
@@ -418,6 +468,7 @@ public final class TimelineComposer {
         }
         frameBufferInputs = []
         output = nil
+        itemOutputs = []
     }
 
     /// 資源管理（本家 UpdateResources に対応）。選定されたアイテム列を返す。

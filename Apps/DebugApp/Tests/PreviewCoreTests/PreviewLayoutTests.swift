@@ -1,5 +1,6 @@
 import CoreGraphics
 import XCTest
+import YMM4Core
 
 @testable import PreviewCore
 
@@ -95,5 +96,35 @@ final class PreviewLayoutTests: XCTestCase {
             assertClose(roundTripped.x, point.x)
             assertClose(roundTripped.y, point.y)
         }
+    }
+
+    // MARK: - 中心原点 → 左上原点の変換（FE-R1-023-A）
+
+    /// 映像中心の矩形は、映像の中心へ写る。
+    func testVideoRectConvertsCenteredRect() {
+        let rect = PreviewLayout.videoRect(
+            fromCenteredRect: RectF(left: -100, top: -50, right: 100, bottom: 50),
+            videoSize: CGSize(width: 1920, height: 1080)
+        )
+        XCTAssertEqual(rect, CGRect(x: 860, y: 490, width: 200, height: 100))
+    }
+
+    /// 全画面の中心原点矩形は、左上原点の全画面矩形になる。
+    func testVideoRectConvertsFullFrame() {
+        let rect = PreviewLayout.videoRect(
+            fromCenteredRect: RectF(left: -960, top: -540, right: 960, bottom: 540),
+            videoSize: CGSize(width: 1920, height: 1080)
+        )
+        XCTAssertEqual(rect, CGRect(x: 0, y: 0, width: 1920, height: 1080))
+    }
+
+    /// 回転後の AABB のように中心からずれた矩形も、平行移動だけで
+    /// 形（幅・高さ・相対位置）が保たれる。
+    func testVideoRectPreservesOffCenterAABB() {
+        let rect = PreviewLayout.videoRect(
+            fromCenteredRect: RectF(left: 300, top: -700, right: 500, bottom: -400),
+            videoSize: CGSize(width: 1920, height: 1080)
+        )
+        XCTAssertEqual(rect, CGRect(x: 1260, y: -160, width: 200, height: 300))
     }
 }

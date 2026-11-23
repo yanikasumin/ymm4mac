@@ -69,6 +69,23 @@ struct ProjectView: View {
     /// 位置・現在モデルの画像かを確認するために使う。R11-08）。
     @State private var displayedPreviewIdentity: PreviewRenderWorker.Identity?
     @State private var displayedPreviewFrame: Int?
+    /// 現在表示中の画像と一体で届いたアイテム別実描画矩形
+    /// （FE-R1-023-A）。画像と矩形は同じ描画結果から取るため、
+    /// 採用・破棄は previewImage と同じタイミングで行う。
+    @State private var displayedItemRects: [PreviewCore.PreviewItemRect] = []
+    /// displayedItemRects が対応する編集モデルのアイテム列（同一性
+    /// の並び）。編集でモデルが変わると並びが一致しなくなり、矩形は
+    /// 現在のモデルへ採用できなくなる（古い矩形を新しいアイテム
+    /// インデックスへ無条件に対応付けないための安全策）。
+    @State private var displayedRectsItemIdentity: [ObjectIdentifier] = []
+    /// 直近のスナップショット生成時点のアイテム列の同一性。完成
+    /// 通知の採用時に、その結果がどのアイテム列のものかをこれで
+    /// 記録する。
+    @State private var latestSnapshotItemIdentity: [ObjectIdentifier] = []
+    /// 編集がまだ描画結果へ反映されていない間、プレビューの
+    /// ドラッグ開始を保留している状態（安全策）。新しい結果が
+    /// 採用されると解消する。
+    @State private var previewDragWithheld = false
     /// 対応画像の完成を待っているサムネイル保存。形式とフレームを
     /// 持ち、対象は「現在のモデルでそのフレームが完成した時点」に
     /// 結び直す。要求時点の識別子へ固定すると、モデルの作り直し
@@ -789,8 +806,9 @@ struct ProjectView: View {
     ) -> some View {
         let scale = layout.uniformScale
         return ZStack(alignment: .topLeading) {
-            if let item = selectedItem,
-               let bounds = previewItemBounds(item: item, timeline: timeline) {
+            if let bounds = displayedRect(
+                forItemIndex: selectedItemIndex, timeline: timeline
+            ) {
                 // 選択輪郭（白背景でも見えるよう黒と白の二重破線）。
                 let origin = layout.viewPoint(
                     fromVideoPoint: CGPoint(x: bounds.minX, y: bounds.minY)
@@ -816,7 +834,9 @@ struct ProjectView: View {
             // 回転角のドラッグが優先される。表示はコントロールポイント
             // 表示モードに従う（FE-R1-015）。
             if showsControlPoints, let item = selectedItem, !item.isLocked,
-               let bounds = previewItemBounds(item: item, timeline: timeline) {
+               let bounds = displayedRect(
+                   forItemIndex: selectedItemIndex, timeline: timeline
+               ) {
                 selectionHandles(
                     item: item, bounds: bounds, layout: layout, timeline: timeline
                 )
@@ -1104,6 +1124,14 @@ struct ProjectView: View {
                 // 押し始め: 現在フレームで描画されているアイテムから
                 // 当たり判定し、選択とドラッグ基準を決める。開始点は
                 // 切り抜きの原点を含む変換で映像座標へ戻す。
+                if previewDragWithheld { return }
+                if !rectsAreAdoptable(timeline: timeline) {
+                    // 編集がまだ描画結果へ反映されていない間は、
+                    // 当たり判定を保留する（安全策 FE-R1-023-A）。
+                    // 選択も変えず、このドラッグは最後まで何もしない。
+                    previewDragWithheld = true
+                    return
+                }
                 let startVideoPoint = layout.videoPoint(
                     fromViewPoint: value.startLocation
                 )
@@ -1140,6 +1168,7 @@ struct ProjectView: View {
             }
             .onEnded { _ in
                 previewDrag = nil
+                previewDragWithheld = false
                 previewDragSession.endCommitting(to: workspace.editRecorder)
                 // ドラッグ中の間引きで残った未反映分を確定させる
                 // （再生中なら単一入口の規則で dirty に保留される）。
@@ -1147,76 +1176,46 @@ struct ProjectView: View {
             }
     }
 
-    /// プレビュー上の点（映像座標）にあるアイテムを探す。重なり時は
-    /// 本家の描画順（DrawOrdering の3段キー: 手前に表示 → ZIndex →
-    /// レイヤー の昇順で最後に描かれるもの＝最前面）を優先する。
-    /// ZIndex は描画変換後の原点 Z が正本だが、ここでは Z 値の評価値で
-    /// 近似する（Zオーダー有効時のみ影響する）。
-    private func hitTestPreviewItem(timeline: Timeline, videoPoint: CGPoint) -> Int? {
-        var bestIndex: Int?
-        var bestKey: (Int, Double, Int)?
-        for (index, item) in timeline.items.enumerated() {
-            // ロックしたアイテムはプレビューで掴めない（本家の当たり
-            // 判定はコントローラ経路・本体経路とも !IsLocked で除外
-            // する。FE-R1-020）。
-            guard !item.isLocked,
-                  let bounds = previewItemBounds(item: item, timeline: timeline),
-                  bounds.contains(videoPoint),
-                  let props = item as? VideoItemProperties else { continue }
-            let context = animationContext(for: item, timeline: timeline)
-            let zIndex = props.isZOrderEnabled ? context.value(of: props.z) : 0
-            let key = (
-                props.isAlwaysOnTop ? 1 : 0,
-                zIndex.isFinite ? zIndex : 0,
-                item.layer
-            )
-            if let current = bestKey {
-                if key > current || (key == current && index > (bestIndex ?? -1)) {
-                    bestKey = key
-                    bestIndex = index
-                }
-            } else {
-                bestKey = key
-                bestIndex = index
-            }
-        }
-        return bestIndex
+    /// 表示中の矩形が現在の編集モデルへ採用できるか。表示画像の
+    /// 識別子が存在し、矩形のアイテム列が現在の編集モデルの
+    /// アイテム列と同一（同じインスタンスの同じ並び）の場合だけ
+    /// 真になる。編集が入って新しい描画結果がまだ届いていない間は
+    /// 偽になり、当たり判定と輪郭・ハンドルの表示は保留される
+    /// （FE-R1-023-A の安全策: 古い矩形を新しいアイテムインデックス
+    /// へ無条件に対応付けない）。
+    private func rectsAreAdoptable(timeline: Timeline) -> Bool {
+        displayedPreviewIdentity != nil
+            && displayedRectsItemIdentity
+                == timeline.items.map { ObjectIdentifier($0) }
     }
 
-    /// アイテムの当たり範囲（映像座標）。中心は現在フレームで評価した
-    /// X/Y。大きさは素材の実寸が表示側からは取れないため、種別ごとの
-    /// 妥当な大きさ（拡大率で比例）で代替する近似であり、回転は
-    /// 考慮しない軸平行矩形である（制限として報告に明記）。
-    private func previewItemBounds(item: BaseItem, timeline: Timeline) -> CGRect? {
-        guard let props = item as? VideoItemProperties else { return nil }
-        let frame = Int(previewFrame)
-        guard frame >= item.frame, frame < item.frame + item.length else { return nil }
-        if item.isHidden
-            || timeline.layerSettings.setting(forLayer: item.layer).isHidden {
-            return nil
+    /// 表示中の結果から、指定インデックスのアイテムの実描画矩形を
+    /// 引く。採用できない間は nil（輪郭・ハンドルは出さない）。
+    private func displayedRect(
+        forItemIndex index: Int?, timeline: Timeline
+    ) -> CGRect? {
+        guard let index, rectsAreAdoptable(timeline: timeline) else { return nil }
+        return displayedItemRects.first { $0.itemIndex == index }?.bounds
+    }
+
+    /// プレビュー上の点（映像座標）にあるアイテムを探す。判定は
+    /// 現在表示中の画像と一体で届いた実描画矩形（GPU 由来の
+    /// AABB）で行い、重なりは実際の描画順（前面が後）で決める
+    /// （FE-R1-023-A）。編集がまだ描画結果へ反映されていない間は
+    /// 判定を保留する（nil）。ロック中のアイテムと映像アイテム
+    /// でないもの（音声のみ等）は本家どおり候補から外れる
+    /// （本家の当たり判定は !IsLocked で除外する。FE-R1-020）。
+    /// 描画出力の無いアイテムは矩形自体が届かないため、判定可能な
+    /// 対象にならない。
+    private func hitTestPreviewItem(timeline: Timeline, videoPoint: CGPoint) -> Int? {
+        guard rectsAreAdoptable(timeline: timeline) else { return nil }
+        return PreviewCore.PreviewItemRect.frontmostIndex(
+            in: displayedItemRects, at: videoPoint
+        ) { index in
+            guard timeline.items.indices.contains(index) else { return true }
+            let item = timeline.items[index]
+            return item.isLocked || !(item is VideoItemProperties)
         }
-        let context = animationContext(for: item, timeline: timeline)
-        let centerX = context.value(of: props.x)
-        let centerY = context.value(of: props.y)
-        let zoom = min(max(context.value(of: props.zoom) / 100, 0.05), 8)
-        let info = timeline.videoInfo
-        let size: CGSize
-        if item is TextItem || item is VoiceItem {
-            // 字幕・テキストは横長の帯として扱う。
-            size = CGSize(
-                width: Double(info.width) * 0.6 * zoom,
-                height: Double(info.height) * 0.12 * zoom
-            )
-        } else {
-            size = CGSize(
-                width: Double(info.width) * 0.3 * zoom,
-                height: Double(info.height) * 0.3 * zoom
-            )
-        }
-        return CGRect(
-            x: centerX - size.width / 2, y: centerY - size.height / 2,
-            width: size.width, height: size.height
-        )
     }
 
     /// ドラッグ移動の書き込み。インスペクタの数値確定と同じ規則
@@ -2900,6 +2899,10 @@ struct ProjectView: View {
         pendingThumbnail = nil
         displayedPreviewIdentity = nil
         displayedPreviewFrame = nil
+        displayedItemRects = []
+        displayedRectsItemIdentity = []
+        latestSnapshotItemIdentity = []
+        previewDragWithheld = false
         previewImage = nil
         previewError = nil
         previewSessionKey = nil
@@ -2932,7 +2935,7 @@ struct ProjectView: View {
     /// 書き込み）へ進み得るため、切り替え後の旧ワーカーの完成通知を
     /// ここで落とす。
     private func wirePreviewWorker() {
-        previewWorker.onImage = { image, identity, frame, failures, history in
+        previewWorker.onImage = { result, identity, frame, failures, history in
             guard identity.key == previewSessionKey,
                   identity.generation == previewSessionGeneration,
                   identity.version == previewModelVersion,
@@ -2943,10 +2946,17 @@ struct ProjectView: View {
             // R12-02）。再生中は多少古いフレームも採用する
             // （第9ラウンドの二段階規則）。
             if !isPlayingForm, frame != Int(previewFrame) { return }
-            previewImage = image
+            // 画像とアイテム別矩形は同じ結果から取る（別々に最新化
+            // される状態を混ぜない。FE-R1-023-A）。矩形の対応する
+            // アイテム列は、この結果を描いたスナップショットの
+            // アイテム列として記録する。
+            previewImage = result.image
             previewError = nil
             displayedPreviewIdentity = identity
             displayedPreviewFrame = frame
+            displayedItemRects = result.itemRects
+            displayedRectsItemIdentity = latestSnapshotItemIdentity
+            previewDragWithheld = false
             // 現在の失敗状態はこの描画の結果で更新し、履歴は
             // セッションの集約で置き換える（R6-06）。
             previewCurrentFailure = !failures.isEmpty
@@ -2980,6 +2990,9 @@ struct ProjectView: View {
             previewImage = nil
             displayedPreviewIdentity = nil
             displayedPreviewFrame = nil
+            displayedItemRects = []
+            displayedRectsItemIdentity = []
+            previewDragWithheld = false
             // アイテム0件の空タイムラインで合成結果が得られない場合は
             // エラー表示にせず、プレースホルダ文言に任せる。
             // 合成例外の理由が診断に残っている場合はそれを表示する
@@ -3012,6 +3025,9 @@ struct ProjectView: View {
             previewImage = nil
             displayedPreviewIdentity = nil
             displayedPreviewFrame = nil
+            displayedItemRects = []
+            displayedRectsItemIdentity = []
+            previewDragWithheld = false
             previewError = message
         }
     }
@@ -3075,6 +3091,10 @@ struct ProjectView: View {
         lastPreviewSnapshotAt = Date()
         previewModelDirty = false
         previewModelVersion += 1
+        // このスナップショットが対応する編集モデルのアイテム列を
+        // 控える。完成通知の採用時に、届いた矩形がどのアイテム列の
+        // ものかを記録するために使う（FE-R1-023-A）。
+        latestSnapshotItemIdentity = timeline.items.map { ObjectIdentifier($0) }
         // 保留中のサムネイル保存は取り消さない。対象は新しいモデル
         // の同じフレームへ結び直され、その完成通知で発火する
         // （R20-113-01。R12-06 の取消しはモデル変更については

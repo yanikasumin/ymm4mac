@@ -11,8 +11,10 @@ public protocol PreviewRenderSession: AnyObject {
     var initializationFailure: String? { get }
     /// この描画セッションの診断収集先（R6-06）。
     var diagnostics: RenderDiagnosticsCollector { get }
-    /// 指定フレームを合成して読み戻す。失敗時は nil。
-    func render(frame: Int, timeline: Timeline, usage: TimelineSourceUsage) -> CGImage?
+    /// 指定フレームを合成して読み戻す。画像と、それに対応する
+    /// アイテム別の実描画矩形を一体の結果として返す（FE-R1-023-A）。
+    /// 失敗時は nil。
+    func render(frame: Int, timeline: Timeline, usage: TimelineSourceUsage) -> PreviewFrameResult?
     /// 資源を解放する。
     func dispose()
 }
@@ -76,10 +78,11 @@ public final class PreviewRenderWorker: @unchecked Sendable {
         public init() {}
     }
 
-    /// 完成画像の通知（メインキュー）。画像・識別子・フレーム、
-    /// この描画で発生した診断とセッション履歴の集約（R6-06）。
+    /// 完成画像の通知（メインキュー）。描画結果（画像とアイテム別
+    /// 実描画矩形の一体の結果）・識別子・フレーム、この描画で発生
+    /// した診断とセッション履歴の集約（R6-06）。
     public var onImage: ((
-        CGImage, Identity, Int,
+        PreviewFrameResult, Identity, Int,
         [RenderDiagnosticsCollector.Entry], [RenderDiagnosticsCollector.Entry]
     ) -> Void)?
     /// 合成が失敗したときの通知（メインキュー）。識別子・フレーム、
@@ -251,7 +254,7 @@ public final class PreviewRenderWorker: @unchecked Sendable {
         // 描画の間に発生した診断だけを切り分けるため、開始時点の
         // 通し番号を控える（現在の失敗状態と履歴を分ける — R6-06）。
         let diagnosticsMark = currentModel.session.diagnostics.eventCount
-        let image = currentModel.session.render(
+        let result = currentModel.session.render(
             frame: request.frame, timeline: currentModel.timeline,
             usage: request.usage
         )
@@ -262,8 +265,8 @@ public final class PreviewRenderWorker: @unchecked Sendable {
         lock.unlock()
         let identity = currentModel.identity
         DispatchQueue.main.async { [self] in
-            if let image {
-                onImage?(image, identity, request.frame, failures, history)
+            if let result {
+                onImage?(result, identity, request.frame, failures, history)
             } else {
                 onRenderFailed?(identity, request.frame, failures, history)
             }

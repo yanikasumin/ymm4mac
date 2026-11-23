@@ -1,4 +1,5 @@
 import CoreGraphics
+import YMM4Core
 
 /// プレビューの表示寸法と座標変換（FE-R1-022）。
 ///
@@ -56,6 +57,20 @@ public struct PreviewLayout: Equatable, Sendable {
         CGPoint(
             x: (point.x - imageOrigin.x) / uniformScale,
             y: (point.y - imageOrigin.y) / uniformScale
+        )
+    }
+
+    /// GPU 層の内容境界（映像中心を原点とする座標系、y 下向き）を、
+    /// 映像左上原点の座標系（y 下向き）へ変換する。GPU の矩形を
+    /// 映像座標へ写す変換はこの関数一箇所に限定する（FE-R1-023-A）。
+    /// 両系とも y 下向きのため、変換は中心から左上への平行移動のみで、
+    /// 回転・透視変換後の外接矩形（AABB）の形はそのまま保たれる。
+    public static func videoRect(fromCenteredRect rect: RectF, videoSize: CGSize) -> CGRect {
+        CGRect(
+            x: CGFloat(rect.left) + videoSize.width / 2,
+            y: CGFloat(rect.top) + videoSize.height / 2,
+            width: CGFloat(rect.right - rect.left),
+            height: CGFloat(rect.bottom - rect.top)
         )
     }
 
