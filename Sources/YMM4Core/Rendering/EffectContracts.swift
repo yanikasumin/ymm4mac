@@ -172,6 +172,28 @@ public protocol PlaneSplitGeometryProviding: AnyObject {
     func transform3DInputBounds() -> RectF?
 }
 
+/// 当たり判定用の変換後四隅（本家 EffectedItemSource.
+/// GetTransformedBoundsQuad の材料）を DrawingEffect から取り出す境界。
+/// 本家では通常の DrawingEffect は描画前出力の局所境界へ確定変換
+/// （反転・ズーム → 回転・平行移動・カメラ・透視）を適用した四隅を返し、
+/// IBoundsQuadProvider（マスク用の EffectItemDrawingEffect）だけが
+/// 独自の四隅（マスク図形の境界をマスク変換で写したもの）を返す。
+/// こちらでは両者をこのプロトコルで表す: providesCustomBoundsQuad が
+/// 真の実装だけが独自四隅を持ち、それ以外は入力境界へ確定変換を
+/// 適用した四隅を返す。適合しない DrawingEffect を持つ出力は四隅を
+/// 計算できない（本家でも DrawingEffect でない出力があると
+/// GetTransformedBoundsQuad は nil を返す）。
+/// 平面分割用の四隅（PlaneSplitGeometryProviding）とは変換の範囲が
+/// 異なる（こちらは透視・ズーム・反転と入力自身の変換を含む）ため、
+/// 流用せず別境界とする。
+public protocol BoundsQuadProviding: AnyObject {
+    /// 本家 IBoundsQuadProvider への適合に相当するか（独自四隅を持つか）。
+    var providesCustomBoundsQuad: Bool { get }
+    /// 変換後の四隅（映像中心原点・y 下向き。順序は左上・右上・右下・
+    /// 左下）。取得できない場合は nil。
+    func boundsQuad() -> [Vector2]?
+}
+
 /// DrawingEffect の更新失敗。本家では DrawingEffect.Update の例外だけが
 /// 診断情報（アイテム型名・エフェクト数・グラフの各ノードの状態）つきで
 /// 包まれる（第4章）。連鎖途中の失敗は包まれず、そのまま伝播する。

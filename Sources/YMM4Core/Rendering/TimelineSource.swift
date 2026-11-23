@@ -142,11 +142,22 @@ public struct TimelineItemOutput {
     /// 実際に内容が描画されたか（出力0件の透明な代替描画のみの
     /// 場合は false）。
     public var hasDrawnContent: Bool
+    /// 当たり判定用の変換後四隅（映像中心原点・y 下向き。順序は
+    /// 左上・右上・右下・左下）。本家 TimelineItemRects の quad に
+    /// 相当する（FE-R1-023-B）。回転・カメラ・独自四隅のいずれも
+    /// 無いアイテムでは nil になり、その場合の四隅は矩形（出力
+    /// 実体の境界）の四隅と一致するため、消費側は矩形から代替する
+    /// （本家 GetTransformedBoundsQuad が null の場合の代替と同じ）。
+    public var quad: [Vector2]?
 
-    public init(itemIndex: Int, output: ImageReference?, hasDrawnContent: Bool) {
+    public init(
+        itemIndex: Int, output: ImageReference?, hasDrawnContent: Bool,
+        quad: [Vector2]? = nil
+    ) {
         self.itemIndex = itemIndex
         self.output = output
         self.hasDrawnContent = hasDrawnContent
+        self.quad = quad
     }
 }
 
@@ -448,7 +459,8 @@ public final class TimelineComposer {
             return TimelineItemOutput(
                 itemIndex: itemIndex,
                 output: effected.output,
-                hasDrawnContent: effected.hasDrawnContent
+                hasDrawnContent: effected.hasDrawnContent,
+                quad: effected.getTransformedBoundsQuad()
             )
         }
 

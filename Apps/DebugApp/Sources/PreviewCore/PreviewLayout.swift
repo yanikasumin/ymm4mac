@@ -74,6 +74,22 @@ public struct PreviewLayout: Equatable, Sendable {
         )
     }
 
+    /// GPU 層の四隅（映像中心を原点とする座標系、y 下向き）を、
+    /// 映像左上原点の座標系へ変換する（FE-R1-023-B）。変換は
+    /// videoRect と同じ平行移動のみで、四角形の形はそのまま保たれる。
+    /// 中心原点→左上原点の変換はこの関数と videoRect の2か所に
+    /// 限定する（矩形と四隅で変換規則がずれないようにするため）。
+    public static func videoQuad(
+        fromCenteredQuad quad: [Vector2], videoSize: CGSize
+    ) -> [CGPoint] {
+        quad.map {
+            CGPoint(
+                x: CGFloat($0.x) + videoSize.width / 2,
+                y: CGFloat($0.y) + videoSize.height / 2
+            )
+        }
+    }
+
     /// 表示枠内で見えている映像範囲（映像座標）。
     public var visibleVideoRect: CGRect {
         CGRect(

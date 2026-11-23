@@ -423,6 +423,45 @@ public final class EffectedItemSource {
         return DrawOrdering.planeSplitQuad(outputs: geometries)
     }
 
+    /// 当たり判定用の変換後四隅。本家 GetTransformedBoundsQuad の規則:
+    /// - 出力が0件なら nil。
+    /// - いずれかの出力に描画前出力が無い、または四隅が取得できない
+    ///   （DrawingEffect が BoundsQuadProviding に適合しない）場合は nil。
+    /// - 独自四隅を持つ DrawingEffect・回転（≠ 0）・カメラ（≠ 単位）の
+    ///   いずれかがある出力が1つも無ければ nil（その場合の四隅は
+    ///   矩形の四隅と一致するため、呼び出し側は矩形から代替する）。
+    /// - 出力が複数なら、最初の四隅の局所座標系で統合する
+    ///   （DrawOrdering.unionBoundsQuads）。
+    /// 返る四隅は映像中心原点・y 下向きの座標系で、順序は左上・右上・
+    /// 右下・左下。平面分割用の四隅（getPlaneSplitQuad）とは変換の
+    /// 範囲が異なる（こちらは透視・ズーム・反転と入力自身の変換を
+    /// 含む、本家の当たり判定と同じ量）ため流用しない。
+    public func getTransformedBoundsQuad() -> [Vector2]? {
+        guard !effectedOutputs.isEmpty else { return nil }
+        var needsQuad = false
+        for effectedOutput in effectedOutputs {
+            guard effectedOutput.preRenderOutput != nil else { return nil }
+            let provider = effectedOutput.currentDrawingEffect as? BoundsQuadProviding
+            if (provider?.providesCustomBoundsQuad ?? false)
+                || effectedOutput.drawDescription.rotation != .zero
+                || effectedOutput.drawDescription.camera != .identity {
+                needsQuad = true
+                break
+            }
+        }
+        guard needsQuad else { return nil }
+        var quads: [[Vector2]] = []
+        for effectedOutput in effectedOutputs {
+            guard effectedOutput.preRenderOutput != nil,
+                  let provider = effectedOutput.currentDrawingEffect as? BoundsQuadProviding,
+                  let quad = provider.boundsQuad(), quad.count == 4
+            else { return nil }
+            quads.append(quad)
+        }
+        if quads.count == 1 { return quads[0] }
+        return DrawOrdering.unionBoundsQuads(quads)
+    }
+
     /// クリッピング用のマスクを設定する（本家 SetAlphaMask）。
     /// マスクがまだ生成されていない場合は何もしない（本家と同じ）。
     public func setAlphaMask(_ mask: ImageReference) {
