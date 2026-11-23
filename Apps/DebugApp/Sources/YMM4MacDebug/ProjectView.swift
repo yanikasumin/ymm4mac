@@ -2907,9 +2907,12 @@ struct ProjectView: View {
         peakMeterLeft = .silent
         peakMeterRight = .silent
         loudnessMeterValue = .silent
-        let pcmProviderFactory = AVFoundationPCMProviderFactory(
-            baseDirectory: baseDirectory
-        )
+        // 音声のデコーダ選択は合成 Factory（Issue #70 段階3:
+        // AVFoundation → FFmpeg）を通す。基盤は再生成のたびに
+        // 作り直す（従来の Factory 生成と同じ単位。アプリセッション
+        // 単位への一本化は段階4の引き継ぎ）。
+        let pcmProviderFactory = FFmpegMediaSupport()
+            .makePCMProviderFactory(baseDirectory: baseDirectory)
         let timelines = project.timelines
         let factory = AudioSourceFactory(
             providerFactory: pcmProviderFactory,

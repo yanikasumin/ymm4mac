@@ -262,11 +262,11 @@ enum BrotliDecompression {
 /// 声が開けない場合は nil を返す（音量は本家のフォールバック値に
 /// なる）。
 public func makeLipSyncEnvelopeProvider(
-    baseDirectory: URL?
+    baseDirectory: URL?,
+    mediaSupport: FFmpegMediaSupport? = nil
 ) -> (VoiceItem, Int, Int) -> [Double]? {
-    let pcmProviderFactory = AVFoundationPCMProviderFactory(
-        baseDirectory: baseDirectory
-    )
+    let pcmProviderFactory = (mediaSupport ?? FFmpegMediaSupport())
+        .makePCMProviderFactory(baseDirectory: baseDirectory)
     let factory = AudioSourceFactory(
         providerFactory: pcmProviderFactory,
         voiceProviderResolver: VoicePCMProviderResolver(
