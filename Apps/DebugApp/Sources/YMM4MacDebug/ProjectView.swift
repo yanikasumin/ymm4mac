@@ -264,6 +264,9 @@ struct ProjectView: View {
                                     onDragCancelled: {
                                         cancelTimelineDragUndo()
                                     },
+                                    onItemsCreated: {
+                                        project.injectSceneLengthProviders()
+                                    },
                                     editRecorder: workspace.editRecorder,
                                     displayRevision: timelineDisplayRevision
                                 )
@@ -1556,6 +1559,9 @@ struct ProjectView: View {
         }
         guard !targets.isEmpty else { return }
         timeline.splitItems(targets, frame: frame, mode: .both)
+        // 分割で生まれた右半分は複製（cloned）であり供給を持たない
+        // ため、確定の直後に注入する（FE-SEP-RESIDUALS）。
+        injectSceneLengthProvidersAfterItemCreation()
         reflectCoreSelection(timeline)
         requestPreviewRender(modelChanged: true)
     }
@@ -1570,6 +1576,16 @@ struct ProjectView: View {
     /// アイテム種別から空のアイテムを生成する。
     private func makeItem(kind: AddItemKind) -> BaseItem {
         ItemFactory.makeItem(kind: kind)
+    }
+
+    /// 新規アイテムがタイムラインへ入った直後のシーン長供給の
+    /// 注入（FE-SEP-RESIDUALS）。追加・分割で生まれたシーン
+    /// アイテムは生成時点では供給を持たないため、確定の直後に
+    /// プロジェクト全体へ再注入して欠落期間を無くす。再注入は
+    /// 冪等であり、供給はライブ参照のため、既存アイテムの
+    /// 解決結果は変わらない。
+    private func injectSceneLengthProvidersAfterItemCreation() {
+        project.injectSceneLengthProviders()
     }
 
     /// アイテムを現在フレーム・表示最上段レイヤーへ追加し、選択する
@@ -1593,6 +1609,7 @@ struct ProjectView: View {
                 [item], frame: Int(previewFrame), layer: topVisibleLayer)
         }
         guard added else { return }
+        injectSceneLengthProvidersAfterItemCreation()
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
         }
@@ -1666,6 +1683,7 @@ struct ProjectView: View {
             added = timeline.tryAddItems(newItems, frame: frame, layer: layer)
         }
         guard added else { return }
+        injectSceneLengthProvidersAfterItemCreation()
         if self.timeline === timeline {
             reflectCoreSelection(timeline)
         }
@@ -1864,6 +1882,7 @@ struct ProjectView: View {
                 [item], frame: Int(previewFrame), layer: topVisibleLayer)
         }
         guard added else { return }
+        injectSceneLengthProvidersAfterItemCreation()
         if let index = timeline.items.firstIndex(where: { $0 === item }) {
             selectedItemIndex = index
         }

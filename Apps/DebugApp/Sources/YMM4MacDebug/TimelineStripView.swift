@@ -68,6 +68,11 @@ struct TimelineStripView: View {
     var onDragCommitted: () -> Void = {}
     /// ドラッグセッションのキャンセル通知（復元済みの後に1回だけ）。
     var onDragCancelled: () -> Void = {}
+    /// 新規アイテムがタイムラインへ入った直後の通知（コンテキスト
+    /// メニューの追加・分割、Alt ドラッグ複製）。接続側
+    /// （ProjectView）はシーン長供給の注入に使う
+    /// （FE-SEP-RESIDUALS）。
+    var onItemsCreated: () -> Void = {}
     /// Undo 記録の集約点（コンテキストメニューの追加・削除・移動の
     /// 記録に使う。nil の場合は無記録で実行する）。
     var editRecorder: EditRecorder?
@@ -182,7 +187,8 @@ struct TimelineStripView: View {
                         onSeek: onSeek,
                         onDragBegan: onDragBegan,
                         onDragCommitted: onDragCommitted,
-                        onDragCancelled: onDragCancelled
+                        onDragCancelled: onDragCancelled,
+                        onItemsCreated: onItemsCreated
                     ),
                     onScrollOffsetChange: { offset in
                         horizontalOffset = offset.x

@@ -45,6 +45,14 @@ extension BaseItem {
     /// 本体はフィールドの生値を読む）。列挙は遅延であり、ループ時
     /// の定数形は無限に続くため、消費側は必要な範囲で打ち切る。
     ///
+    /// 入口のガードは本家どおり「尾込みの素材長がちょうど 0 の
+    /// とき」だけ打ち切る。尾は符号つき（`GetEchoLength` は先頭値
+    /// の符号をそのまま受ける）ため、短い素材へ大きな尾が負の
+    /// 速度で乗ると尾込みの素材長は負になり得る。その場合も本家は
+    /// 列挙を進める（本体は尾なしの素材長 > 0 で判定され、エコー分
+    /// は符号条件で決まる）ため、ガードを「> 0」にすると負の領域
+    /// でだけ本家とずれる（FE-SEP-RESIDUALS で是正）。
+    ///
     /// エコーの値は引数で受ける。通常はアイテムの現在値を渡すが、
     /// エコー設定変更の長さ追随（`refreshContentLengthAfterEchoSettingsChange`）
     /// は、変更前のエコー値で区切りを再構成して判定するために
@@ -55,7 +63,7 @@ extension BaseItem {
         echoInterval: Double,
         echoAttenuation: Double
     ) -> AnySequence<TimeSpanValue> {
-        guard contentLength > .zero else { return AnySequence([]) }
+        guard contentLength != .zero else { return AnySequence([]) }
         let rateMap = PlaybackRateMap(rate: playbackRate2)
         // エコーの追加時間（本家 `EchoEffect.AdditionalDuration`）。
         // 減衰率は本家どおり % から割合へ直して渡す。

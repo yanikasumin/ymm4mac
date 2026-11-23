@@ -262,6 +262,63 @@ final class ContentSeparationsTests: XCTestCase {
         XCTAssertTrue(Array(video.contentSeparations).isEmpty)
     }
 
+    /// 入口ガードは本家どおり「尾込みの素材長がちょうど 0 のとき」
+    /// だけ打ち切る。尾なしの素材長が残っていても、尾込みが
+    /// ちょうど 0 なら生まれない（FE-SEP-RESIDUALS）。
+    func testMediaSeparationsZeroEffectiveLengthIsEmptyEvenWithRawContent() {
+        let item = AudioItem()
+        item.originalContentLength = seconds(2)
+        item.contentLength = .zero
+        XCTAssertTrue(Array(item.contentSeparations).isEmpty)
+        let video = VideoItem()
+        video.originalContentLength = seconds(2)
+        video.contentLength = .zero
+        XCTAssertTrue(Array(video.contentSeparations).isEmpty)
+    }
+
+    /// 尾込みの素材長が負でも列挙は進む（直接代入での固定）。
+    /// 本体は尾なしの素材長で判定される。
+    func testMediaSeparationsNegativeEffectiveLengthStillEnumerates() {
+        let item = AudioItem()
+        item.originalContentLength = seconds(2)
+        item.contentLength = seconds(-1)
+        XCTAssertEqual(Array(item.contentSeparations), [seconds(2)])
+    }
+
+    /// 負の領域はモデルの維持経路でも到達可能: 短い素材へ、
+    /// 逆再生（−100%）で符号が反転した大きなエコー尾が乗ると
+    /// 尾込みの素材長が負になる。その状態でも本体の区切りは
+    /// 本家どおり生まれる（エコー分は符号条件で生まれない）。
+    func testMediaSeparationsNegativeLengthViaEchoAndReverseRate() {
+        let item = AudioItem()
+        item.echoIsEnabled = true
+        item.echoInterval = 0.5
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(1)))
+        // 追加時間 3.0 秒（間隔 0.5 × 繰り返し 6 回）。100% では
+        // 尾込み 4 秒、−100% では尾が反転して −2 秒になる。
+        XCTAssertEqual(item.contentLength, seconds(4))
+        item.playbackRate = -100
+        XCTAssertEqual(item.contentLength, seconds(-2))
+        XCTAssertEqual(Array(item.contentSeparations), [seconds(1)])
+    }
+
+    /// 非定数形でも同様: 負の尾込み素材長で、素材が尽きる時刻と
+    /// エコー分（割り戻しなし）が生まれる。
+    func testMediaSeparationsNegativeLengthNonConstant() {
+        let item = AudioItem()
+        item.echoIsEnabled = true
+        item.echoInterval = 0.5
+        setFlatNonConstantRate(item, -100)
+        item.recordMediaInfo(MediaFileInfo(duration: seconds(1)))
+        XCTAssertEqual(item.contentLength, seconds(-2))
+        item.length = 300
+        let separations = Array(item.contentSeparations)
+        XCTAssertEqual(separations.count, 2)
+        guard separations.count == 2 else { return }
+        XCTAssertEqual(separations[0].seconds, 1, accuracy: 0.001)
+        XCTAssertEqual(separations[1].seconds, 4, accuracy: 0.001)
+    }
+
     /// 動画アイテムも音声と同じ上書き形を使う。
     func testVideoSeparationsMatchAudioForm() {
         let item = VideoItem()

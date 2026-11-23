@@ -292,6 +292,52 @@ final class ContentSeparationsOverrideTests: XCTestCase {
         XCTAssertEqual(Array(sceneItem.contentSeparations), [seconds(8)])
     }
 
+    /// アプリ層の追加経路の再現（FE-SEP-RESIDUALS）:
+    /// tryAddItems で後から入ったシーンアイテムは、追加時点では
+    /// 供給を持たず（未登録形）、アプリ層が確定の直後に呼ぶ
+    /// 再注入で供給が行き渡る。再注入は冪等で、既存アイテムの
+    /// 解決結果は変わらない。
+    func testInjectionAfterAddCoversNewSceneItem() {
+        let (project, sceneItem, _) = makeProjectWithSceneItem()
+        let mainTimeline = project.timelines[0]
+        let added = SceneItem()
+        added.sceneId = sceneItem.sceneId
+        XCTAssertTrue(mainTimeline.tryAddItems([added], frame: 600, layer: 0))
+        // 注入前は未登録形（シーン長 0。エコー無効のため空）。
+        XCTAssertTrue(Array(added.contentSeparations).isEmpty)
+
+        project.injectSceneLengthProviders()
+        XCTAssertEqual(Array(added.contentSeparations), [seconds(6)])
+        XCTAssertEqual(Array(sceneItem.contentSeparations), [seconds(6)])
+
+        // 再注入は冪等（同じ結果を返す）。
+        project.injectSceneLengthProviders()
+        XCTAssertEqual(Array(added.contentSeparations), [seconds(6)])
+    }
+
+    /// 分割で生まれた断片は左右とも複製（cloned）であり供給を
+    /// 持たない。再注入で行き渡り、右半分の区切りはオフセット
+    /// （分割位置 3 秒）を引いた 3 秒になる。
+    func testInjectionAfterSplitCoversBothHalves() {
+        let (project, sceneItem, _) = makeProjectWithSceneItem()
+        project.injectSceneLengthProviders()
+        sceneItem.length = 180
+        let mainTimeline = project.timelines[0]
+        mainTimeline.splitItems([sceneItem], frame: 90, mode: .both)
+        let halves = mainTimeline.items.compactMap { $0 as? SceneItem }
+        XCTAssertEqual(halves.count, 2)
+        guard halves.count == 2 else { return }
+        // 再注入までは両断片とも未登録形。
+        for half in halves {
+            XCTAssertTrue(Array(half.contentSeparations).isEmpty)
+        }
+        project.injectSceneLengthProviders()
+        let left = halves.first { $0.frame == 0 }
+        let right = halves.first { $0.frame == 90 }
+        XCTAssertEqual(left.map { Array($0.contentSeparations) }, [seconds(6)])
+        XCTAssertEqual(right.map { Array($0.contentSeparations) }, [seconds(3)])
+    }
+
     /// 読み込み（デコード）が供給を注入すること。エンコード→
     /// デコードの往復で、デコード側のシーンアイテムの区切りが
     /// 参照先シーンの長さで構成される。
