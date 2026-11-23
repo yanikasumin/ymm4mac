@@ -2320,6 +2320,14 @@ PR #129（FE-R15-EDITEND）で編集終了時調整の分岐 (1)（素材本来�
 
 検証: Mac（~/ymm4-work/fe-contentsep/YMM4Mac）で実施。DebugApp の `swift build` 成功。対象を絞った `swift test` で全合格 — `ContentSeparationsTests` 30件（新規。区切りの基底形・動画形・音声形、境界列挙の前進・後退・オフセット・複数横切・遅延性、終端判定の ±1 フレーム許容、分岐 (2) の発火／不発火／分岐 (1) 優先、エコー追随の発火／不発火）、`MediaItemLengthTests` 48件、`PlaybackRateEditSessionTests` 10件（新規の受け入れ試験10を含む）、`YmmpCodecTests` 25件、`EditRecorderTests` 8件、計121件・失敗0。全スイートは回していない。AudioDriftTests は実行していない（本単位は音声クロック・リサンプリング中核の変更を含まない）。
 
+**監査指摘の処分（PR #136 レビュー、Round 43）と main 統合。** main（68060d3、PR #135 まで）を取り込み、競合は docs/ARCHITECTURE.md と本台帳のみ（ARCHITECTURE は本節側のメディア追加・差し替えの記述へ main 側の非同期確定の世代照合の注記を合成し、保存の記述は main 側の詳細版を採用。本台帳は両節を保持）。
+
+- **FE-R43-136-01（P1）**: `BoundaryCrossingIterator` がフレーム区間内の横切を配列へ一括生成していた（旧 (b) の記述の「まとめて求める」形）。本家 `PlaybackRateMap.cs` が発見のたびに yield return する形へ合わせ、現在のフレーム・横断方向・次の境界番号をイテレータの状態として保持し、`next()` ごとに1件ずつ返す方式へ書き換えた。API と補間数式は不変で、列挙される値の列も従来と同一（既存の横切テスト全件が無変更で合格）。回帰テスト: 部分列挙が全列挙の先頭と一致すること（`testCrossingsPrefixMatchesFullEnumerationHead`）、1フレームで約3.3億回横切る条件でも prefix(3) が全境界を展開せずに完了すること（`testCrossingsPrefixOneWithHugeBoundariesPerFrame`）。
+- **FE-R43-136-02（P2）**: 非定数形が生成済みの `AnyIterator` を `AnySequence` のクロージャで共有していたため、同一 Sequence の再列挙で本体の結果が失われた（2回目はエコー分のみ／空）。本体イテレータの構築をクロージャ内部へ移し、列挙のたびに新しく生成する形へ是正した（本家の IEnumerable の列挙ごとの独立性と一致）。他の列挙経路を点検し、定数形（クロージャ内で毎回生成）・基底形（配列）・`enumerateContentBoundaryCrossings`（クロージャ内で毎回生成）には同種の共有が無いことを確認した。回帰テスト: 非定数・非ループ／ループ／エコー有効と定数形で、同一 Sequence の2回列挙が同じ結果になること（`testMediaSeparationsReEnumerationIsStable`）。
+- **FE-R43-136-03（P2）**: 動画・音声形の入口ガードが `contentLength > .zero` で、本家の `ContentLength == TimeSpan.Zero` でだけ止める条件より広く除外していた。尾は符号つきの先頭値で比例するため、逆再生＋エコーでは尾込み長が負になり得る（到達可能性は下流単位で実コード確認済み）。`!= .zero` へ是正した。基底形の非定数ガードは本家 `BaseItem.cs` も `> TimeSpan.Zero` であり、対象外として現状を維持する。回帰テスト: 素材 0.5 秒・速度 −100%・間隔 0.2 秒・減衰 40% で尾込み長が −0.7 秒になっても本体の区切り 0.5 秒が返ること（`testMediaSeparationsNegativeContentLengthStillYieldsBody`）。ゼロの場合は従来どおり空（既存テストで固定済み）。
+
+検証（処分後）: Mac で対象テスト全合格 — `ContentSeparationsTests` 34件（新規回帰4件を含む）、`MediaItemLengthTests` 48件、`PlaybackRateEditSessionTests` 10件、`YmmpCodecTests` 27件（main 取り込み後の件数）、`EditRecorderTests` 8件、計127件・失敗0。DebugApp の `swift build` 成功。AudioDriftTests は実行していない。
+
 ##### PR 本文の下書き（FE-CONTENTSEP）
 
 ## 概要
