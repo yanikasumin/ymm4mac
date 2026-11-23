@@ -1218,10 +1218,18 @@ func formatNumber(_ value: Double) -> String {
 /// 捕捉できるようにするため）。メディア情報の取得と長さの調整は
 /// 呼び出し側が非同期に行う（この行はファイルを開かない）。
 /// 未編集のまま確定した場合は通知しない（FE-R1-019 と同じ趣旨）。
+/// 記述子への書き込みが成立したら `onFilePathCommitted` で知らせる。
+/// 未保存の記録はこの書き込み成立時点に置く（FE-R33-131-01）。
+/// パス自体はファイルの存在と無関係にモデルへ書かれるため、
+/// 情報取得の成否で記録すると、存在しないパスへの変更が
+/// 未保存にならずに失われる。
 struct FilePathRowView: View {
     let descriptor: PropertyDescriptor
     var onEdited: () -> Void
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    /// 記述子へのパスの書き込みが成立した時点の通知（未保存の
+    /// 記録用）。値が変わった確定でのみ、書き込みの直後に呼ばれる。
+    var onFilePathCommitted: (() -> Void)?
     @State private var text: String
     @State private var uneditedPath: String
     @FocusState private var isFocused: Bool
@@ -1229,11 +1237,13 @@ struct FilePathRowView: View {
     init(
         descriptor: PropertyDescriptor,
         onEdited: @escaping () -> Void,
-        onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+        onFilePathChanged: ((PropertyDescriptor, String) -> Void)?,
+        onFilePathCommitted: (() -> Void)? = nil
     ) {
         self.descriptor = descriptor
         self.onEdited = onEdited
         self.onFilePathChanged = onFilePathChanged
+        self.onFilePathCommitted = onFilePathCommitted
         let initial = descriptor.stringValue ?? ""
         _text = State(initialValue: initial)
         _uneditedPath = State(initialValue: initial)
@@ -1260,7 +1270,12 @@ struct FilePathRowView: View {
         guard newPath != uneditedPath else { return }
         text = newPath
         onFilePathChanged?(descriptor, newPath)
-        descriptor.setStringValue(newPath)
+        if descriptor.setStringValue(newPath) {
+            // 書き込みが成立した時点で未保存として記録する
+            // （FE-R33-131-01）。素材長の非同期調整の成否とは
+            // 責務を分ける（あちらは記録に関与しない）。
+            onFilePathCommitted?()
+        }
         uneditedPath = newPath
         onEdited()
     }

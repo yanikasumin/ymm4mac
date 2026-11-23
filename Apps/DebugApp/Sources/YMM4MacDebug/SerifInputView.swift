@@ -11,10 +11,14 @@ import YMM4Core
 /// 入力とキャラクター選択は実動し、追加は `onAdd` 経由で
 /// VoiceItem 生成へ接続される（長さは本家では生成音声から決まるが、
 /// 音声供給が未接続の間は呼び出し側が仮置きする。台帳に記録）。
+/// キャラクター設定ボタンはキャラクター編集シートへ接続される
+/// （FE-UNIT6、FE-R1-018 の処分）。
 struct SerifInputView: View {
     let characters: [Character]
     /// 追加が確定したときの受け口。
     var onAdd: ((_ characterName: String?, _ serif: String, _ seeksAfterAdd: Bool) -> Void)?
+    /// キャラクター設定（編集シート）を開く受け口。
+    var onOpenCharacterSettings: (() -> Void)?
 
     @State private var characterName: String = ""
     @State private var serif: String = ""
@@ -51,6 +55,15 @@ struct SerifInputView: View {
                 characterName = characters.first?.name ?? ""
             }
         }
+        // キャラクターの追加・削除・改名（キャラクター編集シート）で
+        // 一覧が変わったら、選択が実在する名前を指し続けるよう
+        // 再検証する。消えた名前を保持したまま追加すると、参照の
+        // 無い名前だけがアイテムへ残るため、先頭へ倒す。
+        .onChange(of: characters.map(\.name)) { _, names in
+            if !names.contains(characterName) {
+                characterName = names.first ?? ""
+            }
+        }
     }
 
     @ViewBuilder
@@ -63,7 +76,10 @@ struct SerifInputView: View {
                     .lineLimit(1)
             } else {
                 Picker("", selection: $characterName) {
-                    ForEach(characters, id: \.name) { character in
+                    // 行の同一性はインスタンス（ObjectIdentifier）で
+                    // 取る。名前は重複があり得てキーにできない
+                    // （選択自体は名前ベースのまま。FE-R39-133-01）。
+                    ForEach(characters) { character in
                         Text(character.name).tag(character.name)
                     }
                 }
@@ -71,23 +87,29 @@ struct SerifInputView: View {
                 .help(UIStrings.Serif.character)
             }
             Spacer(minLength: 0)
-            // キャラクター設定を開くボタン（コンボの隣。本家に実在
-            // するが、設定画面は未接続）。
+            // キャラクター設定を開くボタン（コンボの隣。本家に実在。
+            // キャラクター編集シートへ接続。FE-UNIT6）。
             Button {
+                onOpenCharacterSettings?()
             } label: {
                 Image(systemName: "person.crop.circle.badge.gearshape")
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.borderless)
-            .help(UIStrings.Serif.openCharacterSettings + UIStrings.Common.unconnectedSuffix)
+            .help(UIStrings.Serif.openCharacterSettings)
         }
         .frame(width: 146)
     }
 
     private func submitIfPossible() {
         guard !serif.isEmpty else { return }
+        // 選択中として保持している名前が一覧に無い場合は、参照の
+        // 無い名前を渡さず「キャラクターなし」として追加する。
+        let resolvedName = characters.contains { $0.name == characterName }
+            ? characterName
+            : nil
         onAdd?(
-            characterName.isEmpty ? nil : characterName,
+            resolvedName,
             serif,
             seeksAfterAdd
         )

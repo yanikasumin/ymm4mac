@@ -48,16 +48,22 @@ extension TimelineStripView {
             fps: timeline.videoInfo.fps, zoomPercent: zoomPercent)
     }
 
-    /// 縦グリッド線を引くフレーム（大目盛り = 間隔×10 ごと、可視範囲のみ）。
-    func verticalGridFrames(viewportWidth: CGFloat) -> [Int] {
-        let largeSpan = tickSpan() * 10
-        let first = max(0, Int(horizontalOffset / pxPerFrame) - largeSpan)
-        let last = min(
-            timeline.length,
-            Int((horizontalOffset + viewportWidth) / pxPerFrame) + largeSpan
+    /// 縦グリッド線を引くフレームと主線／サブ線の別（可視範囲のみ）。
+    /// 位置はモデルの TimelineVerticalLine（種別・間隔・開始フレーム・
+    /// グループ）の規則で Core が計算する（本家 GetLineFrames /
+    /// UpdateLines。FE-UNIT5 で接続）。無効な間は空を返す。
+    func verticalGridLines(
+        viewportWidth: CGFloat
+    ) -> [(frame: Int, isSubLine: Bool)] {
+        guard pxPerFrame > 0 else { return [] }
+        let first = max(0, Int(horizontalOffset / pxPerFrame))
+        let last = Int((horizontalOffset + viewportWidth) / pxPerFrame)
+        guard last >= first else { return [] }
+        return timeline.verticalLine.displayLines(
+            videoInfo: timeline.videoInfo,
+            enumerateFrom: first, throughFrame: last,
+            pxPerFrame: Double(pxPerFrame)
         )
-        guard largeSpan > 0, last >= first else { return [] }
-        return Array(stride(from: (first / largeSpan) * largeSpan, through: last, by: largeSpan))
     }
 
     /// `hh:mm:ss.ff` 形式（本家のステータスバー・目盛りラベルと同じ書式）。

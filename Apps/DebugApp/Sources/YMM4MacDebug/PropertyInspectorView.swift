@@ -23,6 +23,9 @@ struct PropertyInspectorView: View {
     /// ファイル参照の値が確定したときの通知（記述子と新しいパス）。
     /// 情報取得と長さ調整は呼び出し側（編集操作層への橋渡し）が行う。
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    /// ファイル参照の記述子への書き込みが成立した時点の通知
+    /// （FE-R33-131-01。未保存の記録用で、情報取得の成否とは別）。
+    var onFilePathCommitted: (() -> Void)?
     /// Undo 記録の集約点（FE-UNDO-WIRING）。nil の場合は無記録
     /// （エフェクト編集など未移行の経路）。
     var editRecorder: EditRecorder? = nil
@@ -59,6 +62,7 @@ struct PropertyInspectorView: View {
                             animationContext: animationContext,
                             onEdited: onEdited,
                             onFilePathChanged: onFilePathChanged,
+                            onFilePathCommitted: onFilePathCommitted,
                             editRecorder: editRecorder,
                             editTargetOwner: editTargetOwner,
                             editTargetKeyPath: "",
@@ -81,6 +85,7 @@ private struct PropertyRowView: View {
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    var onFilePathCommitted: (() -> Void)?
     var editRecorder: EditRecorder? = nil
     var editTargetOwner: AnyObject? = nil
     /// 対象キーの経路部分（複合の親記述子 ID を積んだもの）。
@@ -106,6 +111,7 @@ private struct PropertyRowView: View {
                 animationContext: animationContext,
                 onEdited: onEdited,
                 onFilePathChanged: onFilePathChanged,
+                onFilePathCommitted: onFilePathCommitted,
                 editRecorder: editRecorder,
                 editTargetOwner: editTargetOwner,
                 editTargetKeyPath: editTargetKeyPath,
@@ -119,6 +125,7 @@ private struct PropertyRowView: View {
                 animationContext: animationContext,
                 onEdited: onEdited,
                 onFilePathChanged: onFilePathChanged,
+                onFilePathCommitted: onFilePathCommitted,
                 editRecorder: editRecorder,
                 editTargetOwner: editTargetOwner,
                 editTargetKeyPath: editTargetKeyPath,
@@ -191,7 +198,8 @@ private struct PropertyRowView: View {
             FilePathRowView(
                 descriptor: descriptor,
                 onEdited: onEdited,
-                onFilePathChanged: onFilePathChanged
+                onFilePathChanged: onFilePathChanged,
+                onFilePathCommitted: onFilePathCommitted
             )
         case .enumeration:
             EnumRowView(
@@ -228,6 +236,7 @@ private struct ObjectRowView: View {
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    var onFilePathCommitted: (() -> Void)?
     var editRecorder: EditRecorder? = nil
     var editTargetOwner: AnyObject? = nil
     var editTargetKeyPath: String = ""
@@ -248,6 +257,7 @@ private struct ObjectRowView: View {
                         animationContext: animationContext,
                         onEdited: onEdited,
                         onFilePathChanged: onFilePathChanged,
+                        onFilePathCommitted: onFilePathCommitted,
                         editRecorder: editRecorder,
                         editTargetOwner: editTargetOwner,
                         editTargetKeyPath: editTargetKeyPath + descriptor.id + "/",
@@ -272,6 +282,7 @@ private struct CollectionRowView: View {
     let animationContext: AnimationEvaluationContext
     var onEdited: () -> Void
     var onFilePathChanged: ((PropertyDescriptor, String) -> Void)?
+    var onFilePathCommitted: (() -> Void)?
     var editRecorder: EditRecorder? = nil
     var editTargetOwner: AnyObject? = nil
     var editTargetKeyPath: String = ""
@@ -316,6 +327,7 @@ private struct CollectionRowView: View {
                                 animationContext: animationContext,
                                 onEdited: onEdited,
                                 onFilePathChanged: onFilePathChanged,
+                                onFilePathCommitted: onFilePathCommitted,
                                 editRecorder: editRecorder,
                                 editTargetOwner: editTargetOwner,
                                 editTargetKeyPath:

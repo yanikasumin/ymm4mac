@@ -132,19 +132,33 @@ struct UserDictionaryEditorView: View {
             Toggle("大文字小文字を区別しない", isOn: boolBinding(index, \.ignoreCase))
                 .toggleStyle(.checkbox)
             Button("削除") {
-                updateEntries { $0.remove(at: index) }
+                updateEntries { entries in
+                    if entries.indices.contains(index) {
+                        entries.remove(at: index)
+                    }
+                }
                 commit()
             }
         }
         .font(.callout)
     }
 
+    // 行はインデックスで束縛する。編集中に別経路（行の削除・リスト
+    // 切替）で件数が変わると、再描画の途中で旧インデックスの束縛が
+    // 評価され得るため、範囲外は読み取りでは既定値、書き込みでは
+    // 無操作に倒す（FE-UNIT6 の堅牢化）。
+
     private func boolBinding(
         _ index: Int, _ keyPath: WritableKeyPath<WordSet, Bool>
     ) -> Binding<Bool> {
         Binding(
-            get: { currentEntries()[index][keyPath: keyPath] },
+            get: {
+                let entries = currentEntries()
+                return entries.indices.contains(index)
+                    ? entries[index][keyPath: keyPath] : false
+            },
             set: { newValue in
+                guard currentEntries().indices.contains(index) else { return }
                 updateEntries { $0[index][keyPath: keyPath] = newValue }
                 commit()
             }
@@ -155,8 +169,13 @@ struct UserDictionaryEditorView: View {
         _ index: Int, _ keyPath: WritableKeyPath<WordSet, String>
     ) -> Binding<String> {
         Binding(
-            get: { currentEntries()[index][keyPath: keyPath] },
+            get: {
+                let entries = currentEntries()
+                return entries.indices.contains(index)
+                    ? entries[index][keyPath: keyPath] : ""
+            },
             set: { newValue in
+                guard currentEntries().indices.contains(index) else { return }
                 updateEntries { $0[index][keyPath: keyPath] = newValue }
                 commit()
             }
@@ -165,8 +184,13 @@ struct UserDictionaryEditorView: View {
 
     private func descriptionBinding(_ index: Int) -> Binding<String> {
         Binding(
-            get: { currentEntries()[index].description ?? "" },
+            get: {
+                let entries = currentEntries()
+                return entries.indices.contains(index)
+                    ? (entries[index].description ?? "") : ""
+            },
             set: { newValue in
+                guard currentEntries().indices.contains(index) else { return }
                 updateEntries {
                     $0[index].description = newValue.isEmpty ? nil : newValue
                 }
