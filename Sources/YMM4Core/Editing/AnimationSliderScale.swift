@@ -197,9 +197,11 @@ public enum AnimationSliderScale {
     /// （属性の Delta は常に正）ため、丸め桁は上限の 15 として扱う。
     /// 値自体が非有限ならそのまま返す（呼び出し側が確定前に弾く）。
     ///
-    /// 拡大した積が厳密に整数になる値では、.NET の正しく丸められた
-    /// 結果は値そのものであるため、割り戻さずに値を返す
-    /// （FE-R25-128-03）。
+    /// 丸めは `roundedToDecimalDigits` で格納値そのものを厳密に
+    /// 丸める（FE-FIXVALUE-EXACT）。「10 の冪を掛けて丸めて割り戻す」
+    /// 方式は、積がちょうど中間値に着地する通常域の値（0.35、
+    /// 2.675 等）で .NET と乖離し、割り戻しの誤差で巨大値でも
+    /// 1 ulp ずれるため使わない（FE-P3-GUARDS の実測）。
     public static func fixedValue(
         _ value: Double, delta: Double, minimum: Double, maximum: Double
     ) -> Double {
@@ -210,28 +212,180 @@ public enum AnimationSliderScale {
             let raw = 1.0 / delta / 10.0 + 1.0
             digits = raw >= 15 ? 15 : (raw <= 0 ? 0 : Int(raw))
         }
-        let factor = pow(10.0, Double(digits))
-        let scaled = value * factor
-        // .NET の Math.Round は厳密な値を正しく丸めるため、拡大した
-        // 積が厳密に整数になる値（丸める桁より下に小数部を持たない
-        // 値）では値そのものが結果になる。割り戻すと、積が 2^53 を
-        // 超える規模では割り戻しの誤差で隣の double へずれる
-        // （FE-R25-128-03。例: 1e17 + 32 が桁数 15 で 1 ulp 小さく
-        // なる）。積の残差は fma で厳密に求まり、残差が整数なら
-        // 厳密な積も整数なので、その場合は割り戻さず値を丸め結果
-        // とする。残差が整数でない場合の境界は実装台帳
-        // FE-P3-GUARDS の記録どおり未処分のまま残る。
-        if scaled == scaled.rounded(.towardZero) {
-            let residual = fma(value, factor, -scaled)
-            if residual == residual.rounded(.towardZero) {
-                return min(max(value, minimum), maximum)
-            }
-        }
-        // .NET の MidpointRounding.AwayFromZero は「最近接へ丸め、
-        // 同点のときだけ 0 から離れる」であり、Swift では
-        // .toNearestOrAwayFromZero が対応する（.awayFromZero は
-        // 常に切り上げ方向で別物）。
-        let rounded = scaled.rounded(.toNearestOrAwayFromZero) / factor
+        let rounded = roundedToDecimalDigits(value, digits: digits)
         return min(max(rounded, minimum), maximum)
+    }
+
+    /// 格納された二進値そのものを十進 `digits` 桁へ
+    /// `MidpointRounding.AwayFromZero` で丸めた結果に最も近い
+    /// double を返す（.NET `Math.Round(value, digits,
+    /// MidpointRounding.AwayFromZero)` の意味論の再現）。
+    ///
+    /// .NET の Math.Round は格納値の厳密な十進展開を丸める:
+    /// 0.35 の格納値は中間値 0.35 より僅かに小さいため 1 桁では
+    /// 0.3 になる。最短往復文字列（"0.35"）を丸める方式では
+    /// 格納値と文字列の大小が逆転する値（2.675 等）で一致しない
+    /// ため、文字列は経由しない。
+    ///
+    /// 計算は全て整数演算で厳密に行う。|value| を
+    /// significand × 2^exponent へ分解すると、拡大した値
+    /// |value| × 10^digits は significand × 5^digits ×
+    /// 2^(exponent + digits) と厳密に書ける（10^d = 2^d × 5^d）。
+    /// significand × 5^digits は 2^88 未満で 128bit に収まる。
+    /// 剰余と 1/2 の比較で切り上げを決め（同点は 0 から離れる）、
+    /// 得た整数を 10^digits で割りながら最も近い double へ戻す
+    /// （最終変換の同点は偶数側）。拡大した値が整数になる場合は
+    /// 丸め結果が値そのものになり、巨大値の恒等返却
+    /// （FE-R25-128-03）もこの経路に内包される。
+    ///
+    /// 前提: `digits` は 0...15（呼び出し側の桁数導出が保証する）。
+    private static func roundedToDecimalDigits(_ value: Double, digits: Int) -> Double {
+        if value == 0 { return value }
+        let negative = value.sign == .minus
+        let bits = value.bitPattern
+        let exponentField = Int((bits >> 52) & 0x7FF)
+        let fraction = bits & 0xF_FFFF_FFFF_FFFF
+        let significand: UInt64
+        let exponent: Int
+        if exponentField == 0 {
+            // 非正規化数: 暗黙の 1 を持たない。
+            significand = fraction
+            exponent = -1074
+        } else {
+            significand = fraction | (UInt64(1) << 52)
+            exponent = exponentField - 1023 - 52
+        }
+        var power5: UInt64 = 1
+        for _ in 0..<digits { power5 *= 5 }
+        // |value| × 10^digits = product × 2^shift（厳密）。
+        let product = significand.multipliedFullWidth(by: power5)
+        let shift = exponent + digits
+        if shift >= 0 {
+            // 拡大した値が整数 → 丸めた結果は値そのもの。
+            return value
+        }
+        let k = -shift
+        if k >= 89 {
+            // product < 2^88 ≤ 2^(k-1) のため拡大した値は 1/2 未満。
+            return negative ? -0.0 : 0.0
+        }
+        // n = floor(product / 2^k)、剰余 = product mod 2^k。
+        let nHi: UInt64, nLo: UInt64, rHi: UInt64, rLo: UInt64
+        if k < 64 {
+            nHi = product.high >> k
+            nLo = (product.low >> k) | (product.high << (64 - k))
+            rHi = 0
+            rLo = product.low & ((UInt64(1) << k) - 1)
+        } else if k == 64 {
+            nHi = 0
+            nLo = product.high
+            rHi = 0
+            rLo = product.low
+        } else {
+            nHi = 0
+            nLo = product.high >> (k - 64)
+            rHi = product.high & ((UInt64(1) << (k - 64)) - 1)
+            rLo = product.low
+        }
+        // 1/2 = 2^(k-1)。剰余が 1/2 以上なら切り上げる（同点は
+        // AwayFromZero で 0 から離れる = 絶対値の切り上げ）。
+        let halfHi: UInt64 = k - 1 >= 64 ? UInt64(1) << (k - 65) : 0
+        let halfLo: UInt64 = k - 1 >= 64 ? 0 : UInt64(1) << (k - 1)
+        var n = (hi: nHi, lo: nLo)
+        if rHi > halfHi || (rHi == halfHi && rLo >= halfLo) {
+            n.lo &+= 1
+            if n.lo == 0 { n.hi &+= 1 }
+        }
+        if n.hi == 0 && n.lo == 0 { return negative ? -0.0 : 0.0 }
+        // n / 10^digits に最も近い double へ変換する。結果の
+        // 属する 2 の冪の区間（binade）を先に厳密に決め、その
+        // 区間の格子上で丸める。区間の境界直下では下の区間の
+        // 格子が2倍細かいため、大きさの見積もりだけで格子を
+        // 決めると境界の向こう側の点へ丸めてしまう（例:
+        // 64 の直下の値を 15 桁で丸めると 64 になる）。
+        var power10: UInt64 = 1
+        for _ in 0..<digits { power10 *= 10 }
+        let bitLengthN = n.hi != 0
+            ? 128 - n.hi.leadingZeroBitCount
+            : 64 - n.lo.leadingZeroBitCount
+        let bitLengthP = 64 - power10.leadingZeroBitCount
+        // r = n / power10 は (2^(d-1), 2^(d+1)) に入る。
+        // r ≥ 2^d かどうかで、2^e ≤ r < 2^(e+1) となる e が
+        // d か d-1 に決まる。
+        let d = bitLengthN - bitLengthP
+        let reachesPowerOfTwo: Bool
+        if d >= 0 {
+            // n ≥ power10 × 2^d ⟺ (n >> d) ≥ power10。
+            let sHi: UInt64, sLo: UInt64
+            if d == 0 {
+                sHi = n.hi
+                sLo = n.lo
+            } else if d < 64 {
+                sHi = n.hi >> d
+                sLo = (n.lo >> d) | (n.hi << (64 - d))
+            } else if d == 64 {
+                sHi = 0
+                sLo = n.hi
+            } else {
+                sHi = 0
+                sLo = n.hi >> (d - 64)
+            }
+            reachesPowerOfTwo = sHi > 0 || sLo >= power10
+        } else {
+            // n ≥ power10 × 2^d ⟺ (n << -d) ≥ power10。
+            let s = -d
+            let l0 = n.lo << s
+            let l1 = (n.hi << s) | (n.lo >> (64 - s))
+            let l2 = n.hi >> (64 - s)
+            reachesPowerOfTwo = l2 > 0 || l1 > 0 || l0 >= power10
+        }
+        let binade = reachesPowerOfTwo ? d : d - 1
+        // quotient = round(r × 2^(52-binade))（同点は偶数側）。
+        // r < 2^52 かつ r ≥ 1e-15 程度のため、シフト量は
+        // 1...103 に収まり、被除数は 2^191 未満でリム列に収まる。
+        let scaleShift = 52 - binade
+        var limbs: [UInt64] = [n.lo, n.hi, 0, 0, 0]
+        let limbShift = scaleShift / 64
+        let bitShift = scaleShift % 64
+        if limbShift > 0 || bitShift > 0 {
+            var shifted: [UInt64] = [0, 0, 0, 0, 0]
+            for i in 0..<limbs.count {
+                let source = i - limbShift
+                guard source >= 0 else { continue }
+                var limb = limbs[source] << bitShift
+                if bitShift > 0, source > 0 {
+                    limb |= limbs[source - 1] >> (64 - bitShift)
+                }
+                shifted[i] = limb
+            }
+            limbs = shifted
+        }
+        var quotient: UInt64 = 0
+        var remainder: UInt64 = 0
+        for limb in limbs.reversed() {
+            // remainder < power10 が保たれるため商は 64bit に
+            // 収まる。商の実値は 2^53 以下なので上位リムの商は
+            // 0 になる。
+            let (q, r) = power10.dividingFullWidth((high: remainder, low: limb))
+            quotient = (quotient << 64) | q
+            remainder = r
+        }
+        let twiceRemainder = remainder * 2
+        if twiceRemainder > power10
+            || (twiceRemainder == power10 && quotient % 2 == 1) {
+            quotient += 1
+        }
+        // 結果 = quotient × 2^(binade-52)（quotient は [2^52, 2^53]）。
+        // 2^53 へ達した場合は次の区間の 2^52 と同値。
+        var resultExponentField = binade + 1023
+        if quotient == UInt64(1) << 53 {
+            quotient = UInt64(1) << 52
+            resultExponentField += 1
+        }
+        let exponentBits = UInt64(resultExponentField) << 52
+        let resultBits = (negative ? UInt64(1) << 63 : 0)
+            | exponentBits
+            | (quotient - (UInt64(1) << 52))
+        return Double(bitPattern: resultBits)
     }
 }
