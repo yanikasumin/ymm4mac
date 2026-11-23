@@ -60,6 +60,7 @@
 - 構造整理 W2〜W10 の記録は各 PR が正本（W2 = #68、W3 = #67、W4 = #72、W5 = #73、W6 = #74、W8 = #75、W7 = #76、W9 = #77、W10 = #78）
 - INTEG-20261118 — 機能フェーズ10単位の統合（PR #84〜#93）と統合後検証
 - FE-VOICE-DESC — VoiceItem の残り編集項目とエコー項目の記述子追加、セリフ行の部分装飾の編集経路
+- FE-TEXT-DECORATIONS — TextItem の部分装飾（Decorations）の編集経路追加（FE-VOICE-DESC の追随）
 
 ## 実装記録（変更IDごとに自然言語で追記）
 
@@ -2188,3 +2189,48 @@ PR #126 の Round 21 新規指摘「失効したセッショントークンが�
 >
 > ## 実装記録
 > - docs/IMPLEMENTATION_LOG.md の FE-VOICE-DESC 節。
+
+#### FE-TEXT-DECORATIONS — TextItem の部分装飾（Decorations）の編集経路追加（IMPLEMENTED、Mac 検証済み）
+
+FE-VOICE-DESC の積み残しの処分。`TextItem.decorations: [TextDecoration]` はモデル構造と保存・再読み込みの往復が実装済みだったが、インスペクタから編集する経路が無かった。VoiceItem 側で作ったコレクション記述子のヘルパーを共有し、TextItem にも同じ形の編集経路を追加する。既存の記述子の意味・順序は変更していない（追加とヘルパーの一般化のみ）。開始コミットは FE-VOICE-DESC の先端 `7479fdb`、ブランチ `feat/fe-text-decorations`（PR は FE-VOICE-DESC の PR の後に積む前提）。
+
+**本家 TextItem の構成（逆コンパイル済みソースで確認）。** `Text` は `Display`（TextGroupName、Order 200）に加えて `[RichTextEditor(DecorationPropertyName = "Decorations", FontPropertyName = "Font", ForegroundPropertyName = "FontColor")]` を持ち、リッチテキスト編集部品が装飾の編集先として `Decorations` を明示的に指す。`Decorations` 自体には `Display` 属性が無く、宣言順は `Text` の直後・`Font` の前。外観一式（Font 〜 HideDirection）は全て TextGroupName / Order 200（Mac 側では既存判断で「フォント」グループに分離済みであり、本単位では変更していない）。
+
+**VoiceItem との違い（本家）。** VoiceItem の `Serif` には `RichTextEditor` 属性が無く `[SerifTextBox]` が付く点が異なる（装飾の編集先を属性で指すかどうか）。ただし両者とも `Decorations` に `Display` 属性が無く、本文編集の中で選択範囲へ装飾を適用する扱いは共通であり、装飾データの構造も同一（`TextDecoration` レコード）。Mac 側の適用経路にも差は無い: TextItem / VoiceItem とも同じテキストラスタライザ（`MetalTextSources` → `MetalTextRasterizer`）が `item.decorations` を消費して描画へ反映しており、欠けていたのは TextItem の編集経路だけであった。
+
+**実装**（`Sources/YMM4Core/Editing/ItemPropertyMetadata.swift`）:
+
+- `decorationsDescriptor` / `decorationChildren` を、装飾列への `Access<[TextDecoration]>` とグループ名を受け取る形へ一般化し、VoiceItem / TextItem で共有した。VoiceItem 側の呼び出し結果は従来と同一（グループ「音声」、セリフの直後、子記述子16項目と読み書きの意味論も不変）。要素の読み書きは配列全体の取得・書き戻し経由になったが、対象プロパティは素の保持プロパティ（didSet 等なし）であり意味論は変わらない。
+- TextItem にはグループ「テキスト」で `Text` の直後に配置した。本家の宣言順（Text → Decorations → 外観）に対応し、VoiceItem 側で採った「本文と同じグループ・本文の直後」の前例とも一致する。セクション構成（基本／描画／テキスト／フォント）は変わらない。
+- nullable な4項目（Foreground / DecorationColor / CharacterSpacing / StyleType）の線引きは VoiceItem と同一: 子記述子へ出さず保持のみとし、他項目の編集で消えない（テストで固定）。
+- Undo 記録は VoiceItem と同じく既存の記述子＋`EditRecorder` 経路に乗り、新しい記録経路は作っていない。リッチテキスト上での選択範囲への装飾適用は Mac 側に基盤が無く範囲外（VoiceItem と同じ残件）。
+
+**検証。** Mac（~/ymm4-work/fe-textdec/YMM4Mac）で実施。Apps/DebugApp の `swift build` 成功（228ステップ）。`swift test`（`PropertyMetadataTests` フィルタ）で47件・失敗0 — 内訳: `PropertyMetadataTests` 30件（新規1件: TextItem の装飾コレクションの追加・削除・項目別編集・未公開項目の保持・保存往復と、「テキスト」セクション内の Text → Decorations の並びを固定）、`EffectPropertyMetadataTests` 17件。新規テストと VoiceItem 側の既存テスト（Decorations コレクション、記述子順、セクション順）は個別指定でも全て合格を確認した。全スイートは回していない。AudioDriftTests は対象外（音声クロック・リサンプリング中核の変更を含まない）。ARCHITECTURE.md は処理経路・所有権の変更が無い（既存の記述子機構への追加と共有化のみ）ため未更新。
+
+**手動検証チェックリスト（未実施）**: (1) テキストアイテムのインスペクタで、「テキスト」グループに テキスト → Decorations の順で並ぶ。(2) Decorations で要素を追加し、範囲・太字・拡大率を編集してプレビューへ反映される。(3) 保存・再読込で装飾が保持される。(4) Decorations の編集で未保存フラグが立つ。
+
+**PR 本文の下書き**:
+
+> ## 概要
+> FE-VOICE-DESC で積み残した TextItem 側の追随として、`TextItem.Decorations`（本文の部分装飾）へインスペクタのコレクション記述子による編集経路を追加する。モデル構造と保存往復は実装済みであり、欠けていたのは編集経路のみ。既存の記述子の意味・順序は変更していない。
+>
+> ## 要件・本家根拠
+> - 本家 `TextItem.Text` の `RichTextEditor` 属性が `DecorationPropertyName = "Decorations"` を指し、`Decorations` の宣言順は Text の直後・Font の前であることを逆コンパイル済みソースで確認した（対応は実装台帳 FE-TEXT-DECORATIONS に記載）。
+> - VoiceItem との差は Serif に `RichTextEditor` 属性が無い点のみで、装飾の構造と扱いは同一。Mac 側の描画適用経路（テキストラスタライザ）も両者で共通であることを確認した。
+>
+> ## 変更したシンボル
+> - `Sources/YMM4Core/Editing/ItemPropertyMetadata.swift`: `decorationsDescriptor` / `decorationChildren` を装飾列へのアクセスとグループで一般化し VoiceItem / TextItem で共有。`textItemDescriptors` に Decorations（グループ「テキスト」、Text の直後）を追加。
+> - `Tests/YMM4CoreTests/Editing/PropertyMetadataTests.swift`: TextItem の装飾コレクションの回帰テスト1件を追加。
+>
+> ## 設計判断
+> - 配置は本家の宣言順と VoiceItem 側の前例（本文と同じグループ・本文の直後）に合わせ、「テキスト」グループの Text の直後とした。
+> - nullable な4項目（Foreground / DecorationColor / CharacterSpacing / StyleType）は VoiceItem と同一の線引きで子記述子へ出さず、保持のみとする。
+> - 本家と同じ選択範囲ベースの装飾適用はリッチテキスト編集部品の基盤が別途必要で、本 PR の対象外（VoiceItem と同じ残件）。
+> - 基点は FE-VOICE-DESC のブランチ `feat/fe-voice-descriptors`（`7479fdb`）であり、本 PR は同 PR の後に積む前提。
+>
+> ## テスト
+> - Mac で DebugApp の `swift build` 成功。`swift test`（`PropertyMetadataTests` フィルタ）47件・失敗0（PropertyMetadataTests 30件＝新規1件を含む、EffectPropertyMetadataTests 17件）。全スイート・AudioDriftTests は未実施。
+> - 手動チェックリストは実装台帳 FE-TEXT-DECORATIONS に記載（未実施）。
+>
+> ## 実装記録
+> - docs/IMPLEMENTATION_LOG.md の FE-TEXT-DECORATIONS 節。

@@ -578,6 +578,76 @@ final class PropertyMetadataTests: XCTestCase {
         XCTAssertEqual(reloadedItem.decorations, item.decorations)
     }
 
+    /// TextItem の部分装飾（Decorations）のコレクション記述子:
+    /// VoiceItem と同じ構造で、追加・削除と子記述子の項目別編集が
+    /// モデルへ届き、子記述子へ出していないオプショナル項目は
+    /// 他項目の編集で消えず、保存形式へも往復すること。
+    /// 配置は本家の宣言順どおり、本文（Text）と同じ「テキスト」
+    /// グループで本文の直後。
+    func testTextItemDecorationsCollection() throws {
+        let item = TextItem()
+        item.decorations = [TextDecoration(start: 1, length: 2)]
+        item.decorations[0].foreground = Color(alpha: 255, red: 0, green: 0, blue: 255)
+        item.decorations[0].characterSpacing = 0.5
+
+        let descriptors = ItemPropertyMetadata.descriptors(for: item)
+        let textSection = try XCTUnwrap(
+            PropertyMetadata.sections(from: descriptors).first { $0.name == "テキスト" }
+        )
+        XCTAssertEqual(textSection.descriptors.map(\.id), ["Text", "Decorations"])
+
+        let decorations = try descriptor(descriptors, "Decorations")
+        XCTAssertEqual(decorations.group, "テキスト")
+        guard case .collection = decorations.kind else {
+            return XCTFail("Decorations はコレクションのはず")
+        }
+        XCTAssertEqual(decorations.collectionCount, 1)
+
+        let children = try XCTUnwrap(decorations.collectionElements(at: 0))
+        func child(_ id: String) throws -> PropertyDescriptor {
+            try XCTUnwrap(children.first { $0.id == id }, "子記述子 \(id) が無い")
+        }
+        XCTAssertEqual(children.count, 16)
+        XCTAssertEqual(try child("Start").integerValue, 1)
+        XCTAssertTrue(try child("Start").setIntegerValue(3))
+        XCTAssertEqual(item.decorations[0].start, 3)
+        XCTAssertTrue(try child("Length").setIntegerValue(4))
+        XCTAssertEqual(item.decorations[0].length, 4)
+        XCTAssertTrue(try child("IsBold").setBoolValue(true))
+        XCTAssertTrue(item.decorations[0].isBold)
+        XCTAssertTrue(try child("Scale").setNumberValue(1.5))
+        XCTAssertEqual(item.decorations[0].scale, 1.5)
+        // Font は空文字列が未指定（nil）への橋渡し。
+        XCTAssertEqual(try child("Font").stringValue, "")
+        XCTAssertTrue(try child("Font").setStringValue("Hiragino Sans"))
+        XCTAssertEqual(item.decorations[0].font, "Hiragino Sans")
+        XCTAssertTrue(try child("Font").setStringValue(""))
+        XCTAssertNil(item.decorations[0].font)
+        // 子記述子へ出していない項目は、他項目の編集で保持される。
+        XCTAssertEqual(
+            item.decorations[0].foreground, Color(alpha: 255, red: 0, green: 0, blue: 255)
+        )
+        XCTAssertEqual(item.decorations[0].characterSpacing, 0.5)
+
+        // 追加は末尾へ既定値の要素（範囲 0・長さ 0）が付き、削除は
+        // 位置指定で効く。範囲外の削除は無変更で false。
+        XCTAssertTrue(decorations.insertCollectionElement())
+        XCTAssertEqual(decorations.collectionCount, 2)
+        XCTAssertEqual(item.decorations[1], TextDecoration(start: 0, length: 0))
+        XCTAssertFalse(decorations.removeCollectionElement(at: 5))
+        XCTAssertEqual(decorations.collectionCount, 2)
+        XCTAssertTrue(decorations.removeCollectionElement(at: 1))
+        XCTAssertEqual(item.decorations.count, 1)
+
+        // 保存 → 再読み込みで装飾が往復する。
+        let saved = YmmpCodec.encode(makeProject(with: item))
+        let (reloaded, _) = try YmmpCodec.decode(saved)
+        let reloadedItem = try XCTUnwrap(
+            reloaded.timelines.first?.items.first as? TextItem
+        )
+        XCTAssertEqual(reloadedItem.decorations, item.decorations)
+    }
+
     // MARK: - グループ化
 
     func testSectionsPreserveGroupOrder() {
