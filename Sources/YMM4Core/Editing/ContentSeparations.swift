@@ -114,6 +114,160 @@ extension BaseItem {
         }
     }
 
+    /// シーンアイテムの区切り（本家 `SceneItem.ContentSeparations`
+    /// の上書き形）。
+    ///
+    /// 本体は参照先シーンの長さ（尾なし）で構成され、本体・
+    /// エコーの構造は動画・音声形と同じ。シーン長はアイテム単体
+    /// では決まらないため、供給継ぎ目（`SceneItem.sceneLengthProvider`）
+    /// で解決済みの値を引数で受ける。動画・音声形との差は2点:
+    /// (1) 定数形は本家が速度の符号つきで割り戻すため、正の速度
+    /// でなければ（0・負とも）区切りはエコー分も含めて一切
+    /// 生まれない（動画・音声形は絶対値で割り戻し、負の速度でも
+    /// 生まれる）。正の速度では割り戻しが絶対値と一致するため、
+    /// 本体・エコーとも動画・音声形の列挙をそのまま使える。
+    /// (2) 入口の素材長ガードは本家にも無い（シーン長が 0 でも
+    /// エコーの区切りだけは生まれ得る）。
+    func sceneContentSeparations(
+        sceneLength: TimeSpanValue,
+        isLooped: Bool,
+        echoIsEnabled: Bool,
+        echoInterval: Double,
+        echoAttenuation: Double
+    ) -> AnySequence<TimeSpanValue> {
+        let rateMap = PlaybackRateMap(rate: playbackRate2)
+        let echoAdditionalDuration = EchoAudioStream.additionalDuration(
+            interval: TimeSpanValue(seconds: echoInterval),
+            attenuation: echoAttenuation / 100
+        )
+        if rateMap.isConstant {
+            guard rateMap.firstRate > 0 else { return AnySequence([]) }
+            let offset = contentOffset
+            let firstRate = rateMap.firstRate
+            return AnySequence {
+                MediaConstantSeparationsIterator(
+                    rawContentLength: sceneLength,
+                    contentOffset: offset,
+                    firstRate: firstRate,
+                    isLooped: isLooped,
+                    echoIsEnabled: echoIsEnabled,
+                    echoAdditionalDuration: echoAdditionalDuration
+                )
+            }
+        }
+        // 非定数形。本体はシーン長に対する境界の横切列挙（ループ時）
+        // または素材が尽きる時刻で、動画・音声形と同じ構成。
+        let contentPart: AnyIterator<TimeSpanValue>
+        if sceneLength <= .zero {
+            contentPart = AnyIterator { nil }
+        } else if isLooped {
+            contentPart = AnyIterator(
+                rateMap.enumerateContentBoundaryCrossings(
+                    itemLength: length, fps: videoFPS,
+                    contentOffset: contentOffset, contentLength: sceneLength
+                ).makeIterator()
+            )
+        } else if let exhausted = rateMap.findContentExhaustedTime(
+            itemLength: length, fps: videoFPS,
+            contentOffset: contentOffset, contentLength: sceneLength
+        ) {
+            contentPart = AnyIterator([exhausted].makeIterator())
+        } else {
+            contentPart = AnyIterator { nil }
+        }
+        return AnySequence {
+            MediaNonConstantSeparationsIterator(
+                contentIterator: contentPart,
+                echoIsEnabled: echoIsEnabled,
+                echoAdditionalDuration: echoAdditionalDuration
+            )
+        }
+    }
+
+    /// 音声（ボイス）アイテムの区切り（本家 `VoiceItem.ContentSeparations`
+    /// の上書き形）。
+    ///
+    /// 素材長は `voiceLength`（本家の同名フィールド。尾なし）で、
+    /// 動画・音声形と異なりループは無く本体は常に1つだけ。
+    /// エコーの区切りの後に、追加時間（`additionalTime`。正の
+    /// 場合のみ）が最後の区切りへ加えた位置にもう1つ生まれる
+    /// （追加時間は速度で割り戻さない）。非定数形では素材が
+    /// 尽きる時刻が無ければ、エコー・追加時間の区切りも生まれ
+    /// ない（本家は尽きる時刻が有る場合の分岐内に両方を含む）。
+    ///
+    /// 入口のガードは本家の `ContentLength` の計算で判定する:
+    /// `voiceLength` が 0 なら 5 秒、そうでなければ
+    /// `voiceLength + 追加時間 × |先頭値| / 100 + エコー尾`
+    /// （エコー尾は符号つきの `GetEchoLength`）。Mac 側の保持値
+    /// `contentLength` はボイスアイテムでは維持されないため、
+    /// 本家の計算をここで再現する。打ち切りは本家どおり
+    /// 「計算結果がちょうど 0 のとき」だけであり、負になる場合
+    /// （短い音声に追加時間の負値が乗る等）でも列挙は進む。
+    func voiceContentSeparations(
+        voiceLength: TimeSpanValue,
+        additionalTime: Double,
+        echoIsEnabled: Bool,
+        echoInterval: Double,
+        echoAttenuation: Double
+    ) -> AnySequence<TimeSpanValue> {
+        let rateMap = PlaybackRateMap(rate: playbackRate2)
+        let firstRate = rateMap.firstRate
+        let echoAdditionalDuration = EchoAudioStream.additionalDuration(
+            interval: TimeSpanValue(seconds: echoInterval),
+            attenuation: echoAttenuation / 100
+        )
+        // 本家 ContentLength の再現（入口ガード用）。
+        let effectiveContentLength: TimeSpanValue
+        if voiceLength == .zero {
+            effectiveContentLength = TimeSpanValue(seconds: 5)
+        } else {
+            let additionalScaled = TimeSpanValue(
+                seconds: additionalTime * (abs(firstRate) / 100))
+            let echoTail = echoIsEnabled
+                ? TimeSpanValue(
+                    seconds: echoAdditionalDuration.seconds * (firstRate / 100))
+                : .zero
+            effectiveContentLength = voiceLength + additionalScaled + echoTail
+        }
+        guard effectiveContentLength != .zero else { return AnySequence([]) }
+
+        if !rateMap.isConstant {
+            guard let exhausted = rateMap.findContentExhaustedTime(
+                itemLength: length, fps: videoFPS,
+                contentOffset: contentOffset, contentLength: voiceLength)
+            else { return AnySequence([]) }
+            var result = [exhausted]
+            var last = exhausted
+            if echoIsEnabled, echoAdditionalDuration > .zero {
+                last = last + echoAdditionalDuration
+                result.append(last)
+            }
+            if additionalTime > 0 {
+                result.append(last + TimeSpanValue(seconds: additionalTime))
+            }
+            return AnySequence(result)
+        }
+        // 定数形。本体は (voiceLength − オフセット) / |速度| × 100。
+        guard firstRate != 0 else { return AnySequence([]) }
+        var last = TimeSpanValue(ticks: Int64(
+            ((Double(voiceLength.ticks) - Double(contentOffset.ticks))
+                / abs(firstRate) * 100).rounded(.toNearestOrAwayFromZero)))
+        var result = [last]
+        // エコー分は符号つきの尾を絶対値で割り戻す（逆再生では
+        // 負になり生まれない。動画・音声形と同じ）。
+        let echoScaled = Double(echoAdditionalDuration.ticks) * (firstRate / 100)
+            / abs(firstRate) * 100
+        if echoIsEnabled, echoScaled > 0 {
+            last = last + TimeSpanValue(
+                ticks: Int64(echoScaled.rounded(.toNearestOrAwayFromZero)))
+            result.append(last)
+        }
+        if additionalTime > 0 {
+            result.append(last + TimeSpanValue(seconds: additionalTime))
+        }
+        return AnySequence(result)
+    }
+
     /// アイテムの長さの終端が、いずれかの区切りの ±1 フレーム
     /// 以内にあるか。
     ///

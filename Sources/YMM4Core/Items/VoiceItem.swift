@@ -105,6 +105,19 @@ public final class VoiceItem: BaseItem {
     /// 立ち絵表情エフェクト（生 JSON で保持）。
     public var tachieFaceEffects: [PreservedObject] = []
 
+    /// コンテンツの区切り位置。本家 `VoiceItem.ContentSeparations`
+    /// の上書き形（素材長は `voiceLength`、エコーの後に追加時間の
+    /// 区切りが付く）。
+    public override var contentSeparations: AnySequence<TimeSpanValue> {
+        voiceContentSeparations(
+            voiceLength: voiceLength,
+            additionalTime: additionalTime,
+            echoIsEnabled: echoIsEnabled,
+            echoInterval: echoInterval,
+            echoAttenuation: echoAttenuation
+        )
+    }
+
     public override func forEachAnimation(_ body: (inout Animation) -> Void) {
         super.forEachAnimation(body)
         body(&volume)
