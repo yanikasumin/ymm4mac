@@ -290,4 +290,37 @@ public extension Timeline {
         }
         return snapPoint - nearestTarget + frameDelta
     }
+
+    /// ドラッグ中アイテム自身の素材内部の区切りから組み立てる
+    /// 追加の吸着先（本家 `extraSnapPoints`）。
+    ///
+    /// 本家がこの供給を使うのは後端トリム（`ResizeFootCommand`）と
+    /// キーフレームのドラッグ（`TimelineItemKeyFrameViewModel` の
+    /// `DragDeltaCommand`）だけであり、移動（`MoveCommand`）と
+    /// 前端トリム（`ResizeHeadCommand`）は区切りを吸着先に含めない。
+    /// 吸着先になるのは他のアイテムの区切りではなく、ドラッグ中
+    /// アイテム自身の区切りである（後端やキーフレームを、素材の
+    /// 区切り位置へ吸着させるため）。
+    ///
+    /// 組み立ては本家の列操作そのまま: `contentSeparations` のうち
+    /// 正の時刻だけを残し、タイムラインの FPS でフレームへ換算し、
+    /// アイテム内フレームが `length + frameDelta + snapDistance`
+    /// 未満の間だけ取り（TakeWhile。区切りは遅延列挙でループ時は
+    /// 無限に続くため、この上限が列挙の打ち切りを兼ねる）、
+    /// アイテムの開始フレームを加えてタイムライン絶対位置にする。
+    /// 候補の生成範囲はドラッグ中アイテム1件に限られ、全アイテムを
+    /// 走査しない（本家も対象アイテムの区切りだけを読む）。
+    func contentSeparationSnapPoints(
+        for item: BaseItem, frameDelta: Int, snapDistance: Int
+    ) -> [Int] {
+        let bound = item.length + frameDelta + snapDistance
+        var points: [Int] = []
+        for time in item.contentSeparations {
+            if time <= .zero { continue }
+            let frame = videoInfo.frame(from: time.seconds)
+            if frame >= bound { break }
+            points.append(item.frame + frame)
+        }
+        return points
+    }
 }

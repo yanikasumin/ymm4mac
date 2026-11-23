@@ -74,8 +74,8 @@ public class BaseItem {
     /// `Editing/ContentSeparations.swift`（基底形は
     /// `baseContentSeparations`、動画・音声は上書き形）。
     /// 列挙は遅延であり、ループ素材では無限に続く場合があるため、
-    /// 消費側は必要な範囲で打ち切る。タイムラインのスナップも
-    /// この供給を使う想定（UI 側の接続は別単位）。
+    /// 消費側は必要な範囲で打ち切る。タイムラインのスナップでは
+    /// `Timeline.contentSeparationSnapPoints` がこの供給を使う。
     public var contentSeparations: AnySequence<TimeSpanValue> {
         baseContentSeparations()
     }
